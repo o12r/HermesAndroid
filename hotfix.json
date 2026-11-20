@@ -1,0 +1,6 @@
+{
+ "banner": {"en": null, "zh": null},
+ "min_version_code": 0,
+ "relay_url": null,
+ "features": {"attachments": true, "server_slash": true}
+}
