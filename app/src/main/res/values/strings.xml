@@ -108,4 +108,5 @@
     <string name="font_preview">Preview: The quick brown fox · 敏捷的狐狸</string>
     <string name="expand_editor">Full-screen editor</string>
     <string name="collapse_editor">Close editor</string>
+    <string name="pick_any">Select all that apply</string>
 </resources>

@@ -122,12 +122,29 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
             text = { Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 c.questions.forEach { q ->
                     Text(q.question)
-                    q.choices.forEach { ch -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { answers[q.qid] = ch }) {
-                        RadioButton(selected = answers[q.qid] == ch, onClick = { answers[q.qid] = ch }); Text(ch) } }
-                    OutlinedTextField(if (q.choices.contains(answers[q.qid])) "" else answers[q.qid] ?: "", { answers[q.qid] = it },
-                        placeholder = { Text(stringResource(if (q.choices.isEmpty()) R.string.answer else R.string.other)) }, modifier = Modifier.fillMaxWidth())
+                    if (q.multi) {
+                        Text(stringResource(R.string.pick_any), style = MaterialTheme.typography.labelSmall)
+                        q.choices.forEach { ch ->
+                            val key = q.qid + "\u0000" + ch
+                            val on = answers[key] == "1"
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { answers[key] = if (on) "" else "1" }) {
+                                Checkbox(checked = on, onCheckedChange = { answers[key] = if (it) "1" else "" }); Text(ch) }
+                        }
+                        OutlinedTextField(answers[q.qid] ?: "", { answers[q.qid] = it },
+                            placeholder = { Text(stringResource(R.string.other)) }, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        q.choices.forEach { ch -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { answers[q.qid] = ch }) {
+                            RadioButton(selected = answers[q.qid] == ch, onClick = { answers[q.qid] = ch }); Text(ch) } }
+                        OutlinedTextField(if (q.choices.contains(answers[q.qid])) "" else answers[q.qid] ?: "", { answers[q.qid] = it },
+                            placeholder = { Text(stringResource(if (q.choices.isEmpty()) R.string.answer else R.string.other)) }, modifier = Modifier.fillMaxWidth())
+                    }
                 } } },
-            confirmButton = { Button(onClick = { vm.answerClarify(c.questions.associate { it.qid to (answers[it.qid] ?: "") }) }) { Text(stringResource(R.string.submit)) } },
+            confirmButton = { Button(onClick = { vm.answerClarify(c.questions.associate { q ->
+                // Multi-select: Hermes takes a JSON array of the chosen labels (typed text, if any, is its own entry).
+                q.qid to if (!q.multi) (answers[q.qid] ?: "") else {
+                    val picked = q.choices.filter { answers[q.qid + "\u0000" + it] == "1" } + listOfNotNull(answers[q.qid]?.trim()?.ifBlank { null })
+                    if (picked.isEmpty()) "" else org.json.JSONArray(picked).toString()
+                } }) }) { Text(stringResource(R.string.submit)) } },
             dismissButton = { TextButton(onClick = { vm.answerClarify(null) }) { Text(stringResource(R.string.skip)) } })
     }
 }

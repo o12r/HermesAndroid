@@ -29,7 +29,7 @@ enum class Screen { Sessions, Chat, Settings }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
-data class ClarifyQ(val qid: String, val question: String, val choices: List<String>)
+data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
 data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
 
 /**
@@ -438,7 +438,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             "clarify.request" -> {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
-                clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch)),
+                clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch, p.optBoolean("multi_select") && ch.isNotEmpty())),
                     p.optInt("execution_generation", generation))
             }
             "approval.settled" -> if (approval?.reqId == p.optString("prompt_id")) approval = null
@@ -457,8 +457,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "clarify" -> {
                 val qs = p.optJSONArray("questions") ?: JSONArray()
                 clarify = Clarify(id, (0 until qs.length()).map { qs.getJSONObject(it) }.map { q ->
-                    ClarifyQ(q.getString("qid"), q.optString("question"),
-                        q.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList())
+                    val ch = q.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
+                    ClarifyQ(q.getString("qid"), q.optString("question"), ch, q.optBoolean("multi_select") && ch.isNotEmpty())
                 })
             }
             else -> gw?.respond(id, null, "not supported on the phone")

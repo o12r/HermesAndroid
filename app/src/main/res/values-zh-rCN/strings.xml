@@ -108,4 +108,5 @@
     <string name="font_preview">预览：敏捷的狐狸 · The quick brown fox</string>
     <string name="expand_editor">全屏编辑</string>
     <string name="collapse_editor">关闭编辑</string>
+    <string name="pick_any">可多选</string>
 </resources>
