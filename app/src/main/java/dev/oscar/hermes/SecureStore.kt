@@ -32,6 +32,13 @@ class SecureStore(ctx: Context) {
     var hotfixRelay: String?
         get() = prefs.getString("hotfixRelay", null)
         set(v) = prefs.edit().putString("hotfixRelay", v).apply()
+    /** Optional LAN address of the PC relay, tried when the main (Tailscale) URL doesn't answer. */
+    var lanUrl: String
+        get() = prefs.getString("lanUrl", "")!!
+        set(v) = prefs.edit().putString("lanUrl", v.trim().trimEnd('/')).apply()
+    /** The relay URL that answered last (not persisted). */
+    @Volatile var activeRelay: String? = null
+    fun relayBase(): String = activeRelay ?: relayUrl
     var profile: String
         get() = prefs.getString("profile", "default")!!
         set(v) = prefs.edit().putString("profile", v).apply()

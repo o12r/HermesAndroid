@@ -92,4 +92,16 @@
     <string name="cmd_sessions">Back to the session list</string>
     <string name="cmd_delete">Delete this chat (/delete confirm)</string>
     <string name="cmd_help">List commands</string>
+    <string name="lan_url">LAN address (optional)</string>
+    <string name="lan_url_help">Used when the Tailscale address doesn\'t answer, e.g. on home Wi-Fi without Tailscale.</string>
+    <string name="using_relay">Connected via %1$s</string>
+    <string name="copy">Copy</string>
+    <string name="copied">Copied</string>
+    <string name="edit">Edit</string>
+    <string name="branch">Branch from here</string>
+    <string name="edit_message">Edit message</string>
+    <string name="edit_warning">This message and everything after it will be replaced.</string>
+    <string name="steer">Send to running turn</string>
+    <string name="steer_hint">Add to what Hermes is doing…</string>
+    <string name="steered">Sent to the running turn</string>
 </resources>

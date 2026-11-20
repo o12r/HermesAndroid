@@ -24,7 +24,7 @@ data class ModelChoice(val provider: String, val providerName: String, val model
 }
 data class ModelOptions(val currentProvider: String, val currentModel: String, val choices: List<ModelChoice>)
 data class Skill(val name: String, val description: String)
-data class Msg(val role: String, val content: String)
+data class Msg(val role: String, val content: String, val id: Int? = null)
 
 class ApiException(msg: String, val unreachable: Boolean = false) : IOException(msg)
 
@@ -38,7 +38,7 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
     private val root: String = run {
         val u = URI(relayUrl.trim())
         if (u.scheme == "http" && !isTailscaleHost(u.host ?: ""))
-            throw ApiException("Plain http is only allowed to Tailscale addresses (100.64.0.0/10 / *.ts.net)")
+            throw ApiException("Plain http is only allowed to Tailscale or private LAN addresses")
         relayUrl.trim().trimEnd('/')
     }
 
@@ -72,7 +72,7 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
         val a = call(req("/api/sessions/$id/messages").build()).optJSONArray("messages") ?: JSONArray()
         return (0 until a.length()).map { a.getJSONObject(it) }
             .filter { it.optString("role") in setOf("user", "assistant") }
-            .map { Msg(it.getString("role"), contentText(it.opt("content"))) }
+            .map { Msg(it.getString("role"), contentText(it.opt("content")), it.optInt("id", 0).takeIf { i -> i > 0 }) }
             .filter { it.content.isNotBlank() }
     }
 
@@ -109,10 +109,12 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
     }
 
     companion object {
+        /** Plain http is only allowed to Tailscale (100.64.0.0/10, *.ts.net) and private LAN addresses. */
         fun isTailscaleHost(h: String): Boolean {
-            if (h.endsWith(".ts.net")) return true
+            if (h.endsWith(".ts.net") || h.endsWith(".local")) return true
             val p = h.split(".").mapNotNull { it.toIntOrNull() }
-            return p.size == 4 && p[0] == 100 && p[1] in 64..127
+            if (p.size != 4) return false
+            return (p[0] == 100 && p[1] in 64..127) || p[0] == 10 || (p[0] == 172 && p[1] in 16..31) || (p[0] == 192 && p[1] == 168)
         }
         fun contentText(c: Any?): String = when (c) {
             null, JSONObject.NULL -> ""

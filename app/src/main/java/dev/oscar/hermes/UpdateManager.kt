@@ -49,7 +49,7 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
 
     private fun relayReq(path: String): Request? {
         val key = store.apiKey ?: return null
-        val base = store.relayUrl.trimEnd('/')
+        val base = store.relayBase().trimEnd('/')
         if (!ApiClient.isTailscaleHost(java.net.URI(base).host ?: "") && base.startsWith("http:")) return null
         return Request.Builder().url("$base/app/$APP_ID$path").header("Authorization", "Bearer $key").build()
     }
@@ -62,7 +62,7 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
     suspend fun check(): UpdateInfo? = withContext(Dispatchers.IO) {
         val pc = relayReq("/latest.json")?.let { getJson(it) }?.let {
             UpdateInfo(it.getInt("version_code"), it.optString("version_name"), it.optString("notes"),
-                store.relayUrl.trimEnd('/') + "/app/$APP_ID/apk", "pc")
+                store.relayBase().trimEnd('/') + "/app/$APP_ID/apk", "pc")
         }
         val gh = if (pc != null && pc.versionCode > currentCode) null else github()
         listOfNotNull(pc, gh).filter { it.versionCode > currentCode }.maxByOrNull { it.versionCode }

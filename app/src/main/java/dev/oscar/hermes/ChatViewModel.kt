@@ -19,13 +19,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 enum class Screen { Sessions, Chat, Settings }
-data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList())
+data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class ClarifyQ(val qid: String, val question: String, val choices: List<String>)
@@ -75,9 +76,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val gwLock = Mutex()
     private var liveId: String? = null        // live session id from session.resume/create
     private var generation = 0
+    private var revision = 0
     private var dropped = false
 
-    private fun api() = ApiClient(store.relayUrl, profile, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
+    private fun api() = ApiClient(store.relayBase(), profile, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
 
     private val netCb = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) { viewModelScope.launch { if (offline) reconnect() } }
@@ -85,7 +87,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     init {
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(netCb)
-        if (store.hasKey) { refreshSessions(); loadMeta() }
+        if (store.hasKey) viewModelScope.launch { pickRelay(); refreshSessions(); loadMeta() }
         checkUpdates(manual = false)
     }
 
@@ -124,11 +126,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         error = e.message ?: e.toString()
     }
 
+    /** Use the main (Tailscale) URL if it answers, else the LAN URL; remembers the winner. */
+    private suspend fun pickRelay(): Boolean {
+        val key = store.apiKey ?: return false
+        for (u in listOf(store.relayUrl, store.lanUrl).filter { it.isNotBlank() }.distinct()) {
+            if (runCatching { withTimeout(4000) { ApiClient(u, profile, key).health() } }.isSuccess) {
+                if (store.activeRelay != u) { store.activeRelay = u; gw?.close(); gw = null; liveId = null }
+                return true
+            }
+        }
+        return false
+    }
+
     // ---------- gateway connection ----------
     private suspend fun gateway(): GatewayWs = gwLock.withLock {
         gw?.takeIf { it.open }?.let { return it }
         gw?.close(); liveId = null
-        val g = GatewayWs(store.relayUrl, profile, store.apiKey ?: throw ApiException("Set the API key in Settings"),
+        val g = GatewayWs(store.relayBase(), profile, store.apiKey ?: throw ApiException("Set the API key in Settings"),
             onEvent = { t, sid, p -> viewModelScope.launch(Dispatchers.Main) { onEvent(t, sid, p) } },
             onServerRequest = { id, m, p -> viewModelScope.launch(Dispatchers.Main) { onServerRequest(id, m, p) } },
             onClosed = { why -> viewModelScope.launch(Dispatchers.Main) {
@@ -148,6 +162,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 currentId = s.optString("stored_session_id").ifBlank { s.getString("session_id") }
             }
         generation = snap.optInt("execution_generation", generation)
+        revision = snap.optInt("revision", revision)
         val live = snap.getString("session_id").also { liveId = it }
         snap.optJSONArray("prompts")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { pr ->
             viewModelScope.launch(Dispatchers.Main) { onEvent(pr.optString("kind") + ".request", live, pr) } } }
@@ -201,7 +216,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun reconnect() {
         if (!store.hasKey || streaming) return
         viewModelScope.launch {
-            try { api().health(); offline = false; error = null; status = null
+            try { pickRelay(); api().health(); offline = false; error = null; status = null
                 refreshSessions(); if (modelOptions == null) loadMeta()
                 if (dropped) { dropped = false; currentId?.let { loadMessages(it) } }
             } catch (e: Exception) { fail(e) }
@@ -226,13 +241,72 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun open(s: Session) {
-        currentId = s.id; currentTitle = s.title; liveId = null; screen = Screen.Chat
-        viewModelScope.launch { loadMessages(s.id) }
+        currentId = s.id; currentTitle = s.title; liveId = null; approval = null; clarify = null; screen = Screen.Chat
+        viewModelScope.launch {
+            loadMessages(s.id)
+            // Subscribe right away so Hermes's questions, approvals and replies from a turn
+            // started elsewhere (e.g. the desktop) show up live.
+            runCatching { val g = gateway(); if (currentId == s.id) ensureLive(g) }.onFailure { fail(it) }
+        }
+    }
+
+    /** Fill in stored row ids (needed for edit/branch) after a turn, keeping local notes. */
+    private suspend fun refreshIds() {
+        val id = currentId ?: return
+        val stored = runCatching { api().messages(id) }.getOrNull() ?: return
+        var j = 0
+        for (i in messages.indices) {
+            val m = messages[i]; if (m.role == "system") continue
+            while (j < stored.size && stored[j].role != m.role) j++
+            if (j >= stored.size) break
+            if (m.id == null) messages[i] = m.copy(id = stored[j].id)
+            j++
+        }
+    }
+
+    private suspend fun mutate(operation: String, payload: JSONObject): JSONObject {
+        val g = gateway(); val sid = ensureLive(g)
+        fun params() = JSONObject().put("session_id", sid).put("request_id", UUID.randomUUID().toString())
+            .put("expected_revision", revision).put("expected_generation", generation).put("operation", operation).put("payload", payload)
+        return try { g.call("session.mutate", params()) } catch (e: ApiException) {
+            if (e.message != "revision_conflict" && e.message != "stale_generation") throw e
+            val snap = g.call("session.resume", JSONObject().put("session_id", sid).put("omit_messages", true))
+            revision = snap.optInt("revision", revision); generation = snap.optInt("execution_generation", generation)
+            g.call("session.mutate", params())
+        }.also { r -> if (r.has("revision")) revision = r.optInt("revision", revision) }
+    }
+
+    /** Replace a sent user message: rewind to it (drops it and everything after), then send the new text. */
+    fun editMessage(m: UiMsg, newText: String) {
+        val target = m.id ?: return
+        if (streaming || newText.isBlank()) return
+        viewModelScope.launch {
+            try {
+                mutate("rewind", JSONObject().put("target_message_id", target))
+                val idx = messages.indexOfFirst { it.id == target }
+                if (idx >= 0) while (messages.size > idx) messages.removeAt(messages.lastIndex)
+                sendMessage(newText, emptyList())
+            } catch (e: Exception) { fail(e) }
+        }
+    }
+
+    /** New session with the conversation up to and including [m]; opens it. */
+    fun branchFrom(m: UiMsg) {
+        val through = m.id ?: return
+        viewModelScope.launch {
+            try {
+                val r = mutate("branch", JSONObject().put("through_message_id", through))
+                val newId = r.optString("branched_session_id").ifBlank { r.optString("session_id") }
+                refreshSessions().join()
+                val s = sessions.find { it.id == newId } ?: Session(newId, r.optString("title").ifBlank { null }, null, null, 0, "local")
+                open(s)
+            } catch (e: Exception) { fail(e) }
+        }
     }
     fun newChat() { currentId = null; liveId = null; currentTitle = null; messages.clear(); attachments.clear(); screen = Screen.Chat }
 
     private suspend fun loadMessages(id: String) {
-        try { val m = api().messages(id); messages.clear(); messages.addAll(m.map { UiMsg(it.role, it.content) }); offline = false; error = null }
+        try { val m = api().messages(id); messages.clear(); messages.addAll(m.map { UiMsg(it.role, it.content, id = it.id) }); offline = false; error = null }
         catch (e: Exception) { fail(e) }
     }
 
@@ -245,6 +319,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val t = text.trim()
         if (t.startsWith("/") && attachments.isEmpty()) { slash(t); return }
+        if (streaming && liveId != null && t.isNotEmpty()) { steer(t); return }
         sendMessage(text, attachments.toList()); attachments.clear()
     }
 
@@ -336,7 +411,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun onEvent(type: String, sid: String, p: JSONObject) {
         if (sid.isNotEmpty() && sid != liveId) return
         when (type) {
-            "session.info", "session.control.update" -> if (p.has("execution_generation")) generation = p.optInt("execution_generation", generation)
+            "session.info", "session.control.update", "session.updated" -> {
+                if (p.has("execution_generation")) generation = p.optInt("execution_generation", generation)
+                if (p.has("revision")) revision = p.optInt("revision", revision)
+                if (p.has("running") && !p.optBoolean("running") && streaming && type == "session.info") { /* turn end handled by message.complete */ }
+            }
             "message.start" -> { streaming = true
                 if (messages.lastOrNull()?.role != "assistant") messages.add(UiMsg("assistant", "")) }
             "message.delta" -> { status = null; updateLast { it.copy(text = it.text + p.str("text")) } }
@@ -346,6 +425,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val c = p.str("text").ifBlank { p.str("content") }
                 if (c.isNotBlank()) updateLast { it.copy(text = c) }
                 streaming = false; status = null; dropEmpty()
+                viewModelScope.launch { refreshIds() }
                 if (p.optString("outcome") !in setOf("", "completed")) error = "Turn ended: ${p.optString("outcome")}"
                 if (currentTitle == null) refreshSessions()
             }
@@ -401,6 +481,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             else JSONObject().put("answers", JSONObject(answers as Map<*, *>)).put("outcome", "submitted"))
     }
 
+    /** Inject text into the running turn (Hermes sees it with the next tool result) without interrupting. */
+    private fun steer(t: String) {
+        val sid = liveId ?: return
+        messages.add(messages.size.coerceAtLeast(1) - 1, UiMsg("user", t))
+        viewModelScope.launch {
+            try {
+                val g = gateway()
+                var r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
+                if (r.isFailure) {  // generation moved on: refresh once and retry
+                    val info = g.call("session.info", JSONObject().put("session_id", sid))
+                    generation = info.optInt("execution_generation", generation)
+                    r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
+                }
+                val res = r.getOrThrow()
+                if (res.optString("status") == "rejected") throw ApiException("steer_rejected")
+                status = s(R.string.steered)
+            } catch (e: Exception) {
+                // Turn may have just ended: send it as a normal message instead.
+                if (!streaming) { messages.removeAll { it.role == "user" && it.text == t && it.id == null }; sendMessage(t, emptyList()) } else fail(e)
+            }
+        }
+    }
+
     fun stop() {
         val sid = liveId ?: return
         viewModelScope.launch {
@@ -442,12 +545,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return Attachment(name, false, String(bytes, Charsets.UTF_8))
     }
 
-    fun saveSettings(relay: String, key: String?) {
-        store.relayUrl = relay; if (!key.isNullOrBlank()) store.apiKey = key
+    fun saveSettings(relay: String, lan: String, key: String?) {
+        store.relayUrl = relay; store.lanUrl = lan; store.activeRelay = null; if (!key.isNullOrBlank()) store.apiKey = key
         gw?.close(); gw = null; liveId = null
         viewModelScope.launch {
             try {
-                api().health(); api().sessions()
+                pickRelay(); api().health(); api().sessions()
                 gateway(); status = s(R.string.connected_relay)
                 error = null; offline = false; screen = Screen.Sessions; refreshSessions(); loadMeta()
             } catch (e: Exception) { fail(e) }

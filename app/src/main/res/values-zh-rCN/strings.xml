@@ -92,4 +92,16 @@
     <string name="cmd_sessions">返回会话列表</string>
     <string name="cmd_delete">删除此对话（/delete confirm）</string>
     <string name="cmd_help">列出命令</string>
+    <string name="lan_url">局域网地址（可选）</string>
+    <string name="lan_url_help">Tailscale 地址无响应时使用，例如在家用 Wi-Fi 下未开 Tailscale。</string>
+    <string name="using_relay">已通过 %1$s 连接</string>
+    <string name="copy">复制</string>
+    <string name="copied">已复制</string>
+    <string name="edit">编辑</string>
+    <string name="branch">从此处分支</string>
+    <string name="edit_message">编辑消息</string>
+    <string name="edit_warning">此消息及之后的所有内容将被替换。</string>
+    <string name="steer">发送到当前任务</string>
+    <string name="steer_hint">补充说明给正在工作的 Hermes…</string>
+    <string name="steered">已发送到当前任务</string>
 </resources>

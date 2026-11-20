@@ -26,7 +26,7 @@ class GatewayWs(
     private val url: String = run {
         val u = URI(relayUrl.trim().trimEnd('/'))
         if (u.scheme == "http" && !ApiClient.isTailscaleHost(u.host ?: ""))
-            throw ApiException("Plain http is only allowed to Tailscale addresses")
+            throw ApiException("Plain http is only allowed to Tailscale or private LAN addresses")
         relayUrl.trim().trimEnd('/').replaceFirst("http", "ws") + "/ws?profile=" + profile
     }
     private val http = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS)

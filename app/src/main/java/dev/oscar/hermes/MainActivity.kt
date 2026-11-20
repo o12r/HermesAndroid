@@ -244,7 +244,7 @@ fun ChatScreen(vm: ChatViewModel) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = { ProfileMenu(vm) }, windowInsets = WindowInsets(0))
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            itemsIndexed(vm.messages) { _, m -> Bubble(m) }
+            itemsIndexed(vm.messages) { _, m -> Bubble(m, vm) }
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -265,11 +265,13 @@ fun ChatScreen(vm: ChatViewModel) {
                         onClick = { attachMenu = false; pickFile.launch("*/*") })
                 } }
             // Plain Compose text field: goes through Android's InputConnection, so Gboard / WeChat IME composition works.
-            OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text(stringResource(R.string.message_hint)) }, maxLines = 6,
+            OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text(stringResource(if (vm.streaming) R.string.steer_hint else R.string.message_hint)) }, maxLines = 6,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
             if (vm.streaming) IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
-            else IconButton(onClick = { vm.send(input); input = "" }, enabled = input.isNotBlank() || vm.attachments.isNotEmpty()) {
-                Icon(Icons.AutoMirrored.Filled.Send, stringResource(R.string.send)) }
+            // While Hermes works, Send steers the running turn instead of waiting.
+            if (!vm.streaming || input.isNotBlank()) IconButton(onClick = { vm.send(input); input = "" },
+                enabled = input.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
+                Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
         }
     }
 }
@@ -291,12 +293,25 @@ fun RuntimeChips(vm: ChatViewModel) {
                     onClick = { vm.chooseModel(""); vm.modelMenuOpen = false }, trailingIcon = { if (vm.model.isBlank()) Icon(Icons.Default.Check, null) })
                 val groups = vm.modelOptions?.choices.orEmpty().groupBy { it.providerName }
                 if (vm.modelOptions == null) DropdownMenuItem(text = { Text(stringResource(R.string.loading_models)) }, onClick = {}, enabled = false)
+                val expanded = remember(vm.modelMenuOpen) { mutableStateMapOf<String, Boolean>() }
+                val activeKey = vm.model.ifBlank { null }
                 groups.forEach { (provider, ms) ->
                     HorizontalDivider()
-                    Text(provider, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary)
-                    ms.forEach { m -> DropdownMenuItem(text = { Text(m.model) }, onClick = { vm.chooseModel(m.key); vm.modelMenuOpen = false },
-                        trailingIcon = { if (vm.model == m.key) Icon(Icons.Default.Check, null) }) }
+                    val isCurrent = ms.any { it.key == activeKey || (activeKey == null && it.model == cur) }
+                    val open = expanded[provider] == true
+                    DropdownMenuItem(
+                        text = { Text(provider + "  (" + ms.size + ")", style = MaterialTheme.typography.labelLarge,
+                            color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        leadingIcon = { Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) },
+                        trailingIcon = { if (isCurrent) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) },
+                        modifier = if (isCurrent) Modifier.background(MaterialTheme.colorScheme.secondaryContainer) else Modifier,
+                        onClick = { expanded[provider] = !open })
+                    if (open) ms.forEach { m ->
+                        val sel = m.key == activeKey || (activeKey == null && m.model == cur)
+                        DropdownMenuItem(text = { Text(m.model, color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { vm.chooseModel(m.key); vm.modelMenuOpen = false }, contentPadding = PaddingValues(start = 40.dp, end = 12.dp),
+                            trailingIcon = { if (sel) Icon(Icons.Default.Check, null) })
+                    }
                 }
             }
         }
@@ -330,8 +345,9 @@ fun SlashSuggestions(vm: ChatViewModel, input: String, set: (String) -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun Bubble(m: UiMsg) {
+fun Bubble(m: UiMsg, vm: ChatViewModel) {
     if (m.role == "system") {
         Text(m.text, Modifier.fillMaxWidth().padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
@@ -341,11 +357,39 @@ fun Bubble(m: UiMsg) {
     Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(shape = RoundedCornerShape(14.dp), color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = if (user) 320.dp else 600.dp)) {
-            Column(Modifier.padding(10.dp)) {
+            Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
                 if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
                 if (user) Text(m.text) else Markdown(if (m.text.isEmpty()) "…" else m.text)
+                MessageActions(m, vm)
             }
         }
+    }
+}
+
+/** Copy / edit (own messages) / branch from here. Edit and branch need the stored row id. */
+@Composable
+fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    val ctx = LocalContext.current
+    var editing by remember { mutableStateOf(false) }
+    val copied = stringResource(R.string.copied)
+    Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.End) {
+        val mod = Modifier.size(32.dp)
+        IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(m.text))
+            android.widget.Toast.makeText(ctx, copied, android.widget.Toast.LENGTH_SHORT).show() }, mod) {
+            Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), Modifier.size(16.dp)) }
+        if (m.id != null && !vm.streaming) {
+            if (m.role == "user") IconButton(onClick = { editing = true }, mod) { Icon(Icons.Default.Edit, stringResource(R.string.edit), Modifier.size(16.dp)) }
+            IconButton(onClick = { vm.branchFrom(m) }, mod) { Icon(Icons.Default.CallSplit, stringResource(R.string.branch), Modifier.size(16.dp)) }
+        }
+    }
+    if (editing) {
+        var t by remember { mutableStateOf(m.text) }
+        AlertDialog(onDismissRequest = { editing = false }, title = { Text(stringResource(R.string.edit_message)) },
+            text = { Column { Text(stringResource(R.string.edit_warning), style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp)); OutlinedTextField(t, { t = it }, Modifier.fillMaxWidth(), maxLines = 10) } },
+            confirmButton = { Button(onClick = { editing = false; vm.editMessage(m, t) }, enabled = t.isNotBlank()) { Text(stringResource(R.string.send)) } },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text(stringResource(R.string.cancel)) } })
     }
 }
 
@@ -371,17 +415,21 @@ fun <T> ChoiceRow(options: List<Pair<T, String>>, selected: T, onPick: (T) -> Un
 fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
     var key by remember { mutableStateOf("") }
     var relay by remember { mutableStateOf(vm.store.relayUrl) }
+    var lan by remember { mutableStateOf(vm.store.lanUrl) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(stringResource(R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
             if (vm.store.hasKey) IconButton(onClick = { vm.screen = Screen.Sessions }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } })
         Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(relay, { relay = it }, label = { Text(stringResource(R.string.server_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 supportingText = { Text(stringResource(R.string.server_url_help, SecureStore.DEFAULT_RELAY)) })
+            OutlinedTextField(lan, { lan = it }, label = { Text(stringResource(R.string.lan_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("http://192.168.1.20:8643") }, supportingText = { Text(stringResource(R.string.lan_url_help)) })
+            vm.store.activeRelay?.let { Text(stringResource(R.string.using_relay, it), style = MaterialTheme.typography.labelSmall) }
             OutlinedTextField(key, { key = it }, label = { Text(stringResource(R.string.api_key)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(),
                 supportingText = { Text(stringResource(if (vm.store.hasKey) R.string.key_saved else R.string.key_new)) })
             Text(stringResource(R.string.profile)); ProfileMenu(vm)
-            Button(onClick = { vm.saveSettings(relay, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
+            Button(onClick = { vm.saveSettings(relay, lan, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
             vm.status?.let { Text(it) }
 
             HorizontalDivider()
