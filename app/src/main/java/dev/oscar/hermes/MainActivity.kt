@@ -210,33 +210,121 @@ fun ProfileMenu(vm: ChatViewModel) {
 fun SessionsScreen(vm: ChatViewModel) {
     var renaming by remember { mutableStateOf<Session?>(null) }
     var deleting by remember { mutableStateOf<Session?>(null) }
+    var moving by remember { mutableStateOf<Session?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    var deletingProject by remember { mutableStateOf<Project?>(null) }
+    var showArchived by remember { mutableStateOf(false) }
+    // Collapsed state per project; the active project (or Home) starts open.
+    val open = remember { mutableStateMapOf<String, Boolean>() }
+    val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    // Group sessions; anything the tree doesn't know about goes to Home.
+    val groups = remember(vm.sessions, vm.projects, showArchived) {
+        val byId = vm.sessions.associateBy { it.id }
+        val seen = mutableSetOf<String>()
+        val list = vm.projects.filter { showArchived || !it.archived }.map { p -> p to p.sessionIds.mapNotNull { byId[it] }.also { l -> seen += l.map { it.id } } }
+        val rest = vm.sessions.filter { it.id !in seen && vm.projects.none { p -> it.id in p.sessionIds } }
+        val home = list.find { it.first.isHome }
+        val homeP = home?.first ?: Project("__home", "Home", null, true, false, false, emptyList())
+        val homeList = (home?.second.orEmpty() + rest).distinctBy { it.id }.sortedByDescending { it.lastActive ?: 0.0 }
+        list.filter { !it.first.isHome }.map { (p, l) -> p to l.sortedByDescending { it.lastActive ?: 0.0 } }
+            .sortedWith(compareByDescending<Pair<Project, List<Session>>> { it.first.id == vm.activeProject }.thenByDescending { it.second.firstOrNull()?.lastActive ?: 0.0 }) +
+            listOf(homeP to homeList)
+    }
     Scaffold(
         topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }, actions = {
             ProfileMenu(vm)
+            IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
             IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
             IconButton(onClick = { vm.screen = Screen.Settings }) {
                 BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } }) },
         floatingActionButton = { ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
-            text = { Text(stringResource(R.string.new_chat)) }) },
+            text = { Text(vm.projects.find { it.id == vm.activeProject }?.let { stringResource(R.string.new_chat_in, it.name) } ?: stringResource(R.string.new_chat)) }) },
         contentWindowInsets = WindowInsets(0)
     ) { pad ->
         if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
-            items(vm.sessions, key = { it.id }) { s ->
-                var menu by remember { mutableStateOf(false) }
-                ListItem(
-                    headlineContent = { Text(s.title ?: s.preview ?: s.id, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    supportingContent = { Text(listOfNotNull(s.lastActive?.let { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date((it * 1000).toLong())) },
-                        stringResource(R.string.msgs, s.count)).joinToString(" · ")) },
-                    trailingContent = { Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
-                        DropdownMenu(menu, { menu = false }) {
-                            DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = s })
-                        } } },
-                    modifier = Modifier.clickable { vm.open(s) })
-                HorizontalDivider()
+            groups.forEach { (p, list) ->
+                val isOpen = open[p.id] ?: (p.id == vm.activeProject || (vm.activeProject == null && p.isHome))
+                item(key = "h:" + p.id) {
+                    var menu by remember { mutableStateOf(false) }
+                    val active = p.id == vm.activeProject
+                    ListItem(
+                        headlineContent = { Text((if (p.isHome) stringResource(R.string.home) else p.name) + "  (" + list.size + ")",
+                            style = MaterialTheme.typography.titleSmall, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        supportingContent = { listOfNotNull(p.path, if (p.archived) stringResource(R.string.archived) else null,
+                            if (p.isAuto) stringResource(R.string.auto_group) else null).joinToString(" · ").ifBlank { null }?.let {
+                            Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) } },
+                        leadingContent = { Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) },
+                        trailingContent = { Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                            DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
+                                    onClick = { menu = false; vm.newChatIn(p) })
+                                if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(if (active) R.string.unset_default else R.string.set_default)) },
+                                    leadingIcon = { Icon(Icons.Default.Star, null) }, onClick = { menu = false; vm.setActiveProject(if (active) null else p) })
+                                if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(if (p.archived) R.string.unarchive else R.string.archive)) },
+                                    leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { menu = false; vm.archiveProject(p, restore = p.archived) })
+                                if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(R.string.delete_project)) },
+                                    leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; deletingProject = p })
+                            } } },
+                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                        modifier = Modifier.clickable { open[p.id] = !isOpen })
+                    HorizontalDivider()
+                }
+                if (isOpen) items(list, key = { p.id + ":" + it.id }) { s ->
+                    var menu by remember { mutableStateOf(false) }
+                    ListItem(
+                        headlineContent = { Text(s.title ?: s.preview ?: s.id, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = { Text(listOfNotNull(s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) },
+                            stringResource(R.string.msgs, s.count)).joinToString(" · ")) },
+                        trailingContent = { Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                            DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = s })
+                            } } },
+                        modifier = Modifier.clickable { vm.open(s) }.padding(start = 16.dp))
+                    HorizontalDivider()
+                }
+            }
+            item(key = "archived-toggle") {
+                if (vm.projects.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(8.dp)) {
+                    Text(stringResource(if (showArchived) R.string.hide_archived else R.string.show_archived)) }
+                Spacer(Modifier.height(88.dp))
             }
         }
+    }
+    moving?.let { s ->
+        val current = vm.projects.find { s.id in it.sessionIds }
+        AlertDialog(onDismissRequest = { moving = null }, title = { Text(stringResource(R.string.move_to_project)) },
+            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                vm.projects.filter { !it.archived }.forEach { p ->
+                    val can = p.path != null || p.homeCwd != null
+                    ListItem(headlineContent = { Text(if (p.isHome) stringResource(R.string.home) else p.name) },
+                        supportingContent = { Text(p.path ?: p.homeCwd ?: stringResource(R.string.move_no_folder), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        trailingContent = { if (p == current) Icon(Icons.Default.Check, null) },
+                        modifier = Modifier.clickable(enabled = can && p != current) { vm.moveToProject(s, p); moving = null })
+                }
+            } },
+            confirmButton = {}, dismissButton = { TextButton(onClick = { moving = null }) { Text(stringResource(R.string.cancel)) } })
+    }
+    if (creating) {
+        var name by remember { mutableStateOf("") }
+        var folder by remember { mutableStateOf("C:\\Users\\oscar\\Projects\\") }
+        AlertDialog(onDismissRequest = { creating = false }, title = { Text(stringResource(R.string.new_project)) },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.project_name)) }, singleLine = true)
+                OutlinedTextField(folder, { folder = it }, label = { Text(stringResource(R.string.project_folder)) }, singleLine = true,
+                    supportingText = { Text(stringResource(R.string.project_folder_help)) })
+            } },
+            confirmButton = { TextButton(onClick = { vm.createProject(name, folder); creating = false }, enabled = name.isNotBlank() && folder.isNotBlank()) {
+                Text(stringResource(R.string.save)) } },
+            dismissButton = { TextButton(onClick = { creating = false }) { Text(stringResource(R.string.cancel)) } })
+    }
+    deletingProject?.let { p ->
+        AlertDialog(onDismissRequest = { deletingProject = null }, title = { Text(stringResource(R.string.delete_project_q, p.name)) },
+            text = { Text(stringResource(R.string.delete_project_note)) },
+            confirmButton = { TextButton(onClick = { vm.deleteProject(p); deletingProject = null }) { Text(stringResource(R.string.delete)) } },
+            dismissButton = { TextButton(onClick = { deletingProject = null }) { Text(stringResource(R.string.cancel)) } })
     }
     renaming?.let { s ->
         var t by remember { mutableStateOf(s.title ?: "") }
@@ -262,8 +350,12 @@ fun ChatScreen(vm: ChatViewModel) {
     val last = vm.messages.lastOrNull()
     LaunchedEffect(vm.messages.size, last?.text?.length) { if (vm.messages.isNotEmpty()) list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) }
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat),
-                maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        TopAppBar(title = { Column {
+                Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                vm.projects.find { p -> vm.currentId != null && vm.currentId in p.sessionIds }?.let { p ->
+                    Text("📁 " + (if (p.isHome) stringResource(R.string.home) else p.name), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary, maxLines = 1) }
+            } },
             navigationIcon = { IconButton(onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = { ProfileMenu(vm) }, windowInsets = WindowInsets(0))

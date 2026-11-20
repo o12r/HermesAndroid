@@ -29,6 +29,8 @@ enum class Screen { Sessions, Chat, Settings }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
+data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
+    val archived: Boolean, val sessionIds: List<String>, val homeCwd: String? = null)
 data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
 data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
 
@@ -41,6 +43,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var screen by mutableStateOf(if (store.hasKey) Screen.Sessions else Screen.Settings)
     var profile by mutableStateOf(store.profile)
     var sessions by mutableStateOf<List<Session>>(emptyList())
+    /** Project groups from projects.tree (Home = sessions outside any project). */
+    var projects by mutableStateOf<List<Project>>(emptyList())
+    var activeProject by mutableStateOf<String?>(null)
+    /** Folder for the next new chat (project primary path), null = Hermes default. */
+    private var newChatCwd: String? = null
     var currentId by mutableStateOf<String?>(null)
     var currentTitle by mutableStateOf<String?>(null)
     val messages = mutableStateListOf<UiMsg>()
@@ -160,7 +167,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun ensureLive(g: GatewayWs): String {
         liveId?.let { return it }
         val snap = currentId?.let { g.call("session.resume", JSONObject().put("session_id", it).put("omit_messages", true)) }
-            ?: g.call("session.create", JSONObject().put("source", "gui")).also { s ->
+            ?: g.call("session.create", JSONObject().put("source", "gui").apply {
+                    newChatCwd?.let { put("cwd", it).put("cwd_explicit", true) } }).also { s ->
+                newChatCwd = null
                 currentId = s.optString("stored_session_id").ifBlank { s.getString("session_id") }
             }
         generation = snap.optInt("execution_generation", generation)
@@ -237,9 +246,70 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         loading = true
         try {
             sessions = api().sessions(); offline = false; error = null
+            runCatching { loadProjects() }
             currentId?.let { id -> sessions.find { it.id == id }?.title?.let { currentTitle = it } }
         } catch (e: Exception) { fail(e) }
         loading = false
+    }
+
+    private suspend fun loadProjects() {
+        val g = gateway()
+        val archivedIds = runCatching { g.call("projects.list", JSONObject()) }.getOrNull()?.let { r ->
+            activeProject = r.str("active_id").ifBlank { null }
+            val a = r.optJSONArray("projects") ?: JSONArray()
+            (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { it.optBoolean("archived") }.map { it.optString("id") }.toSet()
+        } ?: emptySet()
+        val tree = g.call("projects.tree", JSONObject().put("preview_limit", 1).put("session_limit", 1000))
+        val nodes = tree.optJSONArray("projects") ?: JSONArray()
+        projects = (0 until nodes.length()).mapNotNull { nodes.optJSONObject(it) }.map { n ->
+            val ids = n.optJSONArray("sessionIds")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
+            val home = n.optBoolean("isNoProject")
+            val homeCwd = if (home) n.optJSONArray("previewSessions")?.optJSONObject(0)?.str("cwd")?.ifBlank { null } else null
+            Project(n.optString("id"), n.optString("label"), n.str("path").ifBlank { null }, home, n.optBoolean("isAuto"),
+                n.optString("id") in archivedIds, ids, homeCwd)
+        }
+    }
+
+    /** New chat whose working folder is the project's folder (so it lands in that project). */
+    fun newChatIn(p: Project?) { newChat(); newChatCwd = p?.path ?: p?.homeCwd }
+
+    /** Re-home a stored session into a project by switching its working folder (what the desktop does). */
+    fun moveToProject(s: Session, p: Project) = viewModelScope.launch {
+        val cwd = p.path ?: p.homeCwd
+        if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
+        try {
+            val g = gateway()
+            val snap = g.call("session.resume", JSONObject().put("session_id", s.id).put("omit_messages", true))
+            fun params(rev: Int, gen: Int) = JSONObject().put("session_id", snap.getString("session_id")).put("request_id", UUID.randomUUID().toString())
+                .put("expected_revision", rev).put("expected_generation", gen).put("operation", "workspace").put("payload", JSONObject().put("cwd", cwd))
+            try { g.call("session.mutate", params(snap.optInt("revision"), snap.optInt("execution_generation"))) }
+            catch (e: ApiException) {
+                if (e.message == "session_busy") { error = s(R.string.move_busy); return@launch }
+                val again = g.call("session.resume", JSONObject().put("session_id", s.id).put("omit_messages", true))
+                g.call("session.mutate", params(again.optInt("revision"), again.optInt("execution_generation")))
+            }
+            if (currentId == s.id) liveId = null
+            status = s(R.string.moved_to, p.name); refreshSessions()
+        } catch (e: Exception) { fail(e) }
+    }
+
+    fun createProject(name: String, folder: String) = viewModelScope.launch {
+        try {
+            val f = folder.trim()
+            gateway().call("projects.create", JSONObject().put("name", name.trim()).put("folders", JSONArray().put(f)).put("primary_path", f))
+            refreshSessions()
+        } catch (e: Exception) { fail(e) }
+    }
+    fun archiveProject(p: Project, restore: Boolean = false) = viewModelScope.launch {
+        try { gateway().call("projects.archive", JSONObject().put("id", p.id).put("restore", restore)); refreshSessions() } catch (e: Exception) { fail(e) }
+    }
+    /** Deletes the project grouping only (its folders and sessions stay). */
+    fun deleteProject(p: Project) = viewModelScope.launch {
+        try { gateway().call("projects.delete", JSONObject().put("id", p.id)); refreshSessions() } catch (e: Exception) { fail(e) }
+    }
+    fun setActiveProject(p: Project?) = viewModelScope.launch {
+        runCatching { gateway().call("projects.set_active", if (p == null || p.isHome) JSONObject() else JSONObject().put("id", p.id)) }
+        activeProject = p?.takeUnless { it.isHome }?.id
     }
 
     fun open(s: Session) {
@@ -305,7 +375,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) { fail(e) }
         }
     }
-    fun newChat() { currentId = null; liveId = null; currentTitle = null; messages.clear(); attachments.clear(); screen = Screen.Chat }
+    fun newChat() { newChatCwd = projects.find { it.id == activeProject }?.path; currentId = null; liveId = null; currentTitle = null; messages.clear(); attachments.clear(); screen = Screen.Chat }
 
     private suspend fun loadMessages(id: String) {
         try { val m = api().messages(id); messages.clear(); messages.addAll(m.mapNotNull { r -> Internal.clean(r.role, r.content)?.let { UiMsg(r.role, it, id = r.id) } }); offline = false; error = null }

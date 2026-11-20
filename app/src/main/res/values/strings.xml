@@ -109,4 +109,26 @@
     <string name="expand_editor">Full-screen editor</string>
     <string name="collapse_editor">Close editor</string>
     <string name="pick_any">Select all that apply</string>
+    <string name="home">Home</string>
+    <string name="new_project">New project</string>
+    <string name="new_chat_in">New chat · %1$s</string>
+    <string name="new_chat_here">New chat in this project</string>
+    <string name="set_default">Use for new chats</string>
+    <string name="unset_default">Stop using for new chats</string>
+    <string name="archive">Archive</string>
+    <string name="unarchive">Unarchive</string>
+    <string name="archived">archived</string>
+    <string name="auto_group">auto (by folder)</string>
+    <string name="delete_project">Delete project</string>
+    <string name="delete_project_q">Delete project “%1$s”?</string>
+    <string name="delete_project_note">Only the project grouping is removed. Its sessions and folders on the PC stay; the sessions move back to Home or their folder group.</string>
+    <string name="move_to_project">Move to project</string>
+    <string name="move_no_folder">No folder to move into</string>
+    <string name="move_busy">Can\'t move while Hermes is working in it</string>
+    <string name="moved_to">Moved to %1$s</string>
+    <string name="project_name">Name</string>
+    <string name="project_folder">Folder on the PC</string>
+    <string name="project_folder_help">Sessions working in this folder belong to the project.</string>
+    <string name="show_archived">Show archived projects</string>
+    <string name="hide_archived">Hide archived projects</string>
 </resources>
