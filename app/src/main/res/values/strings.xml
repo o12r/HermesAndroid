@@ -104,4 +104,8 @@
     <string name="steer">Send to running turn</string>
     <string name="steer_hint">Add to what Hermes is doing…</string>
     <string name="steered">Sent to the running turn</string>
+    <string name="font_size">Text size: %1$d%%</string>
+    <string name="font_preview">Preview: The quick brown fox · 敏捷的狐狸</string>
+    <string name="expand_editor">Full-screen editor</string>
+    <string name="collapse_editor">Close editor</string>
 </resources>

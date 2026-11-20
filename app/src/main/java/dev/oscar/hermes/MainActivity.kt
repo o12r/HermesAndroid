@@ -32,6 +32,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.animation.animateContentSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -72,7 +75,11 @@ class MainActivity : ComponentActivity() {
                 "black" -> trueBlack(dynamicDarkColorScheme(ctx))
                 else -> if (sysDark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
             }
-            MaterialTheme(colorScheme = scheme) { Surface(Modifier.fillMaxSize()) { App(vm) { recreate() } } }
+            val d = androidx.compose.ui.platform.LocalDensity.current
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides
+                    androidx.compose.ui.unit.Density(d.density, d.fontScale * vm.fontScale)) {
+                MaterialTheme(colorScheme = scheme) { Surface(Modifier.fillMaxSize()) { App(vm) { recreate() } } }
+            }
         }
     }
 }
@@ -265,8 +272,31 @@ fun ChatScreen(vm: ChatViewModel) {
                         onClick = { attachMenu = false; pickFile.launch("*/*") })
                 } }
             // Plain Compose text field: goes through Android's InputConnection, so Gboard / WeChat IME composition works.
-            OutlinedTextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text(stringResource(if (vm.streaming) R.string.steer_hint else R.string.message_hint)) }, maxLines = 6,
+            var focused by remember { mutableStateOf(false) }
+            var full by remember { mutableStateOf(false) }
+            val half = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 2).dp
+            OutlinedTextField(input, { input = it }, Modifier.weight(1f).heightIn(max = half)
+                    .onFocusChanged { focused = it.isFocused }.animateContentSize(),
+                placeholder = { Text(stringResource(if (vm.streaming) R.string.steer_hint else R.string.message_hint)) },
+                minLines = if (focused) 5 else 1, maxLines = if (focused) Int.MAX_VALUE else 6,
+                trailingIcon = { if (focused || input.length > 80) IconButton(onClick = { full = true }) {
+                    Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) } },
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
+            if (full) androidx.compose.ui.window.Dialog(onDismissRequest = { full = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+                Surface(Modifier.fillMaxSize()) { Column(Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { full = false }) { Icon(Icons.Default.CloseFullscreen, stringResource(R.string.collapse_editor)) }
+                        Text(stringResource(R.string.expand_editor), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                        Button(onClick = { full = false; vm.send(input); input = "" }, enabled = input.isNotBlank()) {
+                            Text(stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
+                    }
+                    val fr = remember { androidx.compose.ui.focus.FocusRequester() }
+                    OutlinedTextField(input, { input = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(fr),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
+                    LaunchedEffect(Unit) { fr.requestFocus() }
+                } }
+            }
             if (vm.streaming) IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
             // While Hermes works, Send steers the running turn instead of waiting.
             if (!vm.streaming || input.isNotBlank()) IconButton(onClick = { vm.send(input); input = "" },
@@ -395,12 +425,13 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
 
 @Composable
 fun Markdown(md: String) {
+    val scale = androidx.compose.ui.platform.LocalDensity.current.fontScale / LocalContext.current.resources.configuration.fontScale
     val color = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val ctx = LocalContext.current
     val markwon = remember { Markwon.builder(ctx).usePlugin(SoftBreakAddsNewLinePlugin.create()).usePlugin(TablePlugin.create(ctx))
         .usePlugin(StrikethroughPlugin.create()).build() }
     AndroidView(factory = { TextView(it).apply { setTextIsSelectable(true); movementMethod = LinkMovementMethod.getInstance(); textSize = 15f } },
-        update = { it.setTextColor(color); markwon.setMarkdown(it, md) })
+        update = { it.textSize = 15f * scale; it.setTextColor(color); markwon.setMarkdown(it, md) })
 }
 
 @Composable
@@ -436,6 +467,9 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Text(stringResource(R.string.appearance), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.theme_system), "light" to stringResource(R.string.theme_light),
                 "dark" to stringResource(R.string.theme_dark), "black" to stringResource(R.string.theme_black)), vm.theme) { vm.chooseTheme(it) }
+            Text(stringResource(R.string.font_size, (vm.fontScale * 100).toInt()), style = MaterialTheme.typography.titleSmall)
+            Slider(vm.fontScale, { vm.chooseFontScale((it * 20).toInt() / 20f) }, valueRange = 0.8f..1.5f, steps = 13)
+            Text(stringResource(R.string.font_preview), style = MaterialTheme.typography.bodyMedium)
             Text(stringResource(R.string.language), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.lang_system), "en" to stringResource(R.string.lang_en),
                 "zh" to stringResource(R.string.lang_zh)), vm.store.lang) { if (it != vm.store.lang) { vm.store.lang = it; recreate() } }

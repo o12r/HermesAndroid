@@ -104,4 +104,8 @@
     <string name="steer">发送到当前任务</string>
     <string name="steer_hint">补充说明给正在工作的 Hermes…</string>
     <string name="steered">已发送到当前任务</string>
+    <string name="font_size">字体大小：%1$d%%</string>
+    <string name="font_preview">预览：敏捷的狐狸 · The quick brown fox</string>
+    <string name="expand_editor">全屏编辑</string>
+    <string name="collapse_editor">关闭编辑</string>
 </resources>

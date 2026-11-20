@@ -22,6 +22,10 @@ class SecureStore(ctx: Context) {
         get() = prefs.getString("theme", "system")!!
         set(v) = prefs.edit().putString("theme", v).apply()
     /** "system" | "en" | "zh" */
+    /** UI text scale, 0.8..1.5 (on top of the system font size). */
+    var fontScale: Float
+        get() = prefs.getFloat("fontScale", 1f)
+        set(v) = prefs.edit().putFloat("fontScale", v.coerceIn(0.8f, 1.5f)).apply()
     var lang: String
         get() = prefs.getString("lang", "system")!!
         set(v) = prefs.edit().putString("lang", v).commit().let { }

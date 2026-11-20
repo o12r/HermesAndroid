@@ -92,6 +92,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun chooseTheme(t: String) { theme = t; store.theme = t }
+    var fontScale by mutableStateOf(store.fontScale)
+    fun chooseFontScale(f: Float) { fontScale = f; store.fontScale = f }
 
     /** Hotfix config every launch/resume; update check at most every 6 h unless [manual]. */
     fun checkUpdates(manual: Boolean) = viewModelScope.launch {
