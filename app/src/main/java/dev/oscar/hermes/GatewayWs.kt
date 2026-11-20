@@ -86,6 +86,7 @@ class GatewayWs(
         val f = withTimeout(timeoutMs) { d.await() }
         f.optJSONObject("error")?.let { e ->
             val reason = e.optJSONObject("data")?.optString("reason")?.ifBlank { null } ?: e.optString("message")
+            android.util.Log.w("HermesRpc", "$method failed: $reason (code ${e.optInt("code")})")  // no params/content logged
             throw ApiException(reason)
         }
         return f.optJSONObject("result") ?: JSONObject()

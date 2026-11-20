@@ -306,7 +306,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun newChat() { currentId = null; liveId = null; currentTitle = null; messages.clear(); attachments.clear(); screen = Screen.Chat }
 
     private suspend fun loadMessages(id: String) {
-        try { val m = api().messages(id); messages.clear(); messages.addAll(m.map { UiMsg(it.role, it.content, id = it.id) }); offline = false; error = null }
+        try { val m = api().messages(id); messages.clear(); messages.addAll(m.mapNotNull { r -> Internal.clean(r.role, r.content)?.let { UiMsg(r.role, it, id = r.id) } }); offline = false; error = null }
         catch (e: Exception) { fail(e) }
     }
 
@@ -567,3 +567,20 @@ val SLASH_COMMANDS = listOf(
 
 /** optString that treats JSON null as empty (org.json returns the literal "null"). */
 private fun JSONObject.str(k: String): String = if (isNull(k)) "" else optString(k)
+
+
+/** Hermes stores gateway/system notices (background-process results, compaction notes, ...) as "user"
+ *  rows. Hide those in the phone UI; unwrap real out-of-band user messages. */
+object Internal {
+    private val HIDE = listOf("[IMPORTANT: Background process", "[IMPORTANT: Background", "[INTERNAL NOTIFICATION",
+        "[System note:", "[CONTEXT COMPACTION", "[PRIOR CONTEXT", "[Context from the interrupted", "[SYSTEM:")
+    private val OOB = Regex("""\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*([\s\S]*?)\s*\[/OUT-OF-BAND USER MESSAGE\]""")
+    fun clean(role: String, text: String): String? {
+        if (role == "tool") return null
+        if (role != "user") return text.takeUnless { it.trim() == "[SILENT]" }
+        val t = text.trimStart()
+        OOB.find(t)?.let { return it.groupValues[1].trim().ifBlank { null } }
+        if (HIDE.any { t.startsWith(it) } || t.contains("[INTERNAL NOTIFICATION")) return null
+        return text
+    }
+}
