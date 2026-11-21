@@ -26,6 +26,11 @@ class SecureStore(ctx: Context) {
     var fontScale: Float
         get() = prefs.getFloat("fontScale", 1f)
         set(v) = prefs.edit().putFloat("fontScale", v.coerceIn(0.8f, 1.5f)).apply()
+    /** Last profile list scanned from the PC: "name\tdescription" lines. */
+    var profileCache: List<Pair<String, String>>
+        get() = prefs.getString("profileCache", "")!!.lines().filter { it.isNotBlank() }
+            .map { it.substringBefore('\t') to it.substringAfter('\t', "") }
+        set(v) = prefs.edit().putString("profileCache", v.joinToString("\n") { it.first + "\t" + it.second.replace('\n', ' ') }).apply()
     var lang: String
         get() = prefs.getString("lang", "system")!!
         set(v) = prefs.edit().putString("lang", v).commit().let { }
@@ -87,6 +92,7 @@ class SecureStore(ctx: Context) {
         const val ALIAS = "hermes_api_key"
         const val DEFAULT_RELAY = "http://100.92.121.115:8643"
         val EFFORTS = listOf("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
-        val PROFILES = listOf("default", "networking", "android-dev", "solidworks", "vela-dev", "win7-theme")
+        /** Fallback until the PC's profile list has been fetched once. */
+        val PROFILES = listOf("default")
     }
 }

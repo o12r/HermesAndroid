@@ -43,6 +43,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var screen by mutableStateOf(if (store.hasKey) Screen.Sessions else Screen.Settings)
     var profile by mutableStateOf(store.profile)
     var sessions by mutableStateOf<List<Session>>(emptyList())
+    /** Profiles found on the PC (name to description); cached so the menu works offline. */
+    var profiles by mutableStateOf(store.profileCache.ifEmpty { SecureStore.PROFILES.map { it to "" } })
+    fun profileNames() = profiles.map { it.first }
+
+    /** Scan the PC for Hermes profiles (profiles.list over the relay). */
+    fun scanProfiles() = viewModelScope.launch {
+        runCatching {
+            val r = gateway().call("profiles.list", JSONObject())
+            val a = r.optJSONArray("profiles") ?: JSONArray()
+            val found = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { o ->
+                o.optString("name") to o.str("display_name").ifBlank { o.str("description") }
+            }.filter { it.first.isNotBlank() }
+            if (found.isNotEmpty()) { profiles = found; store.profileCache = found }
+        }.onFailure { android.util.Log.w("HermesRpc", "profiles.list: $it") }
+    }
     /** Project groups from projects.tree (Home = sessions outside any project). */
     var projects by mutableStateOf<List<Project>>(emptyList())
     var activeProject by mutableStateOf<String?>(null)
@@ -223,6 +238,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun loadMeta() = viewModelScope.launch {
         runCatching { modelOptions = ApiClient.parseModelOptions(gateway().call("model.options", JSONObject())) }
         loadCatalog()
+        scanProfiles()
     }
     fun localCommands(): List<Pair<String, String>> = SLASH_COMMANDS.map { (c, id) -> c to s(id) }
     fun helpText() = s(R.string.help_header) + "\n" + localCommands().joinToString("\n") { "${it.first} — ${it.second}" } + "\n\n" + s(R.string.help_footer)
@@ -438,7 +454,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 else { chooseEffort(e); note(s(R.string.note_thinking, e.ifBlank { s(R.string.default_) })) }
             }
             "stop" -> stop()
-            "profile" -> if (arg in SecureStore.PROFILES) setProfileTo(arg) else note(s(R.string.note_profiles, SecureStore.PROFILES.joinToString(", ")))
+            "profile" -> if (arg in profileNames()) setProfileTo(arg) else note(s(R.string.note_profiles, profileNames().joinToString(", ")))
             "sessions" -> { screen = Screen.Sessions; refreshSessions() }
             "delete" -> {
                 val id = currentId

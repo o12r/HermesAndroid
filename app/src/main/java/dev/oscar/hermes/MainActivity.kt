@@ -205,9 +205,12 @@ fun Banner(vm: ChatViewModel) {
 fun ProfileMenu(vm: ChatViewModel) {
     var open by remember { mutableStateOf(false) }
     Box {
-        AssistChip(onClick = { open = true }, label = { Text(vm.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
+        AssistChip(onClick = { open = true; vm.scanProfiles() }, label = { Text(vm.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
         DropdownMenu(open, { open = false }) {
-            SecureStore.PROFILES.forEach { p -> DropdownMenuItem(text = { Text(p) }, onClick = { open = false; vm.setProfileTo(p) },
+            vm.profiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
+                    if (desc.isNotBlank()) Text(desc, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+                onClick = { open = false; vm.setProfileTo(p) }, modifier = Modifier.widthIn(max = 360.dp),
                 trailingIcon = { if (p == vm.profile) Icon(Icons.Default.Check, null) }) }
         }
     }
