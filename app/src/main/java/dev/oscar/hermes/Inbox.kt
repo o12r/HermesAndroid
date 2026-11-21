@@ -34,8 +34,9 @@ object Inbox {
         }
     }
 
-    /** Downloads [name] into the phone's Downloads folder, then removes it from the PC. Returns the saved name. */
-    fun save(ctx: Context, store: SecureStore, name: String): String {
+    /** Downloads [name] into the phone's Downloads folder, then removes it from the PC. Returns the saved file's Uri. */
+    fun save(ctx: Context, store: SecureStore, name: String): android.net.Uri {
+        var saved: android.net.Uri? = null
         val enc = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
         val r = req(store, "/outbox/$enc") ?: throw ApiException("PC relay not reachable")
         http.newCall(r).execute().use { resp ->
@@ -54,6 +55,7 @@ object Inbox {
                 if (Build.VERSION.SDK_INT >= 29) {
                     ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }.also { ctx.contentResolver.update(uri, it, null, null) }
                 }
+                saved = uri
             } catch (e: Exception) {
                 ctx.contentResolver.delete(uri, null, null)
                 throw e
@@ -61,7 +63,7 @@ object Inbox {
         }
         // Saved on the phone: clear it from the PC. A failure here only leaves the file listed.
         runCatching { http.newCall(req(store, "/outbox/$enc")!!.newBuilder().delete().build()).execute().close() }
-        return name
+        return saved!!
     }
 
     fun sizeText(bytes: Long): String = when {

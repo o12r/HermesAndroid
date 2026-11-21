@@ -32,7 +32,9 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
     val steps: List<Step> = emptyList(),
     /** Send failed: shows a red ! with resend / edit / delete. [resend] is the original text. */
-    val failed: Boolean = false, val resend: String? = null, val uid: String = UUID.randomUUID().toString())
+    val failed: Boolean = false, val resend: String? = null, val uid: String = UUID.randomUUID().toString(),
+    /** A file the phone saved from the Inbox (role "file"): content Uri, shown inline. */
+    val file: String? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
@@ -199,7 +201,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun saveInbox(name: String) = viewModelScope.launch {
         inboxBusy = true
         try {
-            withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) }
+            val uri = withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) }
+            cur.messages.add(UiMsg("file", name, file = uri.toString()))
+            cur.id?.let { store.addSessionFile(it, name, uri.toString()) }
             inboxFiles = inboxFiles.filterNot { it.name == name }
             android.widget.Toast.makeText(getApplication(), s(R.string.inbox_saved, name), android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
@@ -601,6 +605,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val failed = c.messages.filter { it.failed }
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
                 (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { UiMsg(r.role, it, id = r.id, steps = r.steps) } })
+            c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u) })
             c.messages.addAll(failed); c.loaded = true
             if (c === cur) { offline = false; error = null }
         } catch (e: Exception) { if (c === cur) fail(e) }

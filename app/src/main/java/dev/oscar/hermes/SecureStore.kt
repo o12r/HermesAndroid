@@ -55,6 +55,16 @@ class SecureStore(ctx: Context) {
     /** "provider|model" or "" = server default; stored per profile. */
     fun modelFor(profile: String): String = prefs.getString("model.$profile", "")!!
     fun setModelFor(profile: String, v: String) = prefs.edit().putString("model.$profile", v).apply()
+    /** Files saved from the Inbox into a session: (name, content Uri). Kept so they show again when the chat reloads. */
+    fun sessionFiles(id: String): List<Pair<String, String>> = runCatching {
+        val a = org.json.JSONArray(prefs.getString("files.$id", "[]")!!)
+        (0 until a.length()).map { a.getJSONObject(it).let { o -> o.getString("name") to o.getString("uri") } }
+    }.getOrDefault(emptyList())
+    fun addSessionFile(id: String, name: String, uri: String) {
+        val a = runCatching { org.json.JSONArray(prefs.getString("files.$id", "[]")!!) }.getOrDefault(org.json.JSONArray())
+        a.put(org.json.JSONObject().put("name", name).put("uri", uri))
+        prefs.edit().putString("files.$id", a.toString()).apply()
+    }
     fun sessionModel(id: String): String? = prefs.getString("smodel.$id", null)
     fun setSessionModel(id: String, v: String) = prefs.edit().putString("smodel.$id", v).apply()
     fun sessionEffort(id: String): String? = prefs.getString("seffort.$id", null)

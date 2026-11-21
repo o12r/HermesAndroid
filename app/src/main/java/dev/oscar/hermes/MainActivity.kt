@@ -579,6 +579,10 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
         return
     }
+    m.file?.let { uri ->
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, uri) }
+        return
+    }
     val user = m.role == "user"
     Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(shape = RoundedCornerShape(14.dp), color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
