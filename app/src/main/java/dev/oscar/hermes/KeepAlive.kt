@@ -52,8 +52,14 @@ object Notify {
         nm.createNotificationChannel(NotificationChannel(CH_ALERTS, c.getString(R.string.ch_alerts), NotificationManager.IMPORTANCE_HIGH))
     }
 
-    fun openApp(ctx: Context): PendingIntent = PendingIntent.getActivity(ctx, 0,
-        Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
+    const val EXTRA_PROFILE = "open_profile"
+    const val EXTRA_SESSION = "open_session"
+
+    /** Tap opens the app; with [profile]/[session] it jumps straight to that chat. */
+    fun openApp(ctx: Context, profile: String? = null, session: String? = null): PendingIntent = PendingIntent.getActivity(ctx,
+        session?.hashCode() ?: 0,      // one PendingIntent per chat, so extras don't overwrite each other
+        Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            .apply { if (session != null) putExtra(EXTRA_PROFILE, profile).putExtra(EXTRA_SESSION, session) },
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
     /** [force]: also while the app is open (the event is for a chat that isn't on screen). */
@@ -64,10 +70,10 @@ object Notify {
         alertWith(ctx, ctx.getString(R.string.n_update_ready), ctx.getString(R.string.n_update_ready_text), pi)
     }
 
-    fun alert(ctx: Context, title: String, text: String, force: Boolean = false) {
+    fun alert(ctx: Context, title: String, text: String, force: Boolean = false, profile: String? = null, session: String? = null) {
         if (visible && !force) return
         channels(ctx)
-        alertWith(ctx, title, text, openApp(ctx))
+        alertWith(ctx, title, text, openApp(ctx, profile, session))
     }
 
     private fun alertWith(ctx: Context, title: String, text: String, tap: PendingIntent) {

@@ -63,7 +63,14 @@ class MainActivity : ComponentActivity() {
         super.attachBaseContext(L10n.wrap(newBase, SecureStore(newBase).lang))
     }
 
-    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handlePair(intent) }
+    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handlePair(intent); handleOpen(intent) }
+
+    /** Notification tap: jump to the chat that needs an answer. */
+    private fun handleOpen(intent: android.content.Intent?) {
+        val id = intent?.getStringExtra(Notify.EXTRA_SESSION) ?: return
+        vm.openFromNotification(intent.getStringExtra(Notify.EXTRA_PROFILE), id)
+        intent.removeExtra(Notify.EXTRA_SESSION)
+    }
 
     /** hermes://pair?url=&lan=&key= from the PC installer: save the connection and connect. */
     private fun handlePair(intent: android.content.Intent?) {
@@ -84,7 +91,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         KeepAliveService.start(this)
-        handlePair(intent)
+        handlePair(intent); handleOpen(intent)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
@@ -258,12 +265,13 @@ fun SessionsScreen(vm: ChatViewModel) {
             listOf(homeP to homeList)
     }
     Scaffold(
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }, actions = {
+        topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name)) }, actions = {
             ProfileMenu(vm)
             IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
             IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
             IconButton(onClick = { vm.screen = Screen.Settings }) {
-                BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } }) },
+                BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } })
+            ChatTabs(vm, onList = true) } },
         floatingActionButton = { ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
             text = { Text(vm.projects.find { it.id == vm.activeProject }?.let { stringResource(R.string.new_chat_in, it.name) } ?: stringResource(R.string.new_chat)) }) },
         contentWindowInsets = WindowInsets(0)
@@ -503,8 +511,9 @@ fun RuntimeChips(vm: ChatViewModel) {
 
 /** Open chats as tabs: ⏳ = Hermes working, ✎ = unsent draft, × closes (the PC session is kept). */
 @Composable
-fun ChatTabs(vm: ChatViewModel) {
-    if (vm.tabs.size < 2) return
+fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
+    // In a chat, one tab (itself) adds nothing; on the session list any open chat is worth a tab.
+    if (vm.tabs.size < (if (onList) 1 else 2)) return
     val state = rememberLazyListState()
     val idx = vm.tabs.indexOfFirst { it === vm.cur }
     LaunchedEffect(idx) { if (idx >= 0) state.animateScrollToItem(idx) }
@@ -512,7 +521,7 @@ fun ChatTabs(vm: ChatViewModel) {
     androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         items(vm.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
-            val sel = c === vm.cur
+            val sel = !onList && c === vm.cur
             val label = buildString {
                 if (c.streaming) append("⏳ ")
                 if (c.approval != null || c.clarify != null) append("❓ ")

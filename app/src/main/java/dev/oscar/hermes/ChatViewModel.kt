@@ -462,6 +462,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         activeProject = p?.takeUnless { it.isHome }?.id
     }
 
+    /** From a notification tap: open [id] in [prof] (switching profile if needed). */
+    fun openFromNotification(prof: String?, id: String) {
+        val p = prof ?: profile
+        chats.find { it.profile == p && it.id == id }?.let { addTab(it); switchTo(it); return }
+        if (p != profile) {
+            profile = p; store.profile = p; model = store.modelFor(p); effort = store.effortFor(p)
+            serverCommands = emptyList(); projects = emptyList(); loadMeta()
+        }
+        open(Session(id, null, null, null, 0, null)); refreshSessions()
+    }
+
     fun open(s: Session) {
         val c = chatFor(profile, s.id, s.title)
         if (s.title != null) c.title = s.title
@@ -741,7 +752,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "message.complete" -> {
                 val text = p.str("text").ifBlank { p.str("content") }
                 if (text.isNotBlank()) updateLast(c) { it.copy(text = text) }
-                if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur)
+                if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id)
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
                 viewModelScope.launch { refreshIds(c) }
                 if (p.optString("outcome") !in setOf("", "completed") && c === cur) error = "Turn ended: ${p.optString("outcome")}"
@@ -751,13 +762,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: listOf("once", "deny")
                 c.approval = Approval(p.optString("prompt_id"), p.optString("command"), p.optString("description"), ch,
                     p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(R.string.n_approval) + " · " + name, p.optString("command"), force = c !== cur)
+                if (away) Notify.alert(app, s(R.string.n_approval) + " · " + name, p.optString("command"), force = c !== cur, profile = c.profile, session = c.id)
             }
             "clarify.request" -> {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
                 c.clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch, p.optBoolean("multi_select") && ch.isNotEmpty())),
                     p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(R.string.n_clarify) + " · " + name, p.optString("question"), force = c !== cur)
+                if (away) Notify.alert(app, s(R.string.n_clarify) + " · " + name, p.optString("question"), force = c !== cur, profile = c.profile, session = c.id)
             }
             "approval.settled" -> if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null
             "clarify.settled" -> if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null
@@ -765,7 +776,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "error" -> { val msg = p.optString("message").ifBlank { "Hermes error" }
                 c.streaming = false; c.status = null; dropEmpty(c); c.messages.add(UiMsg("system", "⚠ $msg"))
                 if (c === cur) error = msg
-                if (away) Notify.alert(app, s(R.string.n_error) + " · " + name, msg, force = c !== cur) }
+                if (away) Notify.alert(app, s(R.string.n_error) + " · " + name, msg, force = c !== cur, profile = c.profile, session = c.id) }
         }
     }
 
