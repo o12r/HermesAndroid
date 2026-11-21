@@ -356,7 +356,8 @@ fun SessionsScreen(vm: ChatViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(vm: ChatViewModel) {
-    var input by remember { mutableStateOf("") }
+    // The chat.draft is the current chat's draft, so typed text survives switching chats / going back.
+    val chat = vm.cur
     val list = rememberLazyListState()
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let { u -> vm.addAttachment(u, true) } }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let { u -> vm.addAttachment(u, false) } }
@@ -372,12 +373,13 @@ fun ChatScreen(vm: ChatViewModel) {
             navigationIcon = { IconButton(onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = { ProfileMenu(vm) }, windowInsets = WindowInsets(0))
+        ChatTabs(vm)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             itemsIndexed(vm.messages) { _, m -> Bubble(m, vm) }
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
-        SlashSuggestions(vm, input) { input = it }
+        SlashSuggestions(vm, chat.draft) { chat.draft = it }
         RuntimeChips(vm)
         if (vm.attachments.isNotEmpty()) Row(Modifier.padding(horizontal = 8.dp)) {
             vm.attachments.forEach { a -> InputChip(selected = false, onClick = { vm.attachments.remove(a) }, label = { Text(a.name, maxLines = 1) },
@@ -397,11 +399,11 @@ fun ChatScreen(vm: ChatViewModel) {
             var focused by remember { mutableStateOf(false) }
             var full by remember { mutableStateOf(false) }
             val half = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 2).dp
-            OutlinedTextField(input, { input = it }, Modifier.weight(1f).heightIn(max = half)
+            OutlinedTextField(chat.draft, { chat.draft = it }, Modifier.weight(1f).heightIn(max = half)
                     .onFocusChanged { focused = it.isFocused }.animateContentSize(),
                 placeholder = { Text(stringResource(if (vm.streaming) R.string.steer_hint else R.string.message_hint)) },
                 minLines = if (focused) 5 else 1, maxLines = if (focused) Int.MAX_VALUE else 6,
-                trailingIcon = { if (focused || input.length > 80) IconButton(onClick = { full = true }) {
+                trailingIcon = { if (focused || chat.draft.length > 80) IconButton(onClick = { full = true }) {
                     Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) } },
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
             if (full) androidx.compose.ui.window.Dialog(onDismissRequest = { full = false },
@@ -410,19 +412,19 @@ fun ChatScreen(vm: ChatViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { full = false }) { Icon(Icons.Default.CloseFullscreen, stringResource(R.string.collapse_editor)) }
                         Text(stringResource(R.string.expand_editor), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        Button(onClick = { full = false; vm.send(input); input = "" }, enabled = input.isNotBlank()) {
+                        Button(onClick = { full = false; vm.send(chat.draft); chat.draft = "" }, enabled = chat.draft.isNotBlank()) {
                             Text(stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
                     }
                     val fr = remember { androidx.compose.ui.focus.FocusRequester() }
-                    OutlinedTextField(input, { input = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(fr),
+                    OutlinedTextField(chat.draft, { chat.draft = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(fr),
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 } }
             }
             if (vm.streaming) IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
             // While Hermes works, Send steers the running turn instead of waiting.
-            if (!vm.streaming || input.isNotBlank()) IconButton(onClick = { vm.send(input); input = "" },
-                enabled = input.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
+            if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" },
+                enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
                 Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
         }
     }
@@ -475,6 +477,32 @@ fun RuntimeChips(vm: ChatViewModel) {
                 SecureStore.EFFORTS.forEach { e -> DropdownMenuItem(text = { Text(e.ifBlank { def }) },
                     onClick = { vm.chooseEffort(e); effortOpen = false }, trailingIcon = { if (vm.effort == e) Icon(Icons.Default.Check, null) }) }
             }
+        }
+    }
+}
+
+/** Open chats as tabs: ⏳ = Hermes working, ✎ = unsent draft, × closes (the PC session is kept). */
+@Composable
+fun ChatTabs(vm: ChatViewModel) {
+    if (vm.tabs.size < 2) return
+    val state = rememberLazyListState()
+    val idx = vm.tabs.indexOfFirst { it === vm.cur }
+    LaunchedEffect(idx) { if (idx >= 0) state.animateScrollToItem(idx) }
+    val newChat = stringResource(R.string.new_chat)
+    androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        items(vm.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
+            val sel = c === vm.cur
+            val label = buildString {
+                if (c.streaming) append("⏳ ")
+                if (c.approval != null || c.clarify != null) append("❓ ")
+                if (c.profile != vm.profile) append(c.profile).append(" · ")
+                append(c.title ?: newChat)
+                if (!sel && c.draft.isNotBlank()) append(" ✎")
+            }
+            InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 200.dp)) },
+                trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.closeTab(c) }) })
         }
     }
 }

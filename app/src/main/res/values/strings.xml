@@ -150,4 +150,5 @@
     <string name="n_send_failed">Message not sent</string>
     <string name="reconnecting">Connection lost, reconnecting…</string>
     <string name="reconnected_running">Reconnected · Hermes is still working…</string>
+    <string name="close_tab">Close tab</string>
 </resources>

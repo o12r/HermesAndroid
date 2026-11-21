@@ -51,6 +51,8 @@ class Chat(val profile: String, id: String?, title: String?) {
     var dropped = false                          // a turn was running when the connection dropped
     var newCwd: String? = null
     var loaded = false
+    /** Unsent text in the input box; survives leaving and re-opening the chat. */
+    var draft by mutableStateOf("")
 }
 
 /**
@@ -96,6 +98,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var error by mutableStateOf<String?>(null)
     var offline by mutableStateOf(false)
     var loading by mutableStateOf(false)
+    /** Open chats shown as tabs at the top of the chat screen (any profile). */
+    val tabs = mutableStateListOf<Chat>()
+    private fun addTab(c: Chat) { if (tabs.none { it === c }) tabs.add(c) }
+
+    /** Switch to an open tab (switches profile too if the tab belongs to another one). */
+    fun switchTo(c: Chat) {
+        if (c.profile != profile) {
+            profile = c.profile; store.profile = c.profile
+            model = store.modelFor(c.profile); effort = store.effortFor(c.profile)
+            serverCommands = emptyList(); projects = emptyList(); refreshSessions(); loadMeta()
+        }
+        cur = c; screen = Screen.Chat
+        if (c.id != null) viewModelScope.launch {
+            if (!c.streaming && !c.loaded) loadMessagesInto(c)
+            runCatching { ensureLive(gatewayFor(c.profile), c) }
+        }
+    }
+
+    /** Close a tab; a running turn keeps going on the PC. Closing the current tab moves to its neighbour. */
+    fun closeTab(c: Chat) {
+        val i = tabs.indexOfFirst { it === c }; if (i < 0) return
+        tabs.removeAt(i)
+        if (c === cur) {
+            val next = tabs.getOrNull(i) ?: tabs.getOrNull(i - 1)
+            if (next != null) switchTo(next) else { cur = Chat(profile, null, null); screen = Screen.Sessions; refreshSessions() }
+        }
+    }
+
     /** Chats with a turn running (for the session list). */
     fun busyIds(): Set<String> = chats.filter { it.streaming && it.profile == profile }.mapNotNull { it.id }.toSet()
 
@@ -411,7 +441,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun open(s: Session) {
         val c = chatFor(profile, s.id, s.title)
         if (s.title != null) c.title = s.title
-        cur = c; screen = Screen.Chat
+        cur = c; addTab(c); screen = Screen.Chat
         viewModelScope.launch {
             // A chat that is still streaming keeps its live transcript; otherwise load the stored one.
             if (!c.streaming || !c.loaded) loadMessagesInto(c)
@@ -476,7 +506,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun newChat() {
-        cur = Chat(profile, null, null).also { it.newCwd = newChatCwd ?: projects.find { p -> p.id == activeProject }?.path; chats.add(it) }
+        cur = Chat(profile, null, null).also { it.newCwd = newChatCwd ?: projects.find { p -> p.id == activeProject }?.path; chats.add(it); addTab(it) }
         newChatCwd = null; attachments.clear(); screen = Screen.Chat
     }
 
@@ -499,7 +529,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun rename(s: Session, title: String) = viewModelScope.launch {
         try { api().rename(s.id, title); refreshSessions() } catch (e: Exception) { fail(e) } }
     fun delete(s: Session) = viewModelScope.launch {
-        try { api().delete(s.id); chats.removeAll { it.profile == profile && it.id == s.id }; if (currentId == s.id) newChat(); refreshSessions() } catch (e: Exception) { fail(e) } }
+        try { api().delete(s.id); chats.removeAll { it.profile == profile && it.id == s.id }; tabs.removeAll { it.profile == profile && it.id == s.id }; if (currentId == s.id) newChat(); refreshSessions() } catch (e: Exception) { fail(e) } }
 
     // ---------- sending ----------
     fun send(text: String) {

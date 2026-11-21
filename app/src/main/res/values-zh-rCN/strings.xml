@@ -150,4 +150,5 @@
     <string name="n_send_failed">消息未发送</string>
     <string name="reconnecting">连接断开，正在重连…</string>
     <string name="reconnected_running">已重新连接 · Hermes 仍在工作…</string>
+    <string name="close_tab">关闭标签</string>
 </resources>
