@@ -63,9 +63,17 @@ class MainActivity : ComponentActivity() {
         super.attachBaseContext(L10n.wrap(newBase, SecureStore(newBase).lang))
     }
 
+    override fun onStart() { super.onStart(); Notify.visible = true }
+    override fun onStop() { Notify.visible = false; super.onStop() }
+    override fun onDestroy() { if (isFinishing) KeepAliveService.stop(this); super.onDestroy() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        KeepAliveService.start(this)
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
         setContent {
             val ctx = LocalContext.current
             val sysDark = isSystemInDarkTheme()
@@ -224,7 +232,8 @@ fun SessionsScreen(vm: ChatViewModel) {
         val list = vm.projects.filter { showArchived || !it.archived }.map { p -> p to p.sessionIds.mapNotNull { byId[it] }.also { l -> seen += l.map { it.id } } }
         val rest = vm.sessions.filter { it.id !in seen && vm.projects.none { p -> it.id in p.sessionIds } }
         val home = list.find { it.first.isHome }
-        val homeP = home?.first ?: Project("__home", "Home", null, true, false, false, emptyList())
+        // Projects not loaded yet: one open, header-less list instead of a collapsed "Home".
+        val homeP = home?.first ?: Project(if (vm.projects.isEmpty()) "__all" else "__home", "Home", null, true, false, false, emptyList())
         val homeList = (home?.second.orEmpty() + rest).distinctBy { it.id }.sortedByDescending { it.lastActive ?: 0.0 }
         list.filter { !it.first.isHome }.map { (p, l) -> p to l.sortedByDescending { it.lastActive ?: 0.0 } }
             .sortedWith(compareByDescending<Pair<Project, List<Session>>> { it.first.id == vm.activeProject }.thenByDescending { it.second.firstOrNull()?.lastActive ?: 0.0 }) +
@@ -244,8 +253,8 @@ fun SessionsScreen(vm: ChatViewModel) {
         if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
             groups.forEach { (p, list) ->
-                val isOpen = open[p.id] ?: (p.id == vm.activeProject || (vm.activeProject == null && p.isHome))
-                item(key = "h:" + p.id) {
+                val isOpen = p.id == "__all" || (open[p.id] ?: (p.id == vm.activeProject || (vm.activeProject == null && p.isHome)))
+                if (p.id != "__all") item(key = "h:" + p.id) {
                     var menu by remember { mutableStateOf(false) }
                     val active = p.id == vm.activeProject
                     ListItem(

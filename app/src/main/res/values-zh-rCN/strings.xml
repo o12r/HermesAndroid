@@ -135,4 +135,14 @@
     <string name="compress_noop">暂时没有可压缩的内容。</string>
     <string name="compressed">上下文已压缩：较早的消息已总结，对话在这里继续。</string>
     <string name="note_nothing_to_compress">请先打开一个对话。</string>
+    <string name="keepalive_title">Hermes 已连接</string>
+    <string name="keepalive_text">正在后台保持与电脑的连接。</string>
+    <string name="ch_connection">后台连接</string>
+    <string name="ch_alerts">回复和提问</string>
+    <string name="n_reply_done">Hermes 已回复 · %1$s</string>
+    <string name="n_approval">Hermes 需要你批准</string>
+    <string name="n_clarify">Hermes 有个问题</string>
+    <string name="n_error">Hermes 出错</string>
+    <string name="n_disconnected">与电脑的连接已断开</string>
+    <string name="n_disconnected_text">正在后台重试…</string>
 </resources>

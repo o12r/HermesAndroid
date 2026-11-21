@@ -135,4 +135,14 @@
     <string name="compress_noop">Nothing to compress yet.</string>
     <string name="compressed">Context compressed. Older messages were summarised; the chat continues here.</string>
     <string name="note_nothing_to_compress">Open a chat first.</string>
+    <string name="keepalive_title">Hermes connected</string>
+    <string name="keepalive_text">Keeping the connection to your PC open in the background.</string>
+    <string name="ch_connection">Background connection</string>
+    <string name="ch_alerts">Replies and questions</string>
+    <string name="n_reply_done">Hermes replied · %1$s</string>
+    <string name="n_approval">Hermes needs approval</string>
+    <string name="n_clarify">Hermes has a question</string>
+    <string name="n_error">Hermes error</string>
+    <string name="n_disconnected">Lost connection to the PC</string>
+    <string name="n_disconnected_text">Retrying in the background…</string>
 </resources>

@@ -22,6 +22,9 @@ object L10n {
         return base.createConfigurationContext(cfg)
     }
 
+    /** Context in the user's chosen app language (for services / notifications). */
+    fun ctx(base: Context): Context = wrap(base, SecureStore(base).lang)
+
     /** True when the effective UI language is Chinese. */
     fun isZh(ctx: Context): Boolean = ctx.resources.configuration.locales[0].language == "zh"
 }

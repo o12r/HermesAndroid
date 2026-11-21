@@ -147,6 +147,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return false
     }
 
+    /** Keep the relay connection up (also in the background): reconnect with backoff and re-subscribe. */
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private var notifiedDrop = false
+    private fun scheduleReconnect(wasStreaming: Boolean) {
+        if (!store.hasKey || reconnectJob?.isActive == true) return
+        reconnectJob = viewModelScope.launch {
+            var delayMs = 2000L
+            while (true) {
+                kotlinx.coroutines.delay(delayMs)
+                val ok = runCatching { pickRelay(); val g = gateway(); if (currentId != null && screen == Screen.Chat) ensureLive(g) }.isSuccess
+                if (ok) {
+                    offline = false; error = null; notifiedDrop = false
+                    if (dropped && currentId != null) { dropped = false; currentId?.let { loadMessages(it) } }
+                    return@launch
+                }
+                if (!notifiedDrop && (wasStreaming || delayMs >= 16000)) {
+                    notifiedDrop = true; Notify.alert(getApplication<Application>(), s(R.string.n_disconnected), s(R.string.n_disconnected_text))
+                }
+                delayMs = (delayMs * 2).coerceAtMost(60_000L)
+            }
+        }
+    }
+
     // ---------- gateway connection ----------
     private suspend fun gateway(): GatewayWs = gwLock.withLock {
         gw?.takeIf { it.open }?.let { return it }
@@ -155,7 +178,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             onEvent = { t, sid, p -> viewModelScope.launch(Dispatchers.Main) { onEvent(t, sid, p) } },
             onServerRequest = { id, m, p -> viewModelScope.launch(Dispatchers.Main) { onServerRequest(id, m, p) } },
             onClosed = { why -> viewModelScope.launch(Dispatchers.Main) {
+                val wasStreaming = streaming
                 if (streaming) { dropped = true; streaming = false; status = null; why?.let { error = it; offline = true } }
+                scheduleReconnect(wasStreaming)
             } })
         withContext(Dispatchers.IO) { g.connect() }
         gw = g
@@ -246,7 +271,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         loading = true
         try {
             sessions = api().sessions(); offline = false; error = null
-            runCatching { loadProjects() }
+            runCatching { loadProjects() }.onFailure { android.util.Log.w("HermesRpc", "loadProjects: $it") }
             currentId?.let { id -> sessions.find { it.id == id }?.title?.let { currentTitle = it } }
         } catch (e: Exception) { fail(e) }
         loading = false
@@ -540,6 +565,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "message.complete" -> {
                 val c = p.str("text").ifBlank { p.str("content") }
                 if (c.isNotBlank()) updateLast { it.copy(text = c) }
+                Notify.alert(getApplication<Application>(), s(R.string.n_reply_done, currentTitle ?: s(R.string.chat)), c.ifBlank { "…" })
                 streaming = false; status = null; dropEmpty()
                 viewModelScope.launch { refreshIds() }
                 if (p.optString("outcome") !in setOf("", "completed")) error = "Turn ended: ${p.optString("outcome")}"
@@ -549,16 +575,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: listOf("once", "deny")
                 approval = Approval(p.optString("prompt_id"), p.optString("command"), p.optString("description"), ch,
                     p.optInt("execution_generation", generation))
+                Notify.alert(getApplication<Application>(), s(R.string.n_approval), p.optString("command"))
             }
             "clarify.request" -> {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
                 clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch, p.optBoolean("multi_select") && ch.isNotEmpty())),
                     p.optInt("execution_generation", generation))
+                Notify.alert(getApplication<Application>(), s(R.string.n_clarify), p.optString("question"))
             }
             "approval.settled" -> if (approval?.reqId == p.optString("prompt_id")) approval = null
             "clarify.settled" -> if (clarify?.reqId == p.optString("prompt_id")) clarify = null
             "session.title" -> p.optString("title").ifBlank { null }?.let { currentTitle = it }
-            "error" -> { error = p.optString("message").ifBlank { "Hermes error" }; streaming = false; dropEmpty() }
+            "error" -> { error = p.optString("message").ifBlank { "Hermes error" }; streaming = false; dropEmpty()
+                Notify.alert(getApplication<Application>(), s(R.string.n_error), error ?: "") }
         }
     }
 
