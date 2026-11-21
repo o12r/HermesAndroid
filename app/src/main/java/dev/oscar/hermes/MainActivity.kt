@@ -347,6 +347,12 @@ fun SessionsScreen(vm: ChatViewModel) {
                 Text(stringResource(R.string.save)) } },
             dismissButton = { TextButton(onClick = { creating = false }) { Text(stringResource(R.string.cancel)) } })
     }
+    vm.missingFolder?.let { (name, path) ->
+        AlertDialog(onDismissRequest = { vm.missingFolder = null }, title = { Text(stringResource(R.string.folder_missing_title)) },
+            text = { Text(stringResource(R.string.folder_missing_text, path)) },
+            confirmButton = { Button(onClick = { vm.missingFolder = null; vm.createProject(name, path, mkdir = true) }) { Text(stringResource(R.string.create_folder)) } },
+            dismissButton = { TextButton(onClick = { vm.missingFolder = null }) { Text(stringResource(R.string.cancel)) } })
+    }
     deletingProject?.let { p ->
         AlertDialog(onDismissRequest = { deletingProject = null }, title = { Text(stringResource(R.string.delete_project_q, p.name)) },
             text = { Text(stringResource(R.string.delete_project_note)) },

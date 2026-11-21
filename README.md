@@ -43,8 +43,9 @@ Double-click **`pc\install.cmd`**. It:
 1. reuses or creates `API_SERVER_KEY` and writes it to every profile's `.env` (backups: `.env.bak-android`);
 2. installs the phone relay and the `Hermes_PhoneRelay` scheduled task (logon, wake, every 5 min), starts it and checks it;
 3. sets up the in-app update folder with the latest APK;
-4. installs the `hermes-android` skill into every Hermes profile, so your local Hermes knows how to use, fix and improve this setup;
-5. pairs the phone:
+4. installs a **tray icon** (green/yellow/red for relay, gateway and Tailscale): it restarts the relay if it dies, warns with a notification, and has menu items for restart, log, pairing QR and start-with-Windows;
+5. installs the `hermes-android` skill into every Hermes profile, so your local Hermes knows how to use, fix and improve this setup;
+6. pairs the phone:
    - **USB / adb connected:** installs the app and pairs it. Nothing to type on the phone.
    - **Otherwise:** opens a page with two QR codes. ① Download the app. ② Scan to pair (opens in Hermes and fills in the address and key).
 

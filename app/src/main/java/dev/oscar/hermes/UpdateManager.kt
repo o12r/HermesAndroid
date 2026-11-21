@@ -89,19 +89,48 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
 
     /** Download the APK and hand it to the system installer (the user confirms). */
     suspend fun install(u: UpdateInfo, progress: (Int) -> Unit) = withContext(Dispatchers.IO) {
-        val req = if (u.source == "pc") relayReq("/apk")!! else Request.Builder().url(u.apkUrl).build()
-        val file = File(ctx.cacheDir, "update.apk")
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw ApiException("Download failed (HTTP ${resp.code})")
-            val body = resp.body!!; val total = body.contentLength()
-            file.outputStream().use { out ->
-                val src = body.byteStream(); val buf = ByteArray(64 * 1024); var done = 0L; var n: Int
-                while (src.read(buf).also { n = it } >= 0) {
-                    out.write(buf, 0, n); done += n
-                    if (total > 0) progress((done * 100 / total).toInt())
+        val file = File(ctx.cacheDir, "update-${u.versionCode}.apk")
+        ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") && it != file }?.forEach { it.delete() }
+        // Keep the CPU and Wi-Fi awake while downloading, so going to the background doesn't stall the socket.
+        val pm = ctx.getSystemService(android.os.PowerManager::class.java)
+        val wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:update").apply { acquire(10 * 60_000L) }
+        @Suppress("DEPRECATION")
+        val wifi = ctx.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+            ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:update")?.apply { acquire() }
+        try {
+            // Resumable: on a dropped connection, retry with Range from where it stopped (up to 8 tries, backoff).
+            var total = -1L; var attempt = 0
+            while (true) {
+                val have = file.length()
+                if (total > 0 && have >= total) break
+                // Re-resolve every try: the relay address may have switched (Tailscale <-> Wi-Fi).
+                val base = if (u.source == "pc") relayReq("/apk") ?: throw ApiException("PC relay not reachable") else Request.Builder().url(u.apkUrl).build()
+                val req = base.newBuilder().apply { if (have > 0) header("Range", "bytes=$have-") }.build()
+                try {
+                    http.newCall(req).execute().use { resp ->
+                        if (resp.code == 416) { total = have; return@use }
+                        if (!resp.isSuccessful) throw ApiException("Download failed (HTTP ${resp.code})")
+                        val body = resp.body!!
+                        val append = resp.code == 206 && have > 0
+                        if (!append) file.delete()
+                        val start = if (append) have else 0L
+                        if (body.contentLength() > 0) total = start + body.contentLength()
+                        java.io.FileOutputStream(file, append).use { out ->
+                            val src = body.byteStream(); val buf = ByteArray(64 * 1024); var done = start; var n: Int
+                            while (src.read(buf).also { n = it } >= 0) {
+                                out.write(buf, 0, n); done += n
+                                if (total > 0) progress((done * 100 / total).toInt())
+                            }
+                        }
+                    }
+                    if (total <= 0) break        // unknown length: one full read is all we can do
+                    attempt = 0
+                } catch (e: java.io.IOException) {
+                    if (++attempt > 8) throw ApiException("Download interrupted: ${e.message}")
+                    kotlinx.coroutines.delay(minOf(30_000L, 1500L shl (attempt - 1)))
                 }
             }
-        }
+        } finally { runCatching { wake.release() }; runCatching { wifi?.release() } }
         val pi = ctx.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         params.setAppPackageName(ctx.packageName)
@@ -129,7 +158,9 @@ class InstallReceiver : BroadcastReceiver() {
                 @Suppress("DEPRECATION")
                 val confirm = (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
                     else intent.getParcelableExtra(Intent.EXTRA_INTENT)) ?: return
-                context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                // Android blocks starting the installer from the background: then post a tap-to-install notification.
+                if (Notify.visible) context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                else Notify.installReady(context, confirm)
             }
             PackageInstaller.STATUS_SUCCESS -> {}
             else -> android.widget.Toast.makeText(context,

@@ -156,4 +156,10 @@
     <string name="steps_running">running…</string>
     <string name="steps_output">Output</string>
     <string name="paired">Paired with your PC</string>
+    <string name="n_update_ready">Update downloaded</string>
+    <string name="n_update_ready_text">Tap to install</string>
+    <string name="folder_missing_title">Folder doesn\'t exist</string>
+    <string name="folder_missing_text">%1$s doesn\'t exist on the PC. Create it?</string>
+    <string name="create_folder">Create folder</string>
+    <string name="not_a_folder">%1$s is a file, not a folder</string>
 </resources>

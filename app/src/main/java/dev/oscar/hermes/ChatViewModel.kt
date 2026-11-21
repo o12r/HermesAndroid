@@ -22,6 +22,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
@@ -421,9 +423,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) { fail(e) }
     }
 
-    fun createProject(name: String, folder: String) = viewModelScope.launch {
+    /** New project whose folder doesn't exist on the PC yet: ask before creating it. */
+    var missingFolder by mutableStateOf<Pair<String, String>?>(null)
+
+    private suspend fun fsCall(op: String, path: String): JSONObject = withContext(Dispatchers.IO) {
+        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val url = store.relayBase().trimEnd('/') + "/fs/" + op
+        val body = JSONObject().put("path", path).toString().toRequestBody("application/json".toMediaType())
+        okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key").post(body).build()).execute().use { r ->
+            val o = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+            if (!r.isSuccessful) throw ApiException(o.optString("error").ifBlank { "HTTP ${r.code}" })
+            o
+        }
+    }
+
+    fun createProject(name: String, folder: String, mkdir: Boolean = false) = viewModelScope.launch {
         try {
             val f = folder.trim()
+            if (mkdir) fsCall("mkdir", f)
+            else {
+                val st = runCatching { fsCall("stat", f) }.getOrNull()   // older relay without /fs: skip the check
+                if (st != null && !st.optBoolean("exists")) { missingFolder = name to f; return@launch }
+                if (st != null && !st.optBoolean("dir")) throw ApiException(s(R.string.not_a_folder, f))
+            }
             gateway().call("projects.create", JSONObject().put("name", name.trim()).put("folders", JSONArray().put(f)).put("primary_path", f))
             refreshSessions()
         } catch (e: Exception) { fail(e) }

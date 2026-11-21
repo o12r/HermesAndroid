@@ -57,14 +57,25 @@ object Notify {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
     /** [force]: also while the app is open (the event is for a chat that isn't on screen). */
+    /** Update downloaded while the app was in the background: tap to open the system install screen. */
+    fun installReady(ctx: Context, confirm: Intent) {
+        channels(ctx)
+        val pi = PendingIntent.getActivity(ctx, 7, confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alertWith(ctx, ctx.getString(R.string.n_update_ready), ctx.getString(R.string.n_update_ready_text), pi)
+    }
+
     fun alert(ctx: Context, title: String, text: String, force: Boolean = false) {
         if (visible && !force) return
         channels(ctx)
+        alertWith(ctx, title, text, openApp(ctx))
+    }
+
+    private fun alertWith(ctx: Context, title: String, text: String, tap: PendingIntent) {
         val n = Notification.Builder(ctx, CH_ALERTS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title).setContentText(text.take(300))
             .setStyle(Notification.BigTextStyle().bigText(text.take(1000)))
-            .setContentIntent(openApp(ctx)).setAutoCancel(true).build()
+            .setContentIntent(tap).setAutoCancel(true).build()
         runCatching { ctx.getSystemService(NotificationManager::class.java).notify(nextId++, n) }
     }
 }

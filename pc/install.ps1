@@ -1,4 +1,4 @@
-<#
+﻿<#
   Hermes Android: one-click PC setup.
 
     install.cmd               install / repair everything, then pair the phone
@@ -82,8 +82,12 @@ function Find-Adb {
 if ($Uninstall) {
     Step "Uninstalling Hermes Android PC parts"
     Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue; Ok "scheduled task removed"
+    Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -ErrorAction SilentlyContinue
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*hermes-tray.ps1*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Ok "tray app removed"
     Stop-Relay; Ok "relay stopped"
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "pair_page.py") {
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "install.ps1", "hermes-android-pair.html") {
         Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
     Remove-Item $PyLib -Recurse -ErrorAction SilentlyContinue
@@ -178,6 +182,16 @@ if (-not $PairOnly) {
         Copy-Item (Join-Path $Here "skill\hermes-android\SKILL.md") $dst -Force
     }
     Ok "skill 'hermes-android' installed in $((Profile-Dirs).Count) profile(s)"
+
+    # ------------------------------------------------------------ tray app (status icon, keeps the relay running)
+    Step "Tray app"
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*hermes-tray.ps1*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
+    Copy-Item (Join-Path $Here "install.ps1") $Launch -Force      # the tray's "Show pairing QR code" runs it with -PairOnly
+    Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -Value "wscript.exe //B //Nologo `"$Launch\hermes-tray.vbs`""
+    Start-Process wscript.exe -ArgumentList "//B", "//Nologo", "`"$Launch\hermes-tray.vbs`""
+    Ok "tray icon started (starts with Windows; toggle in its menu)"
 } else {
     $key = Get-Key; if (-not $key) { throw "No API_SERVER_KEY yet: run install.cmd without -PairOnly first." }
     $script:ApkUrl = "https://github.com/$Repo/releases/latest"

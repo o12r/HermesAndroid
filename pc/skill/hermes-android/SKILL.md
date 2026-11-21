@@ -18,7 +18,8 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 |---|---|
 | Relay | `%LOCALAPPDATA%\hermes\launchers\hermes-phone-relay.py` (run with the Hermes venv `pythonw.exe -I`) |
 | Relay log | `%LOCALAPPDATA%\hermes\launchers\phone-relay.log` (never contains keys or tickets) |
-| Keep-alive | Scheduled task `Hermes_PhoneRelay` → `ensure-phone-relay.vbs` → `ensure-phone-relay.ps1` (at logon, on wake, every 5 min) |
+| Tray app | `launchers\hermes-tray.ps1` (started by `hermes-tray.vbs`, HKCU Run `HermesAndroidTray`): green/yellow/red icon for relay / gateway / Tailscale, restarts the relay ~30 s after it dies, Windows notification on failure, menu items for restart, log, pairing QR and autostart |
+| Keep-alive (fallback) | Scheduled task `Hermes_PhoneRelay` → `ensure-phone-relay.vbs` → `ensure-phone-relay.ps1` (at logon, on wake, every 5 min) |
 | Key | `API_SERVER_KEY=` in `%LOCALAPPDATA%\hermes\.env`, the same value in every profile's `.env` |
 | App updates | `%LOCALAPPDATA%\hermes\launchers\app-updates\hermes-android\` (`latest.json`, `app.apk`, `hotfix.json`) |
 | Installer | `pc\install.cmd` in the repo (`-Uninstall` removes everything it installed; keys are kept) |
@@ -27,7 +28,8 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 - `GET /health`: no auth. Returns `{"status":"ok","relay":"hermes-phone-relay"}`.
 - `GET /ws?profile=<p>`: desktop JSON-RPC WebSocket for that profile. The relay mints a ticket with `hermes -p <p> gateway attach --json`.
 - `/api/*?profile=<p>`: the gateway's native HTTP API (sessions list, messages, rename, delete).
-- `GET /app/<app-id>/{latest.json,apk,hotfix.json}`: in-app updates.
+- `GET /app/<app-id>/{latest.json,apk,hotfix.json}`: in-app updates. The APK supports `Range`, so the app resumes broken downloads.
+- `POST /fs/stat|mkdir {"path": "<absolute>"}`: the app checks a new project's folder, and creates it after the user confirms.
 - Everything except `/health` needs `Authorization: Bearer <API_SERVER_KEY>`. A wrong key returns 401.
 
 ## Diagnose (in this order)

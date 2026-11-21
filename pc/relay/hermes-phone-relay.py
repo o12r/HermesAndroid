@@ -137,6 +137,31 @@ async def app_files(req: web.Request):
     return web.json_response({"error": "not found"}, status=404)
 
 
+async def fs_op(req: web.Request):
+    """POST /fs/stat|mkdir {"path": "C:\\..."}: lets the phone check / create a project folder. Absolute paths only."""
+    auth = req.headers.get("Authorization", "")
+    if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        raw = str((await req.json()).get("path", "")).strip()
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+    p = Path(os.path.expandvars(os.path.expanduser(raw)))
+    if not raw or not p.is_absolute():
+        return web.json_response({"error": "path must be absolute"}, status=400)
+    op = req.match_info["op"]
+    if op == "stat":
+        return web.json_response({"exists": p.exists(), "dir": p.is_dir()})
+    if op == "mkdir":
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return web.json_response({"error": f"mkdir failed: {e.strerror or e}"}, status=400)
+        log.info("phone created folder %s", p)
+        return web.json_response({"exists": True, "dir": True})
+    return web.json_response({"error": "not found"}, status=404)
+
+
 async def _watchdog(app):
     """After hibernate/resume the Tailscale socket can go dead while the process lives on.
     Probe our own /health every 60 s; after 3 straight failures exit, so the scheduled
@@ -212,6 +237,7 @@ def main():
     app.router.add_get("/ws", ws_handler)
     app.router.add_route("*", "/api/{tail:.*}", http_proxy)
     app.router.add_get("/app/{app}/{what}", app_files)
+    app.router.add_post("/fs/{op}", fs_op)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -227,6 +253,7 @@ def main():
             app.router.add_get("/ws", ws_handler)
             app.router.add_route("*", "/api/{tail:.*}", http_proxy)
             app.router.add_get("/app/{app}/{what}", app_files)
+            app.router.add_post("/fs/{op}", fs_op)
             app.on_startup.append(_watchdog)
 
 

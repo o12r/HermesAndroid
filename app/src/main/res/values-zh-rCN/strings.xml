@@ -156,4 +156,10 @@
     <string name="steps_running">运行中…</string>
     <string name="steps_output">输出</string>
     <string name="paired">已与电脑配对</string>
+    <string name="n_update_ready">更新已下载</string>
+    <string name="n_update_ready_text">点击安装</string>
+    <string name="folder_missing_title">文件夹不存在</string>
+    <string name="folder_missing_text">电脑上没有 %1$s，要创建这个文件夹吗？</string>
+    <string name="create_folder">创建文件夹</string>
+    <string name="not_a_folder">%1$s 是文件，不是文件夹</string>
 </resources>
