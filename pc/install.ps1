@@ -87,7 +87,8 @@ if ($Uninstall) {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Ok "tray app removed"
     Stop-Relay; Ok "relay stopped"
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "install.ps1", "hermes-android-pair.html") {
+    Remove-Item (Join-Path $Launch "phone-outbox") -Recurse -ErrorAction SilentlyContinue
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "install.ps1", "hermes-android-pair.html") {
         Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
     Remove-Item $PyLib -Recurse -ErrorAction SilentlyContinue
@@ -128,7 +129,7 @@ if (-not $PairOnly) {
     Step "Phone relay"
     New-Item -ItemType Directory -Force $Launch | Out-Null
     Stop-Relay
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs") { Copy-Item (Join-Path $Here "relay\$f") $Launch -Force }
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py") { Copy-Item (Join-Path $Here "relay\$f") $Launch -Force }
     Copy-Item (Join-Path $Here "pair_page.py") $Launch -Force
     $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $xml = (Get-Content (Join-Path $Here "relay\relay-task.xml") -Raw).Replace("__USER__", $user).Replace("__LAUNCHERS__", $Launch)

@@ -162,6 +162,41 @@ async def fs_op(req: web.Request):
     return web.json_response({"error": "not found"}, status=404)
 
 
+OUTBOX = HERMES_HOME / "launchers" / "phone-outbox"   # files the agent sends to the phone (send-to-phone.py)
+SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._() \-]{0,200}")
+
+
+def _authed(req):
+    auth = req.headers.get("Authorization", "")
+    return auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)
+
+
+async def outbox_list(req: web.Request):
+    """GET /outbox: files waiting for the phone (put there by send-to-phone.py)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    OUTBOX.mkdir(parents=True, exist_ok=True)
+    files = [f for f in OUTBOX.iterdir() if f.is_file() and SAFE_NAME.fullmatch(f.name)]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return web.json_response({"files": [{"name": f.name, "size": f.stat().st_size, "time": int(f.stat().st_mtime)} for f in files]})
+
+
+async def outbox_item(req: web.Request):
+    """GET /outbox/<name> downloads a file; DELETE removes it once the phone has saved it."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    name = req.match_info["name"]
+    if not SAFE_NAME.fullmatch(name):
+        return web.json_response({"error": "bad name"}, status=400)
+    f = OUTBOX / name
+    if not f.is_file():
+        return web.json_response({"error": "not found"}, status=404)
+    if req.method == "DELETE":
+        f.unlink()
+        return web.json_response({"ok": True})
+    return web.FileResponse(f, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
 async def _watchdog(app):
     """After hibernate/resume the Tailscale socket can go dead while the process lives on.
     Probe our own /health every 60 s; after 3 straight failures exit, so the scheduled
@@ -238,6 +273,8 @@ def main():
     app.router.add_route("*", "/api/{tail:.*}", http_proxy)
     app.router.add_get("/app/{app}/{what}", app_files)
     app.router.add_post("/fs/{op}", fs_op)
+    app.router.add_get("/outbox", outbox_list)
+    app.router.add_route("*", "/outbox/{name}", outbox_item)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -254,6 +291,8 @@ def main():
             app.router.add_route("*", "/api/{tail:.*}", http_proxy)
             app.router.add_get("/app/{app}/{what}", app_files)
             app.router.add_post("/fs/{op}", fs_op)
+            app.router.add_get("/outbox", outbox_list)
+            app.router.add_route("*", "/outbox/{name}", outbox_item)
             app.on_startup.append(_watchdog)
 
 

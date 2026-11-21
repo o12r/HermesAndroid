@@ -55,6 +55,10 @@ class SecureStore(ctx: Context) {
     /** "provider|model" or "" = server default; stored per profile. */
     fun modelFor(profile: String): String = prefs.getString("model.$profile", "")!!
     fun setModelFor(profile: String, v: String) = prefs.edit().putString("model.$profile", v).apply()
+    fun sessionModel(id: String): String? = prefs.getString("smodel.$id", null)
+    fun setSessionModel(id: String, v: String) = prefs.edit().putString("smodel.$id", v).apply()
+    fun sessionEffort(id: String): String? = prefs.getString("seffort.$id", null)
+    fun setSessionEffort(id: String, v: String) = prefs.edit().putString("seffort.$id", v).apply()
     fun effortFor(profile: String): String = prefs.getString("effort.$profile", "")!!
     fun setEffortFor(profile: String, v: String) = prefs.edit().putString("effort.$profile", v).apply()
 

@@ -58,3 +58,20 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 - Release: `python scripts/release.py --notes "..." [--github]` bumps `version.properties`, builds, and publishes to the PC update folder (and GitHub). Phones update from Settings → Check for updates.
 - Hotfix without a release: edit `hotfix.json` (banner text, `min_version_code`, feature flags), then `python scripts/release.py --hotfix`.
 - Updates must be signed with the same key as the installed app: the debug keystore of the PC that built it.
+
+## Sending a file to the phone
+
+When the user asks you to send, share or "put on my phone" a file (a report, image, export, log…), put it in the phone's Inbox:
+
+1. Run the sender (it is in the launchers folder; stdlib only, no key needed):
+   `python -I "%LOCALAPPDATA%\hermes\launchers\send-to-phone.py" "<absolute path to file>" [--name "nice name.ext"]`
+2. It prints the stored name. Tell the user: "Sent to your phone's Inbox: <name>. Open Hermes → Inbox icon (top bar) → Save; it lands in Downloads."
+3. Limits: files up to 500 MB; a file that doesn't exist makes the command exit with an error. Re-run after fixing the path.
+
+Rules:
+- Send a copy, never the original: the sender copies the file, so the original stays where it is.
+- Only send files the user asked for. Don't send keys, `.env` files or anything under `%LOCALAPPDATA%\hermes` unless the user explicitly asks.
+- The Inbox entry is removed from the PC once the phone saves it. Files never sent stay in `launchers\phone-outbox` until saved.
+- If the phone isn't connected, the file just waits in the outbox; nothing is lost.
+
+Verify it works (optional): `curl -H "Authorization: Bearer <key>" http://127.0.0.1:8643/outbox` lists the waiting files (the key is in `%LOCALAPPDATA%\hermes\.env`; never print it).

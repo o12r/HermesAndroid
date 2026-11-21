@@ -162,4 +162,17 @@
     <string name="folder_missing_text">%1$s doesn\'t exist on the PC. Create it?</string>
     <string name="create_folder">Create folder</string>
     <string name="not_a_folder">%1$s is a file, not a folder</string>
+    <string name="tile_usb_tether">USB tethering</string>
+    <string name="tile_on">On</string>
+    <string name="tile_off">Off</string>
+    <string name="tile_settings_mode">Opens tethering settings</string>
+    <string name="app_icon">App icon</string>
+    <string name="icon_dark">Black</string>
+    <string name="icon_light">White</string>
+    <string name="inbox">Inbox</string>
+    <string name="inbox_help">Files Hermes sent you from the PC. Save puts them in Downloads.</string>
+    <string name="inbox_empty">Nothing here yet. Ask Hermes to send you a file.</string>
+    <string name="inbox_save">Save</string>
+    <string name="inbox_close">Close</string>
+    <string name="inbox_saved">Saved to Downloads: %1$s</string>
 </resources>

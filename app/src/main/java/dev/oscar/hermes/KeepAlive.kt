@@ -27,13 +27,33 @@ class KeepAliveService : Service() {
             .build()
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         else startForeground(1, n)
+        // Screen locked: keep the CPU and Wi-Fi awake so the gateway socket (and its 20 s pings) stays up.
+        if (wake == null) wake = getSystemService(android.os.PowerManager::class.java)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:keepalive").apply { setReferenceCounted(false); acquire() }
+        @Suppress("DEPRECATION")
+        if (wifi == null) wifi = applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+            ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:keepalive")?.apply { setReferenceCounted(false); acquire() }
         return START_NOT_STICKY
     }
+
+    private var wake: android.os.PowerManager.WakeLock? = null
+    private var wifi: android.net.wifi.WifiManager.WifiLock? = null
+    override fun onDestroy() { runCatching { wake?.release() }; runCatching { wifi?.release() }; wake = null; wifi = null; super.onDestroy() }
 
     override fun onTaskRemoved(rootIntent: Intent?) { stopSelf() }
 
     companion object {
         fun start(ctx: Context) = runCatching { ctx.startForegroundService(Intent(ctx, KeepAliveService::class.java)) }
+
+        /** Doze still cuts the network unless the app is exempt from battery optimisation: ask once. */
+        @android.annotation.SuppressLint("BatteryLife")
+        fun askBatteryExemption(ctx: android.app.Activity) {
+            val pm = ctx.getSystemService(android.os.PowerManager::class.java)
+            val prefs = ctx.getSharedPreferences("keepalive", Context.MODE_PRIVATE)
+            if (pm.isIgnoringBatteryOptimizations(ctx.packageName) || prefs.getBoolean("asked", false)) return
+            prefs.edit().putBoolean("asked", true).apply()
+            runCatching { ctx.startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:" + ctx.packageName))) }
+        }
         fun stop(ctx: Context) = runCatching { ctx.stopService(Intent(ctx, KeepAliveService::class.java)) }
     }
 }

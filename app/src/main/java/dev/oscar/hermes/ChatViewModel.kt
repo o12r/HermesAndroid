@@ -54,6 +54,8 @@ class Chat(val profile: String, id: String?, title: String?) {
     var revision = 0
     var dropped = false                          // a turn was running when the connection dropped
     var newCwd: String? = null
+    var model by mutableStateOf("")              // per chat: "provider|model" or "" (server default)
+    var effort by mutableStateOf("")
     var loaded = false
     /** Unsent text in the input box; survives leaving and re-opening the chat. */
     var draft by mutableStateOf("")
@@ -86,11 +88,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Project groups from projects.tree (Home = sessions outside any project). */
     var projects by mutableStateOf<List<Project>>(emptyList())
     var activeProject by mutableStateOf<String?>(null)
+    /** Project the user last tapped on the session list; the "New chat" button uses it before the default project. */
+    var lastProject by mutableStateOf<Project?>(null)
+    val fabProject: Project? get() = lastProject?.let { l -> projects.find { it.id == l.id } ?: l } ?: projects.find { it.id == activeProject }
     /** Folder for the next new chat (project primary path), null = Hermes default. */
     private var newChatCwd: String? = null
     /** All open chats (any profile); [cur] is the one on screen. */
     private val chats = mutableListOf<Chat>()
-    var cur by mutableStateOf(Chat(store.profile, null, null))
+    var cur by mutableStateOf(Chat(store.profile, null, null).apply { model = store.modelFor(profile); effort = store.effortFor(profile) })
     var currentId: String? get() = cur.id; set(v) { cur.id = v }
     var currentTitle: String? get() = cur.title; set(v) { cur.title = v }
     val messages get() = cur.messages
@@ -110,7 +115,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun switchTo(c: Chat) {
         if (c.profile != profile) {
             profile = c.profile; store.profile = c.profile
-            model = store.modelFor(c.profile); effort = store.effortFor(c.profile)
             serverCommands = emptyList(); projects = emptyList(); refreshSessions(); loadMeta()
         }
         cur = c; screen = Screen.Chat
@@ -126,7 +130,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         tabs.removeAt(i)
         if (c === cur) {
             val next = tabs.getOrNull(i) ?: tabs.getOrNull(i - 1)
-            if (next != null) switchTo(next) else { cur = Chat(profile, null, null); screen = Screen.Sessions; refreshSessions() }
+            if (next != null) switchTo(next) else { cur = Chat(profile, null, null).initModel(); screen = Screen.Sessions; refreshSessions() }
         }
     }
 
@@ -135,12 +139,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun chatFor(profile: String, id: String?, title: String? = null): Chat =
         (if (id != null) chats.find { it.profile == profile && it.id == id } else null)
-            ?: Chat(profile, id, title).also { chats.add(it); if (chats.size > 30) chats.removeAll { c -> !c.streaming && c !== cur && c !== it && chats.indexOf(c) < 10 } }
+            ?: Chat(profile, id, title).initModel().also { chats.add(it); if (chats.size > 30) chats.removeAll { c -> !c.streaming && c !== cur && c !== it && chats.indexOf(c) < 10 } }
     var modelOptions by mutableStateOf<ModelOptions?>(null)
     var skills by mutableStateOf<List<Skill>>(emptyList())
     var serverCommands by mutableStateOf<List<Pair<String, String>>>(emptyList())
-    var model by mutableStateOf(store.modelFor(store.profile))      // "provider|model" or ""
-    var effort by mutableStateOf(store.effortFor(store.profile))    // "" = server default
+    // Model and effort belong to the current chat. The last choice per profile is the default for new chats.
+    var model: String get() = cur.model; set(v) { cur.model = v }
+    var effort: String get() = cur.effort; set(v) { cur.effort = v }
+    /** Give a chat its model: the one saved for that session, else the last one picked in this profile. */
+    private fun Chat.initModel(): Chat = apply {
+        model = id?.let { store.sessionModel(it) } ?: store.modelFor(profile)
+        effort = id?.let { store.sessionEffort(it) } ?: store.effortFor(profile)
+    }
     var modelMenuOpen by mutableStateOf(false)
     private var lastSent: Pair<String, List<Attachment>>? = null
 
@@ -176,6 +186,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun chooseTheme(t: String) { theme = t; store.theme = t }
+
+    /** Files the agent sent to the phone (Inbox dialog). */
+    var inboxOpen by mutableStateOf(false)
+    var inboxFiles by mutableStateOf<List<Inbox.Item>>(emptyList())
+    var inboxBusy by mutableStateOf(false)
+    fun openInbox() { inboxOpen = true; refreshInbox() }
+    fun refreshInbox() = viewModelScope.launch {
+        inboxBusy = true
+        try { inboxFiles = withContext(Dispatchers.IO) { Inbox.list(store) } } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
+    }
+    fun saveInbox(name: String) = viewModelScope.launch {
+        inboxBusy = true
+        try {
+            withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) }
+            inboxFiles = inboxFiles.filterNot { it.name == name }
+            android.widget.Toast.makeText(getApplication(), s(R.string.inbox_saved, name), android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
+    }
+
+    /** Launcher icon: "dark" (black, white H) or "light" (white, black H); switches which activity-alias is enabled. */
+    var appIcon by mutableStateOf(run {
+        val pm = getApplication<android.app.Application>().packageManager
+        val light = android.content.ComponentName(getApplication<android.app.Application>(), "dev.oscar.hermes.IconLight")
+        if (pm.getComponentEnabledSetting(light) == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED) "light" else "dark"
+    })
+    fun chooseIcon(v: String) {
+        if (v == appIcon) return
+        val app = getApplication<android.app.Application>(); val pm = app.packageManager
+        fun set(n: String, on: Boolean) = pm.setComponentEnabledSetting(android.content.ComponentName(app, "dev.oscar.hermes.$n"),
+            if (on) android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED else android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            android.content.pm.PackageManager.DONT_KILL_APP)
+        set(if (v == "light") "IconLight" else "IconDark", true); set(if (v == "light") "IconDark" else "IconLight", false)
+        appIcon = v
+    }
     var fontScale by mutableStateOf(store.fontScale)
     fun chooseFontScale(f: Float) { fontScale = f; store.fontScale = f }
 
@@ -293,6 +337,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     c.newCwd?.let { put("cwd", it).put("cwd_explicit", true) } }).also { r ->
                 c.newCwd = null
                 c.id = r.optString("stored_session_id").ifBlank { r.getString("session_id") }
+                c.id?.let { store.setSessionModel(it, c.model); store.setSessionEffort(it, c.effort) }
             }
         c.generation = snap.optInt("execution_generation", c.generation)
         c.revision = snap.optInt("revision", c.revision)
@@ -334,8 +379,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun modelLabel(): String = if (model.isBlank()) "Default: " + (modelOptions?.currentModel?.ifBlank { null } ?: "server")
         else model.substringAfter('|')
-    fun chooseModel(key: String) { model = key; store.setModelFor(profile, key) }
-    fun chooseEffort(e: String) { effort = e; store.setEffortFor(profile, e) }
+    fun chooseModel(key: String) { model = key; store.setModelFor(profile, key); cur.id?.let { store.setSessionModel(it, key) } }
+    fun chooseEffort(e: String) { effort = e; store.setEffortFor(profile, e); cur.id?.let { store.setSessionEffort(it, e) } }
 
     private fun modelOverride(): JSONObject? {
         val m = model.substringAfter('|', "").ifBlank { null }
@@ -367,8 +412,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // Other profiles' connections and chats stay open, so their running turns keep streaming.
         serverCommands = emptyList()
         profile = p; store.profile = p
-        model = store.modelFor(p); effort = store.effortFor(p)
-        cur = Chat(p, null, null); projects = emptyList(); sessions = emptyList()
+        cur = Chat(p, null, null).initModel(); projects = emptyList(); sessions = emptyList()
         screen = Screen.Sessions; refreshSessions(); loadMeta()
     }
 
@@ -467,7 +511,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val p = prof ?: profile
         chats.find { it.profile == p && it.id == id }?.let { addTab(it); switchTo(it); return }
         if (p != profile) {
-            profile = p; store.profile = p; model = store.modelFor(p); effort = store.effortFor(p)
+            profile = p; store.profile = p
             serverCommands = emptyList(); projects = emptyList(); loadMeta()
         }
         open(Session(id, null, null, null, 0, null)); refreshSessions()
@@ -541,7 +585,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun newChat() {
-        cur = Chat(profile, null, null).also { it.newCwd = newChatCwd ?: projects.find { p -> p.id == activeProject }?.path; chats.add(it); addTab(it) }
+        cur = Chat(profile, null, null).initModel().also { it.newCwd = newChatCwd ?: fabProject?.let { p -> p.path ?: p.homeCwd }; chats.add(it); addTab(it) }
         newChatCwd = null; attachments.clear(); screen = Screen.Chat
     }
 
@@ -736,9 +780,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             "message.start" -> { c.streaming = true; c.status = null
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
-            "message.delta" -> { c.status = null; updateLast(c) { it.copy(text = it.text + p.str("text")) } }
-            "thinking.delta" -> c.status = s(R.string.thinking_status)
-            "reasoning.delta" -> { c.status = s(R.string.thinking_status)
+            "message.delta" -> { c.status = null; updateLast(c) { it.copy(text = it.text + p.str("text"),
+                steps = it.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }) } }
+            "thinking.delta", "reasoning.delta" -> { c.status = s(R.string.thinking_status)
                 val t = p.str("text"); if (t.isNotEmpty()) updateLast(c) { m ->
                     val last = m.steps.lastOrNull()
                     m.copy(steps = if (last?.kind == "thinking" && last.output == null) m.steps.dropLast(1) + last.copy(detail = last.detail + t) else m.steps + Step("thinking", "", t)) } }

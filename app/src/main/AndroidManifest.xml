@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <application
         android:label="Hermes"
@@ -20,10 +21,6 @@
             android:exported="true"
             android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTask">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
             <!-- hermes://pair?url=...&lan=...&key=... from the PC installer (QR code or adb) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -32,7 +29,32 @@
                 <data android:scheme="hermes" android:host="pair" />
             </intent-filter>
         </activity>
+        <!-- Launcher icon choice: exactly one of these aliases is enabled (Settings → App icon). -->
+        <activity-alias android:name=".IconDark" android:targetActivity=".MainActivity" android:exported="true"
+            android:enabled="true" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias android:name=".IconLight" android:targetActivity=".MainActivity" android:exported="true"
+            android:enabled="false" android:icon="@mipmap/ic_launcher_light" android:roundIcon="@mipmap/ic_launcher_light">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <service android:name=".KeepAliveService" android:exported="false" android:foregroundServiceType="remoteMessaging" />
         <receiver android:name=".InstallReceiver" android:exported="false" />
+        <service
+            android:name=".UsbTetherTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_usb_tether"
+            android:label="@string/tile_usb_tether"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

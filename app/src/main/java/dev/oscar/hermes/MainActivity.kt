@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         KeepAliveService.start(this)
         handlePair(intent); handleOpen(intent)
+        KeepAliveService.askBatteryExemption(this)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
@@ -268,12 +269,13 @@ fun SessionsScreen(vm: ChatViewModel) {
         topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name)) }, actions = {
             ProfileMenu(vm)
             IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
+            IconButton(onClick = { vm.openInbox() }) { Icon(Icons.Default.Inbox, stringResource(R.string.inbox)) }
             IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
             IconButton(onClick = { vm.screen = Screen.Settings }) {
                 BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } })
             ChatTabs(vm, onList = true) } },
         floatingActionButton = { ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
-            text = { Text(vm.projects.find { it.id == vm.activeProject }?.let { stringResource(R.string.new_chat_in, it.name) } ?: stringResource(R.string.new_chat)) }) },
+            text = { Text(vm.fabProject?.let { stringResource(R.string.new_chat_in, if (it.isHome) stringResource(R.string.home) else it.name) } ?: stringResource(R.string.new_chat)) }) },
         contentWindowInsets = WindowInsets(0)
     ) { pad ->
         if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
@@ -302,7 +304,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                     leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; deletingProject = p })
                             } } },
                         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                        modifier = Modifier.clickable { open[p.id] = !isOpen })
+                        modifier = Modifier.clickable { open[p.id] = !isOpen; vm.lastProject = p })
                     HorizontalDivider()
                 }
                 if (isOpen) items(list, key = { p.id + ":" + it.id }) { s ->
@@ -317,7 +319,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = s })
                             } } },
-                        modifier = Modifier.clickable { vm.open(s) }.padding(start = 16.dp))
+                        modifier = Modifier.clickable { if (p.id != "__all") vm.lastProject = p; vm.open(s) }.padding(start = 16.dp))
                     HorizontalDivider()
                 }
             }
@@ -361,6 +363,21 @@ fun SessionsScreen(vm: ChatViewModel) {
             confirmButton = { Button(onClick = { vm.missingFolder = null; vm.createProject(name, path, mkdir = true) }) { Text(stringResource(R.string.create_folder)) } },
             dismissButton = { TextButton(onClick = { vm.missingFolder = null }) { Text(stringResource(R.string.cancel)) } })
     }
+    if (vm.inboxOpen) AlertDialog(onDismissRequest = { vm.inboxOpen = false }, title = { Text(stringResource(R.string.inbox)) },
+        text = { Column {
+            Text(stringResource(R.string.inbox_help), style = MaterialTheme.typography.bodySmall)
+            if (vm.inboxBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 6.dp))
+            if (vm.inboxFiles.isEmpty() && !vm.inboxBusy) Text(stringResource(R.string.inbox_empty), Modifier.padding(vertical = 8.dp))
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(vm.inboxFiles, key = { it.name }) { f ->
+                    ListItem(headlineContent = { Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = { Text(Inbox.sizeText(f.size)) },
+                        trailingContent = { TextButton(onClick = { vm.saveInbox(f.name) }, enabled = !vm.inboxBusy) { Text(stringResource(R.string.inbox_save)) } })
+                }
+            }
+        } },
+        confirmButton = { TextButton(onClick = { vm.refreshInbox() }, enabled = !vm.inboxBusy) { Text(stringResource(R.string.refresh)) } },
+        dismissButton = { TextButton(onClick = { vm.inboxOpen = false }) { Text(stringResource(R.string.inbox_close)) } })
     deletingProject?.let { p ->
         AlertDialog(onDismissRequest = { deletingProject = null }, title = { Text(stringResource(R.string.delete_project_q, p.name)) },
             text = { Text(stringResource(R.string.delete_project_note)) },
@@ -567,7 +584,7 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
         Surface(shape = RoundedCornerShape(14.dp), color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = if (user) 320.dp else 600.dp)) {
             Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
-                if (m.steps.isNotEmpty()) StepsView(m.steps) else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
+                if (m.steps.isNotEmpty()) StepsView(m.steps, live = vm.cur.streaming && m === vm.cur.messages.lastOrNull()) else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
                 if (user) Text(m.text) else Markdown(if (m.text.isEmpty()) "…" else m.text)
                 if (m.failed) FailedActions(m, vm) else MessageActions(m, vm)
             }
@@ -577,12 +594,17 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
 
 /** Hermes's thinking and tool calls behind a reply: collapsed by default, each tool's output collapsible too. */
 @Composable
-fun StepsView(steps: List<Step>) {
-    var open by remember { mutableStateOf(false) }
+fun StepsView(steps: List<Step>, live: Boolean = false) {
+    // Open by itself while the model is thinking (the text streams in), closes again once thinking ends;
+    // a tap overrides that until the next thinking phase.
+    val thinkingNow = live && steps.lastOrNull()?.let { it.kind == "thinking" && it.output == null } == true
+    var userOpen by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(thinkingNow) { userOpen = null }
+    val open = userOpen ?: thinkingNow
     val tools = steps.count { it.kind == "tool" }; val thinking = steps.any { it.kind == "thinking" }
     val summary = listOfNotNull(if (thinking) stringResource(R.string.steps_thinking) else null,
         if (tools > 0) stringResource(R.string.steps_tools, tools) else null).joinToString(" · ")
-    Row(Modifier.clickable { open = !open }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.clickable { userOpen = !open }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
         Text(" " + summary + if (!open && tools > 0) "  ·  " + steps.filter { it.kind == "tool" }.joinToString(", ") { it.name }.take(80) else "",
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -711,6 +733,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Text(stringResource(R.string.appearance), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.theme_system), "light" to stringResource(R.string.theme_light),
                 "dark" to stringResource(R.string.theme_dark), "black" to stringResource(R.string.theme_black)), vm.theme) { vm.chooseTheme(it) }
+            Text(stringResource(R.string.app_icon))
+            ChoiceRow(listOf("dark" to stringResource(R.string.icon_dark), "light" to stringResource(R.string.icon_light)), vm.appIcon) { vm.chooseIcon(it) }
             Text(stringResource(R.string.font_size, (vm.fontScale * 100).toInt()), style = MaterialTheme.typography.titleSmall)
             Slider(vm.fontScale, { vm.chooseFontScale((it * 20).toInt() / 20f) }, valueRange = 0.8f..1.5f, steps = 13)
             Text(stringResource(R.string.font_preview), style = MaterialTheme.typography.bodyMedium)
