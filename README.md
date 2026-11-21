@@ -36,6 +36,20 @@ timeout 1200 ./gradlew assembleDebug --console=plain > build.log 2>&1
 - APK: `app/build/outputs/apk/debug/app-debug.apk` (debug-signed, minSdk 29, about 65 MB).
 - Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk`, or copy the APK to the phone and sideload it.
 
+## One-click setup (PC)
+Requirements: a Windows PC with Hermes Agent installed, and Tailscale on both the PC and the phone (or both on the same Wi-Fi).
+
+Double-click **`pc\install.cmd`**. It:
+1. reuses or creates `API_SERVER_KEY` and writes it to every profile's `.env` (backups: `.env.bak-android`);
+2. installs the phone relay and the `Hermes_PhoneRelay` scheduled task (logon, wake, every 5 min), starts it and checks it;
+3. sets up the in-app update folder with the latest APK;
+4. installs the `hermes-android` skill into every Hermes profile, so your local Hermes knows how to use, fix and improve this setup;
+5. pairs the phone:
+   - **USB / adb connected:** installs the app and pairs it. Nothing to type on the phone.
+   - **Otherwise:** opens a page with two QR codes. ① Download the app. ② Scan to pair (opens in Hermes and fills in the address and key).
+
+Other modes: `install.cmd -PairOnly` (pair another phone), `-NoAdb` (always show the QR page), `-Uninstall` (removes everything it installed; the keys in `.env` stay).
+
 ## Releasing an update
 The version lives in `version.properties`. `scripts/release.py` bumps it, builds, and publishes.
 ```bash

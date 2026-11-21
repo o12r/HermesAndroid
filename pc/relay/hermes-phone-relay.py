@@ -1,0 +1,234 @@
+"""Phone relay: exposes the Hermes desktop WebSocket protocol (hermes-gateway-v1) on Tailscale.
+
+The gateway's /api/ws listens on loopback only and needs a single-use ticket that only a local
+process can mint (`hermes gateway attach`). This relay:
+  * listens on RELAY_HOST:RELAY_PORT (all addresses, :8643; Bearer API key required),
+  * authenticates the phone with the same API_SERVER_KEY as the api_server (Bearer header),
+  * mints a fresh ticket for the requested profile and pipes frames both ways, unmodified.
+Run with the Hermes venv python. Never logs keys or tickets.
+"""
+import asyncio, hmac, json, logging, os, re, subprocess, sys
+from pathlib import Path
+from aiohttp import web, ClientSession, WSMsgType
+
+HERMES_HOME = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes"
+HOST = os.environ.get("RELAY_HOST", "0.0.0.0")  # all addresses: Tailscale + LAN (API key required)
+PORT = int(os.environ.get("RELAY_PORT", "8643"))
+HERMES = str(HERMES_HOME / "bin" / "hermes.exe")
+LOG = HERMES_HOME / "launchers" / "phone-relay.log"
+logging.basicConfig(filename=LOG, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("relay")
+
+
+def api_key() -> str:
+    for line in (HERMES_HOME / ".env").read_text(encoding="utf-8").splitlines():
+        if line.startswith("API_SERVER_KEY="):
+            return line.split("=", 1)[1].strip()
+    raise SystemExit("API_SERVER_KEY missing from default .env")
+
+
+KEY = api_key()
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console window for hermes.exe children
+
+
+def profile_ok(p: str) -> bool:
+    return p == "default" or (re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", p or "") is not None
+                              and (HERMES_HOME / "profiles" / p).is_dir())
+
+
+async def attach(profile: str) -> dict:
+    args = [HERMES] + ([] if profile == "default" else ["-p", profile]) + ["gateway", "attach", "--json"]
+    proc = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        proc.kill(); raise RuntimeError("gateway attach timed out")
+    lines = out.decode("utf-8", "replace").strip().splitlines()
+    d = json.loads(lines[-1]) if lines else {}
+    if d.get("state") != "ready" or not d.get("url"):
+        raise RuntimeError(f"gateway not ready ({d.get('state')}, {d.get('reason_code')})")
+    return d
+
+
+class TicketServer:
+    """One long-lived `hermes gateway tickets --serve`: a fresh single-use native-http ticket per request."""
+    def __init__(self):
+        self.proc = None; self.origin = None; self.lock = asyncio.Lock(); self.n = 0
+
+    async def _start(self):
+        self.proc = await asyncio.create_subprocess_exec(
+            HERMES, "-p", "default", "gateway", "tickets", "--serve", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        hello = json.loads(await asyncio.wait_for(self.proc.stdout.readline(), 60))
+        self.origin = (hello.get("endpoint") or {}).get("api_origin")
+        if not self.origin:
+            raise RuntimeError("ticket server: no api_origin")
+
+    async def ticket(self, profile: str):
+        async with self.lock:
+            for attempt in (1, 2):
+                try:
+                    if self.proc is None or self.proc.returncode is not None:
+                        await self._start()
+                    self.n += 1
+                    req = {"id": str(self.n), "purpose": "native-http"}
+                    if profile != "default":
+                        req["profile"] = profile
+                    self.proc.stdin.write((json.dumps(req) + "\n").encode()); await self.proc.stdin.drain()
+                    r = json.loads(await asyncio.wait_for(self.proc.stdout.readline(), 30))
+                    if not r.get("ok") or not r.get("ticket"):
+                        raise RuntimeError(f"ticket refused: {r.get('error') or r.get('reason')}")
+                    return self.origin, r["ticket"]
+                except Exception:
+                    if self.proc is not None and self.proc.returncode is None:
+                        self.proc.kill()
+                    self.proc = None
+                    if attempt == 2:
+                        raise
+
+
+TICKETS = TicketServer()
+_FWD_HEADERS = ("content-type", "accept")
+
+
+async def http_proxy(req: web.Request):
+    """Forward /api/* to the gateway's native HTTP API (the desktop app's sessions/messages routes)."""
+    auth = req.headers.get("Authorization", "")
+    if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    profile = req.query.get("profile", "default")
+    if not profile_ok(profile):
+        return web.json_response({"error": "unknown profile"}, status=404)
+    try:
+        origin, ticket = await TICKETS.ticket(profile)
+    except Exception as e:
+        log.warning("ticket failed: %s", e)
+        return web.json_response({"error": f"gateway unavailable: {e}"}, status=503)
+    headers = {k: v for k, v in req.headers.items() if k.lower() in _FWD_HEADERS}
+    headers["x-hermes-gateway-ticket"] = ticket
+    body = await req.read()
+    async with ClientSession() as s:
+        async with s.request(req.method, origin + req.path_qs, headers=headers, data=body or None,
+                             timeout=__import__("aiohttp").ClientTimeout(total=120)) as r:
+            data = await r.read()
+            return web.Response(status=r.status, body=data,
+                                content_type=(r.content_type or "application/json"))
+
+
+UPDATES = HERMES_HOME / "launchers" / "app-updates"
+
+
+async def app_files(req: web.Request):
+    """In-app updates/hotfix for any android-dev app: launchers/app-updates/<app>/{latest.json,hotfix.json,app.apk}."""
+    auth = req.headers.get("Authorization", "")
+    if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    app_id, what = req.match_info["app"], req.match_info["what"]
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", app_id):
+        return web.json_response({"error": "bad app"}, status=404)
+    d = UPDATES / app_id
+    if what in ("latest.json", "hotfix.json"):
+        f = d / what
+        return web.FileResponse(f, headers={"Cache-Control": "no-store"}) if f.is_file() else web.json_response({"error": "none"}, status=404)
+    if what == "apk":
+        f = d / "app.apk"
+        return web.FileResponse(f, headers={"Content-Type": "application/vnd.android.package-archive"}) if f.is_file() \
+            else web.json_response({"error": "none"}, status=404)
+    return web.json_response({"error": "not found"}, status=404)
+
+
+async def _watchdog(app):
+    """After hibernate/resume the Tailscale socket can go dead while the process lives on.
+    Probe our own /health every 60 s; after 3 straight failures exit, so the scheduled
+    task (Hermes_PhoneRelay, every 5 min / on wake / at logon) starts a fresh instance."""
+    async def loop():
+        fails = 0
+        await asyncio.sleep(60)
+        while True:
+            try:
+                async with ClientSession() as s:
+                    async with s.get(f"http://127.0.0.1:{PORT}/health", timeout=__import__("aiohttp").ClientTimeout(total=10)) as r:
+                        fails = 0 if r.status == 200 else fails + 1
+            except Exception:
+                fails += 1
+            if fails >= 3:
+                log.warning("self health check failed 3x; exiting for restart")
+                os._exit(3)
+            await asyncio.sleep(60)
+    app["watchdog"] = asyncio.create_task(loop())
+
+
+async def health(_req):
+    return web.json_response({"status": "ok", "relay": "hermes-phone-relay"})
+
+
+async def ws_handler(req: web.Request):
+    auth = req.headers.get("Authorization", "")
+    if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    profile = req.query.get("profile", "default")
+    if not profile_ok(profile):
+        return web.json_response({"error": "unknown profile"}, status=404)
+    try:
+        a = await attach(profile)
+    except Exception as e:
+        log.warning("attach failed for %s: %s", profile, e)
+        return web.json_response({"error": f"gateway unavailable: {e}"}, status=503)
+
+    phone = web.WebSocketResponse(heartbeat=25, max_msg_size=0)
+    await phone.prepare(req)
+    log.info("phone connected profile=%s from %s", profile, req.remote)
+    async with ClientSession() as s:
+        try:
+            up = await s.ws_connect(a["url"], protocols=a["protocols"], max_msg_size=0, heartbeat=25)
+        except Exception as e:
+            log.warning("upstream connect failed: %s", e)
+            await phone.close(code=1011, message=b"upstream connect failed")
+            return phone
+
+        async def pump(src, dst, name):
+            async for m in src:
+                if m.type == WSMsgType.TEXT:
+                    await dst.send_str(m.data)
+                elif m.type == WSMsgType.BINARY:
+                    await dst.send_bytes(m.data)
+                elif m.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
+                    break
+            log.info("%s closed", name)
+
+        tasks = [asyncio.create_task(pump(phone, up, "phone")), asyncio.create_task(pump(up, phone, "gateway"))]
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in tasks:
+            t.cancel()
+        await up.close()
+    await phone.close()
+    log.info("phone disconnected profile=%s", profile)
+    return phone
+
+
+def main():
+    app = web.Application()
+    app.router.add_get("/health", health)
+    app.router.add_get("/ws", ws_handler)
+    app.router.add_route("*", "/api/{tail:.*}", http_proxy)
+    app.router.add_get("/app/{app}/{what}", app_files)
+    app.on_startup.append(_watchdog)
+    import time
+    while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
+        try:
+            log.info("relay listening on %s:%s", HOST, PORT)
+            web.run_app(app, host=HOST, port=PORT, print=None)
+            return
+        except OSError as e:
+            log.warning("bind %s:%s failed (%s); retrying in 30s", HOST, PORT, e)
+            time.sleep(30)
+            app = web.Application()
+            app.router.add_get("/health", health)
+            app.router.add_get("/ws", ws_handler)
+            app.router.add_route("*", "/api/{tail:.*}", http_proxy)
+            app.router.add_get("/app/{app}/{what}", app_files)
+            app.on_startup.append(_watchdog)
+
+
+if __name__ == "__main__":
+    main()

@@ -27,6 +27,8 @@ import java.util.UUID
 
 enum class Screen { Sessions, Chat, Settings }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null,
+    /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
+    val steps: List<Step> = emptyList(),
     /** Send failed: shows a red ! with resend / edit / delete. [resend] is the original text. */
     val failed: Boolean = false, val resend: String? = null, val uid: String = UUID.randomUUID().toString())
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
@@ -520,7 +522,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val m = apiFor(c.profile).messages(id)
             val failed = c.messages.filter { it.failed }
-            c.messages.clear(); c.messages.addAll(m.mapNotNull { r -> Internal.clean(r.role, r.content)?.let { UiMsg(r.role, it, id = r.id) } })
+            c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
+                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { UiMsg(r.role, it, id = r.id, steps = r.steps) } })
             c.messages.addAll(failed); c.loaded = true
             if (c === cur) { offline = false; error = null }
         } catch (e: Exception) { if (c === cur) fail(e) }
@@ -701,8 +704,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "message.start" -> { c.streaming = true; c.status = null
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
             "message.delta" -> { c.status = null; updateLast(c) { it.copy(text = it.text + p.str("text")) } }
-            "thinking.delta", "reasoning.delta" -> c.status = s(R.string.thinking_status)
-            "tool.start" -> { val n = p.str("name").ifBlank { p.str("tool_name") }.ifBlank { "tool" }; c.status = "🔧 $n"; updateLast(c) { it.copy(tools = it.tools + n) } }
+            "thinking.delta" -> c.status = s(R.string.thinking_status)
+            "reasoning.delta" -> { c.status = s(R.string.thinking_status)
+                val t = p.str("text"); if (t.isNotEmpty()) updateLast(c) { m ->
+                    val last = m.steps.lastOrNull()
+                    m.copy(steps = if (last?.kind == "thinking" && last.output == null) m.steps.dropLast(1) + last.copy(detail = last.detail + t) else m.steps + Step("thinking", "", t)) } }
+            "tool.start" -> { val n = p.str("name").ifBlank { p.str("tool_name") }.ifBlank { "tool" }; c.status = "🔧 $n"
+                val detail = p.str("args_text").ifBlank { Steps.argsText(n, p.optJSONObject("args")) }.ifBlank { p.str("context").ifBlank { p.str("preview") } }
+                updateLast(c) { it.copy(tools = it.tools + n, steps = it.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s } +
+                    Step("tool", n, detail, null, p.str("tool_id"))) } }
+            "tool.complete" -> { val tid = p.str("tool_id"); val n = p.str("name")
+                val raw = p.str("result_text").ifBlank { p.str("summary") }.ifBlank { p.opt("result")?.takeUnless { it == JSONObject.NULL }?.toString().orEmpty() }
+                updateLast(c) { m -> m.copy(steps = m.steps.map { s -> if (s.kind == "tool" && (s.toolId == tid || (tid.isEmpty() && s.output == null && s.name == n))) s.copy(output = Steps.outputText(s.name, raw)) else s }) } }
             "message.complete" -> {
                 val text = p.str("text").ifBlank { p.str("content") }
                 if (text.isNotBlank()) updateLast(c) { it.copy(text = text) }

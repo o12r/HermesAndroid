@@ -151,4 +151,9 @@
     <string name="reconnecting">连接断开，正在重连…</string>
     <string name="reconnected_running">已重新连接 · Hermes 仍在工作…</string>
     <string name="close_tab">关闭标签</string>
+    <string name="steps_thinking">思考</string>
+    <string name="steps_tools">%1$d 次工具调用</string>
+    <string name="steps_running">运行中…</string>
+    <string name="steps_output">输出</string>
+    <string name="paired">已与电脑配对</string>
 </resources>

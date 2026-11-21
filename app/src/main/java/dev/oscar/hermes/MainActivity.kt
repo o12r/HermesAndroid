@@ -63,6 +63,19 @@ class MainActivity : ComponentActivity() {
         super.attachBaseContext(L10n.wrap(newBase, SecureStore(newBase).lang))
     }
 
+    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handlePair(intent) }
+
+    /** hermes://pair?url=&lan=&key= from the PC installer: save the connection and connect. */
+    private fun handlePair(intent: android.content.Intent?) {
+        val u = intent?.data ?: return
+        if (u.scheme != "hermes" || u.host != "pair") return
+        val url = u.getQueryParameter("url").orEmpty(); val key = u.getQueryParameter("key").orEmpty()
+        if (url.isBlank() || key.isBlank()) return
+        vm.saveSettings(url, u.getQueryParameter("lan").orEmpty(), key)
+        android.widget.Toast.makeText(this, getString(R.string.paired), android.widget.Toast.LENGTH_LONG).show()
+        setIntent(android.content.Intent())   // don't re-apply on rotation
+    }
+
     override fun onStart() { super.onStart(); Notify.visible = true }
     override fun onStop() { Notify.visible = false; super.onStop() }
     override fun onDestroy() { if (isFinishing) KeepAliveService.stop(this); super.onDestroy() }
@@ -71,6 +84,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         KeepAliveService.start(this)
+        handlePair(intent)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
@@ -538,9 +552,46 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
         Surface(shape = RoundedCornerShape(14.dp), color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = if (user) 320.dp else 600.dp)) {
             Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
-                if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
+                if (m.steps.isNotEmpty()) StepsView(m.steps) else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
                 if (user) Text(m.text) else Markdown(if (m.text.isEmpty()) "…" else m.text)
                 if (m.failed) FailedActions(m, vm) else MessageActions(m, vm)
+            }
+        }
+    }
+}
+
+/** Hermes's thinking and tool calls behind a reply: collapsed by default, each tool's output collapsible too. */
+@Composable
+fun StepsView(steps: List<Step>) {
+    var open by remember { mutableStateOf(false) }
+    val tools = steps.count { it.kind == "tool" }; val thinking = steps.any { it.kind == "thinking" }
+    val summary = listOfNotNull(if (thinking) stringResource(R.string.steps_thinking) else null,
+        if (tools > 0) stringResource(R.string.steps_tools, tools) else null).joinToString(" · ")
+    Row(Modifier.clickable { open = !open }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+        Text(" " + summary + if (!open && tools > 0) "  ·  " + steps.filter { it.kind == "tool" }.joinToString(", ") { it.name }.take(80) else "",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    if (open) Column(Modifier.padding(start = 6.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        steps.forEach { st ->
+            if (st.kind == "thinking") Text("💭 " + st.detail.take(4000), style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            else {
+                var outOpen by remember { mutableStateOf(false) }
+                Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+                    Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                        Text("🔧 " + st.name, style = MaterialTheme.typography.labelMedium)
+                        if (st.detail.isNotBlank()) Text(st.detail, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, maxLines = 12, overflow = TextOverflow.Ellipsis)
+                        when {
+                            st.output == null -> Text(stringResource(R.string.steps_running), style = MaterialTheme.typography.labelSmall)
+                            st.output.isNotBlank() -> {
+                                Text((if (outOpen) "▾ " else "▸ ") + stringResource(R.string.steps_output), style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { outOpen = !outOpen }.padding(top = 4.dp))
+                                if (outOpen) Text(st.output, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
             }
         }
     }

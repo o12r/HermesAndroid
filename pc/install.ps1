@@ -1,0 +1,231 @@
+<#
+  Hermes Android: one-click PC setup.
+
+    install.cmd               install / repair everything, then pair the phone
+    install.cmd -PairOnly     only show the pairing page / pair a USB-connected phone again
+    install.cmd -NoAdb        don't use adb even if a phone is connected (always show the QR page)
+    install.cmd -Uninstall    remove the relay, task, skill and update folder (keys in .env are kept)
+
+  What it does (safe to re-run):
+    1. Finds Hermes (%LOCALAPPDATA%\hermes) and its venv Python.
+    2. API key: reuses API_SERVER_KEY from the default .env, or generates one, and writes the same key to
+       every profile's .env that lacks one (each touched .env is backed up to .env.bak-android first).
+    3. Copies the phone relay to launchers\ and registers the "Hermes_PhoneRelay" scheduled task
+       (at logon, on wake from sleep/hibernate, every 5 min). Starts the relay and checks /health.
+    4. Creates the in-app update folder and seeds it with the latest APK.
+    5. Installs the "hermes-android" skill into every Hermes profile so the local Hermes can use, fix and improve this setup.
+    6. Pairs the phone: over USB/adb if a phone is connected (installs the app and pairs it, no typing), otherwise
+       opens a page with two QR codes (download the app, then pair). Also copies the key to the clipboard.
+  The key is never printed.
+#>
+param([switch]$Uninstall, [switch]$PairOnly, [switch]$NoAdb, [string]$Apk = "")
+$ErrorActionPreference = "Stop"
+$Repo     = "o12r/HermesAndroid"
+$Here     = Split-Path -Parent $MyInvocation.MyCommand.Path
+$HH       = Join-Path $env:LOCALAPPDATA "hermes"
+$Launch   = Join-Path $HH "launchers"
+$Updates  = Join-Path $Launch "app-updates\hermes-android"
+$PyLib    = Join-Path $Launch "pylib"
+$Py       = Join-Path $HH "hermes-agent\venv\Scripts\python.exe"
+$PyW      = Join-Path $HH "hermes-agent\venv\Scripts\pythonw.exe"
+$Task     = "Hermes_PhoneRelay"
+$Port     = 8643
+
+function Step($m) { Write-Host "`n== $m" -ForegroundColor Cyan }
+function Ok($m)   { Write-Host "   OK  $m" -ForegroundColor Green }
+function Warn($m) { Write-Host "   !!  $m" -ForegroundColor Yellow }
+
+function Stop-Relay {
+    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
+        Where-Object { $_.CommandLine -like "*hermes-phone-relay.py*" -and $_.ProcessId -ne $PID } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+function Profile-Dirs {
+    # Real profiles only: skip ".deleted" and other dot/hidden folders.
+    @($HH) + @(Get-ChildItem (Join-Path $HH "profiles") -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^[a-z0-9][a-z0-9_-]*$' } | ForEach-Object { $_.FullName })
+}
+
+function Get-Key {
+    $envf = Join-Path $HH ".env"
+    if (Test-Path $envf) {
+        $line = Get-Content $envf | Where-Object { $_ -match '^API_SERVER_KEY=.+' } | Select-Object -First 1
+        if ($line) { return $line.Substring(15).Trim() }
+    }
+    return $null
+}
+
+function Tailscale-IP {
+    $ts = Get-Command tailscale -ErrorAction SilentlyContinue
+    if ($ts) { $ip = (& $ts.Source ip -4 2>$null | Select-Object -First 1); if ($ip) { return $ip.Trim() } }
+    (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -like "100.*" } | Select-Object -First 1).IPAddress
+}
+
+function Lan-IP {
+    # The private address of the adapter that has the default route (real Wi-Fi/Ethernet, not Docker/WSL/Hyper-V).
+    $cfg = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" -and $_.InterfaceAlias -notmatch 'vEthernet|WSL|Tailscale|Loopback|tun|tap|vpn|clash|sing|wg|zerotier' -and
+        $_.NetAdapter.InterfaceDescription -notmatch 'Tunnel|TAP|VPN|Virtual|WireGuard|Wintun|Hyper-V' }
+    foreach ($c in $cfg) { foreach ($a in $c.IPv4Address) { if ($a.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)') { return $a.IPAddress } } }
+    return $null
+}
+
+function Find-Adb {
+    $c = Get-Command adb.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c) { return $c.Source }
+    foreach ($p in "$env:ANDROID_HOME\platform-tools\adb.exe", "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe", "C:\Android\Sdk\platform-tools\adb.exe") {
+        if ($p -and (Test-Path $p)) { return $p } }
+    return $null
+}
+
+# ---------------------------------------------------------------- uninstall
+if ($Uninstall) {
+    Step "Uninstalling Hermes Android PC parts"
+    Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue; Ok "scheduled task removed"
+    Stop-Relay; Ok "relay stopped"
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "pair_page.py") {
+        Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
+    Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
+    Remove-Item $PyLib -Recurse -ErrorAction SilentlyContinue
+    foreach ($d in Profile-Dirs) { Remove-Item (Join-Path $d "skills\software-development\hermes-android") -Recurse -ErrorAction SilentlyContinue }
+    Ok "files and skill removed (API_SERVER_KEY in .env files kept; delete those lines yourself if unwanted)"
+    exit 0
+}
+
+# ---------------------------------------------------------------- 1. find Hermes
+Step "Checking Hermes"
+if (-not (Test-Path $Py)) { throw "Hermes not found at $HH (expected $Py). Install Hermes Agent first." }
+& $Py -I -c "import aiohttp" 2>$null; if ($LASTEXITCODE) { throw "The Hermes venv has no aiohttp; update Hermes (hermes update)." }
+Ok "Hermes at $HH"
+$ts = Tailscale-IP; $lan = Lan-IP
+if ($ts) { Ok "Tailscale IP $ts" } else { Warn "Tailscale not found/connected: the phone can then only connect over the same Wi-Fi" }
+if ($lan) { Ok "LAN IP $lan" }
+
+if (-not $PairOnly) {
+    # ------------------------------------------------------------ 2. API key in every profile
+    Step "API key"
+    $key = Get-Key
+    if (-not $key) {
+        $b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+        $key = -join ($b | ForEach-Object { $_.ToString("x2") }); Ok "generated a new key"
+    } else { Ok "reusing the existing key" }
+    foreach ($d in Profile-Dirs) {
+        $envf = Join-Path $d ".env"
+        $lines = if (Test-Path $envf) { @(Get-Content $envf) } else { @() }
+        $has = $lines | Where-Object { $_ -match '^API_SERVER_KEY=' }
+        if ($has -and ($has -eq "API_SERVER_KEY=$key")) { continue }
+        if (Test-Path $envf) { Copy-Item $envf "$envf.bak-android" -Force }
+        $lines = @($lines | Where-Object { $_ -notmatch '^API_SERVER_KEY=' }) + "API_SERVER_KEY=$key"
+        [IO.File]::WriteAllLines($envf, [string[]]$lines)
+        Ok ("key written to " + (Split-Path $d -Leaf) + "\.env")
+    }
+
+    # ------------------------------------------------------------ 3. relay + scheduled task
+    Step "Phone relay"
+    New-Item -ItemType Directory -Force $Launch | Out-Null
+    Stop-Relay
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs") { Copy-Item (Join-Path $Here "relay\$f") $Launch -Force }
+    Copy-Item (Join-Path $Here "pair_page.py") $Launch -Force
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $xml = (Get-Content (Join-Path $Here "relay\relay-task.xml") -Raw).Replace("__USER__", $user).Replace("__LAUNCHERS__", $Launch)
+    Register-ScheduledTask -TaskName $Task -Xml $xml -Force | Out-Null
+    Ok "scheduled task $Task (logon, wake, every 5 min)"
+    Start-ScheduledTask $Task
+    $up = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        Start-Sleep 1
+        try { if ((Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 2).status -eq "ok") { $up = $true; break } } catch {}
+    }
+    if ($up) { Ok "relay answering on :$Port" } else { Warn "relay not answering yet: see $Launch\phone-relay.log" }
+    try {
+        $r = Invoke-WebRequest "http://127.0.0.1:$Port/api/sessions?profile=default&limit=1" -Headers @{ Authorization = "Bearer $key" } -UseBasicParsing -TimeoutSec 60
+        Ok "gateway reachable through the relay (HTTP $($r.StatusCode))"
+    } catch { Warn "relay is up but the Hermes gateway didn't answer: run 'hermes gateway ensure' and re-run this installer" }
+    $fw = Get-NetFirewallApplicationFilter -Program $PyW -ErrorAction SilentlyContinue
+    if (-not $fw) { Warn "Windows Firewall may ask once to allow Python: allow it (Private networks is enough for Wi-Fi; Tailscale works either way)" }
+
+    # ------------------------------------------------------------ 4. update folder + APK
+    Step "App package"
+    New-Item -ItemType Directory -Force $Updates | Out-Null
+    if (-not $Apk) {
+        $built = Join-Path (Split-Path $Here) "app\build\outputs\apk\debug\app-debug.apk"
+        if (Test-Path $built) { $Apk = $built }
+    }
+    $script:ApkUrl = "https://github.com/$Repo/releases/latest"
+    try {
+        $rel = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20 -Headers @{ "User-Agent" = "hermes-android-installer" }
+        $asset = $rel.assets | Where-Object { $_.name -like "*.apk" } | Select-Object -First 1
+        if ($asset) {
+            $script:ApkUrl = $asset.browser_download_url
+            if (-not $Apk) { $Apk = Join-Path $env:TEMP $asset.name; Invoke-WebRequest $asset.browser_download_url -OutFile $Apk -UseBasicParsing; Ok "downloaded $($asset.name)" }
+        }
+    } catch { Warn "couldn't reach GitHub releases ($($_.Exception.Message))" }
+    if ($Apk -and (Test-Path $Apk)) {
+        if (-not (Test-Path (Join-Path $Updates "app.apk"))) {
+            Copy-Item $Apk (Join-Path $Updates "app.apk") -Force
+            $m = [regex]::Match((Split-Path $Apk -Leaf), '(\d+\.\d+\.\d+)-(\d+)')
+            if ($m.Success) { @{ version_code = [int]$m.Groups[2].Value; version_name = $m.Groups[1].Value; notes = "" } | ConvertTo-Json | Set-Content (Join-Path $Updates "latest.json") -Encoding utf8 }
+        }
+        Ok "APK ready: $(Split-Path $Apk -Leaf)"
+    } else { Warn "no APK found; the phone can download it from $script:ApkUrl" }
+    if (Test-Path (Join-Path (Split-Path $Here) "hotfix.json")) { Copy-Item (Join-Path (Split-Path $Here) "hotfix.json") $Updates -Force }
+
+    # ------------------------------------------------------------ 5. skill for the local Hermes
+    Step "Hermes skill"
+    foreach ($d in Profile-Dirs) {
+        $dst = Join-Path $d "skills\software-development\hermes-android"
+        New-Item -ItemType Directory -Force $dst | Out-Null
+        Copy-Item (Join-Path $Here "skill\hermes-android\SKILL.md") $dst -Force
+    }
+    Ok "skill 'hermes-android' installed in $((Profile-Dirs).Count) profile(s)"
+} else {
+    $key = Get-Key; if (-not $key) { throw "No API_SERVER_KEY yet: run install.cmd without -PairOnly first." }
+    $script:ApkUrl = "https://github.com/$Repo/releases/latest"
+}
+
+# ---------------------------------------------------------------- 6. pair the phone
+Step "Pair the phone"
+$url = if ($ts) { "http://${ts}:$Port" } elseif ($lan) { "http://${lan}:$Port" } else { throw "No Tailscale or LAN address found." }
+$lanUrl = if ($lan -and $ts) { "http://${lan}:$Port" } else { "" }
+$pair = "hermes://pair?url=" + [uri]::EscapeDataString($url) + "&lan=" + [uri]::EscapeDataString($lanUrl) + "&key=" + $key
+Set-Clipboard -Value $key
+Ok "server address: $url$(if ($lanUrl) { "   (Wi-Fi fallback: $lanUrl)" })"
+Ok "API key copied to the clipboard (not shown)"
+
+$ErrorActionPreference = "Continue"
+$adbExe = Find-Adb
+# Prefer a real phone over the emulator / WSA (127.0.0.1 / emulator-*), if both are attached.
+$devs = if ($adbExe -and -not $NoAdb) { @(& $adbExe devices 2>$null | Where-Object { $_ -match "`tdevice$" } | ForEach-Object { ($_ -split "`t")[0] }) } else { @() }
+$dev = ($devs | Where-Object { $_ -notmatch '^(127\.0\.0\.1|emulator-)' } | Select-Object -First 1)
+if (-not $dev) { $dev = $devs | Select-Object -First 1 }
+if ($dev) {
+    $serial = $dev
+    Ok "phone connected over adb ($serial)"
+    if ($Apk -and (Test-Path $Apk) -and -not $PairOnly) { & $adbExe -s $serial install -r $Apk | Out-Null; Ok "app installed" }
+    $out = (& $adbExe -s $serial shell am start -a android.intent.action.VIEW -d "'$pair'" dev.oscar.hermes 2>&1 | Out-String)
+    if ($out -match 'Error|unable to resolve') {
+        Warn "the app on $serial couldn't open the pairing link (too old?). Re-run without -PairOnly to install the current app, or use -NoAdb for the QR page."
+    } else { Ok "pairing sent: the app on the phone should now show its sessions" }
+} else {
+    Write-Host "   No phone on adb: opening a page with QR codes (download app, then pair)."
+    # Native tools write to stderr on expected failures; don't let "Stop" turn that into a crash.
+    $ErrorActionPreference = "Continue"
+    & $Py -I -c "import sys; sys.path.insert(0, r'$PyLib'); import segno" 2>$null | Out-Null
+    if ($LASTEXITCODE) {
+        # Hermes's venv has no pip (uv-managed): fetch the pure-Python segno wheel from PyPI and unzip it into pylib.
+        try {
+            $meta = Invoke-RestMethod "https://pypi.org/pypi/segno/json" -TimeoutSec 20
+            $whl = $meta.urls | Where-Object { $_.filename -like "*py3-none-any.whl" } | Select-Object -First 1
+            $zip = Join-Path $env:TEMP "segno.zip"
+            Invoke-WebRequest $whl.url -OutFile $zip -UseBasicParsing
+            New-Item -ItemType Directory -Force $PyLib | Out-Null
+            Expand-Archive $zip -DestinationPath $PyLib -Force; Remove-Item $zip
+            Ok "QR library installed (segno $($meta.info.version))"
+        } catch { Warn "couldn't download the QR library: $($_.Exception.Message)" }
+    }
+    $page = Join-Path $Launch "hermes-android-pair.html"
+    & $Py -I -c "import sys; sys.path.insert(0, r'$PyLib'); sys.argv = ['pair_page.py', r'$page', r'$script:ApkUrl', r'$pair']; exec(open(r'$(Join-Path $Launch 'pair_page.py')', encoding='utf-8').read())"
+    if (Test-Path $page) { Start-Process $page; Ok "pairing page opened ($page)" }
+    else { Warn "couldn't build the QR page. In the app: Settings → server $url, paste the key from the clipboard." }
+}
+Write-Host "`nDone. 完成。" -ForegroundColor Green

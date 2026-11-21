@@ -151,4 +151,9 @@
     <string name="reconnecting">Connection lost, reconnecting…</string>
     <string name="reconnected_running">Reconnected · Hermes is still working…</string>
     <string name="close_tab">Close tab</string>
+    <string name="steps_thinking">Thinking</string>
+    <string name="steps_tools">%1$d tool calls</string>
+    <string name="steps_running">running…</string>
+    <string name="steps_output">Output</string>
+    <string name="paired">Paired with your PC</string>
 </resources>

@@ -24,7 +24,50 @@ data class ModelChoice(val provider: String, val providerName: String, val model
 }
 data class ModelOptions(val currentProvider: String, val currentModel: String, val choices: List<ModelChoice>)
 data class Skill(val name: String, val description: String)
-data class Msg(val role: String, val content: String, val id: Int? = null)
+data class Msg(val role: String, val content: String, val id: Int? = null, val steps: List<Step> = emptyList())
+
+/** One step of Hermes's work shown (collapsed) above a reply: thinking text or a tool call with its output. */
+data class Step(val kind: String, val name: String, val detail: String, val output: String? = null, val toolId: String? = null)
+
+object Steps {
+    /** Short, readable form of a tool's arguments (the command for terminal, the code for execute_code, ...). */
+    fun argsText(name: String, args: Any?): String {
+        val o = when (args) { is JSONObject -> args; is String -> runCatching { JSONObject(args) }.getOrNull(); else -> null }
+            ?: return (args?.toString() ?: "").take(600)
+        for (k in listOf("command", "code", "query", "url", "path", "goal", "question")) if (o.has(k) && !o.isNull(k)) {
+            val v = o.opt(k); return (if (v is String) v else v.toString()).take(1200)
+        }
+        if (name == "clarify") o.optJSONArray("questions")?.let { q ->
+            return (0 until q.length()).mapNotNull { q.optJSONObject(it)?.optString("question") }.joinToString(" / ") }
+        return o.toString().take(600)
+    }
+
+    /** Tool output for display; clarify results become "question → answer". */
+    fun outputText(name: String, raw: String): String {
+        if (name == "clarify") runCatching {
+            val r = JSONObject(raw).optJSONArray("responses") ?: JSONArray()
+            return (0 until r.length()).mapNotNull { r.optJSONObject(it) }.joinToString("\n") { q ->
+                val a = q.opt("user_response")
+                val ans = when (a) { is JSONArray -> (0 until a.length()).joinToString(", ") { a.optString(it) }; null, JSONObject.NULL -> "(" + q.optString("status") + ")"; else -> a.toString() }
+                q.optString("question") + " → " + ans }
+        }
+        val pretty = runCatching { JSONObject(raw).let { o -> o.optString("output").ifBlank { null } ?: o.optString("result").ifBlank { null } ?: raw } }.getOrDefault(raw)
+        return if (pretty.length > 3000) pretty.take(3000) + "\n…(" + (pretty.length - 3000) + " more chars)" else pretty
+    }
+
+    fun thinkingOf(row: JSONObject): String {
+        for (k in listOf("reasoning", "reasoning_content")) if (!row.isNull(k)) row.optString(k).takeIf { it.isNotBlank() && it != "null" }?.let { return it }
+        val rd = row.opt("reasoning_details").let { if (it is String) runCatching { JSONArray(it) }.getOrNull() else it as? JSONArray } ?: return ""
+        val out = StringBuilder()
+        fun walk(x: Any?) { when (x) {
+            is JSONObject -> { if (x.optString("type") == "thinking") x.optString("thinking").takeIf { it.isNotBlank() }?.let { out.append(it).append("\n") }
+                if (x.optString("type") == "reasoning.text") x.optString("text").takeIf { it.isNotBlank() }?.let { out.append(it).append("\n") }
+                x.keys().forEach { walk(x.opt(it)) } }
+            is JSONArray -> for (i in 0 until x.length()) walk(x.opt(i))
+        } }
+        walk(rd); return out.toString().trim()
+    }
+}
 
 class ApiException(msg: String, val unreachable: Boolean = false) : IOException(msg)
 
@@ -70,10 +113,36 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
 
     suspend fun messages(id: String): List<Msg> {
         val a = call(req("/api/sessions/$id/messages").build()).optJSONArray("messages") ?: JSONArray()
-        return (0 until a.length()).map { a.getJSONObject(it) }
-            .filter { it.optString("role") in setOf("user", "assistant") }
-            .map { Msg(it.getString("role"), contentText(it.opt("content")), it.optInt("id", 0).takeIf { i -> i > 0 }) }
-            .filter { it.content.isNotBlank() }
+        // Fold thinking, tool calls and tool results into the steps of the next assistant reply.
+        val out = mutableListOf<Msg>()
+        val pending = mutableListOf<Step>()
+        for (i in 0 until a.length()) {
+            val r = a.optJSONObject(i) ?: continue
+            val id = r.optInt("id", 0).takeIf { it > 0 }
+            when (r.optString("role")) {
+                "user" -> {
+                    if (pending.isNotEmpty()) { out.add(Msg("assistant", "", null, pending.toList())); pending.clear() }
+                    contentText(r.opt("content")).takeIf { it.isNotBlank() }?.let { out.add(Msg("user", it, id)) }
+                }
+                "assistant" -> {
+                    Steps.thinkingOf(r).takeIf { it.isNotBlank() }?.let { pending.add(Step("thinking", "", it)) }
+                    val calls = r.opt("tool_calls").let { if (it is String) runCatching { JSONArray(it) }.getOrNull() else it as? JSONArray }
+                    if (calls != null) for (j in 0 until calls.length()) calls.optJSONObject(j)?.let { c ->
+                        val f = c.optJSONObject("function"); val name = f?.optString("name").orEmpty().ifBlank { c.optString("name") }
+                        pending.add(Step("tool", name, Steps.argsText(name, f?.opt("arguments")), null, c.optString("id")))
+                    }
+                    val text = contentText(r.opt("content"))
+                    if (text.isNotBlank()) { out.add(Msg("assistant", text, id, pending.toList())); pending.clear() }
+                }
+                "tool" -> {
+                    val tid = r.optString("tool_call_id"); val name = r.optString("tool_name")
+                    val k = pending.indexOfLast { it.toolId == tid }.takeIf { it >= 0 } ?: pending.indexOfLast { it.kind == "tool" && it.output == null }
+                    if (k >= 0) pending[k] = pending[k].copy(output = Steps.outputText(pending[k].name.ifBlank { name }, contentText(r.opt("content"))))
+                }
+            }
+        }
+        if (pending.isNotEmpty()) out.add(Msg("assistant", "", null, pending.toList()))
+        return out
     }
 
     /** Fenced edit: read the session's revision, then send the change with a fresh request id. */
