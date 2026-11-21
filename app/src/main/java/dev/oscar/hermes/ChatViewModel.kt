@@ -423,7 +423,51 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             "new" -> { newChat(); if (arg.isNotBlank()) sendMessage(arg, emptyList()) }
             "retry" -> { val l = lastSent; if (l == null) note(s(R.string.note_nothing_retry)) else sendMessage(l.first, l.second) }
+            // Like the desktop: these are session mutations, not slash.exec commands.
+            "compress" -> compressChat(arg)
+            "branch", "fork" -> branchWhole(arg)
             else -> if (hotfix.serverSlash) serverSlash(t) else note(s(R.string.err_desktop_only, t))
+        }
+    }
+
+    /** /compress [focus]: summarise older context into a continuation session (Hermes moves this chat to it). */
+    private fun compressChat(focus: String) {
+        if (currentId == null) { note(s(R.string.note_nothing_to_compress)); return }
+        if (streaming) { note(s(R.string.move_busy)); return }
+        messages.add(UiMsg("user", "/compress" + if (focus.isNotBlank()) " $focus" else ""))
+        status = s(R.string.compressing)
+        viewModelScope.launch {
+            try {
+                val r = mutate("compress", if (focus.isNotBlank()) JSONObject().put("focus", focus) else JSONObject())
+                val target = r.str("target_session_id").ifBlank { r.str("session_id") }.ifBlank { null }
+                status = null
+                // Hermes's own summary, e.g. "No changes from compression: 4 messages" / token estimate.
+                val sum = r.optJSONObject("summary")
+                val detail = listOfNotNull(sum?.str("headline")?.ifBlank { null }, sum?.str("token_line")?.ifBlank { null },
+                    sum?.str("note")?.ifBlank { null }).joinToString("\n")
+                val noop = r.str("status") == "noop" || sum?.optBoolean("noop") == true
+                if (!noop) {
+                    // Reload the compacted transcript, then show the result after it (reloading clears notes).
+                    if (target != null && target != currentId) { currentId = target; liveId = null }
+                    currentId?.let { loadMessages(it); runCatching { val g = gateway(); ensureLive(g) } }
+                }
+                note(if (noop) s(R.string.compress_noop) + if (detail.isNotBlank()) "\n$detail" else ""
+                    else s(R.string.compressed) + if (detail.isNotBlank()) "\n$detail" else "")
+                refreshSessions()
+            } catch (e: Exception) { status = null; fail(e) }
+        }
+    }
+
+    /** /branch [title]: copy the whole conversation into a new session and open it. */
+    private fun branchWhole(title: String) {
+        if (currentId == null) { note(s(R.string.note_nothing_to_compress)); return }
+        viewModelScope.launch {
+            try {
+                val r = mutate("branch", if (title.isNotBlank()) JSONObject().put("title", title) else JSONObject())
+                val newId = r.str("branched_session_id").ifBlank { r.str("session_id") }
+                refreshSessions().join()
+                open(sessions.find { it.id == newId } ?: Session(newId, title.ifBlank { null }, null, null, 0, "local"))
+            } catch (e: Exception) { fail(e) }
         }
     }
 

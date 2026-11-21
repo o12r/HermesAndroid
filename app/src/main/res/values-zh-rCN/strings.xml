@@ -131,4 +131,8 @@
     <string name="project_folder_help">在这个文件夹里工作的会话都属于此项目。</string>
     <string name="show_archived">显示已归档项目</string>
     <string name="hide_archived">隐藏已归档项目</string>
+    <string name="compressing">正在压缩上下文…</string>
+    <string name="compress_noop">暂时没有可压缩的内容。</string>
+    <string name="compressed">上下文已压缩：较早的消息已总结，对话在这里继续。</string>
+    <string name="note_nothing_to_compress">请先打开一个对话。</string>
 </resources>

@@ -131,4 +131,8 @@
     <string name="project_folder_help">Sessions working in this folder belong to the project.</string>
     <string name="show_archived">Show archived projects</string>
     <string name="hide_archived">Hide archived projects</string>
+    <string name="compressing">Compressing context…</string>
+    <string name="compress_noop">Nothing to compress yet.</string>
+    <string name="compressed">Context compressed. Older messages were summarised; the chat continues here.</string>
+    <string name="note_nothing_to_compress">Open a chat first.</string>
 </resources>
