@@ -56,8 +56,9 @@ object Notify {
         Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
-    fun alert(ctx: Context, title: String, text: String) {
-        if (visible) return
+    /** [force]: also while the app is open (the event is for a chat that isn't on screen). */
+    fun alert(ctx: Context, title: String, text: String, force: Boolean = false) {
+        if (visible && !force) return
         channels(ctx)
         val n = Notification.Builder(ctx, CH_ALERTS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)

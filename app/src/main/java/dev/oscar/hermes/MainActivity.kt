@@ -228,6 +228,7 @@ fun SessionsScreen(vm: ChatViewModel) {
     // Collapsed state per project; the active project (or Home) starts open.
     val open = remember { mutableStateMapOf<String, Boolean>() }
     val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
+    val busy = vm.busyIds()
     // Group sessions; anything the tree doesn't know about goes to Home.
     val groups = remember(vm.sessions, vm.projects, showArchived) {
         val byId = vm.sessions.associateBy { it.id }
@@ -285,7 +286,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                 if (isOpen) items(list, key = { p.id + ":" + it.id }) { s ->
                     var menu by remember { mutableStateOf(false) }
                     ListItem(
-                        headlineContent = { Text(s.title ?: s.preview ?: s.id, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        headlineContent = { Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = { Text(listOfNotNull(s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) },
                             stringResource(R.string.msgs, s.count)).joinToString(" · ")) },
                         trailingContent = { Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
@@ -511,9 +512,37 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
             Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
                 if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
                 if (user) Text(m.text) else Markdown(if (m.text.isEmpty()) "…" else m.text)
-                MessageActions(m, vm)
+                if (m.failed) FailedActions(m, vm) else MessageActions(m, vm)
             }
         }
+    }
+}
+
+/** Unsent message: red ! with resend / edit / delete. */
+@Composable
+fun ColumnScope.FailedActions(m: UiMsg, vm: ChatViewModel) {
+    var menu by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
+    Box(Modifier.align(Alignment.End)) {
+        Row(Modifier.clickable { menu = true }.padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Error, stringResource(R.string.send_failed), tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+            Text(" " + stringResource(R.string.send_failed), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+        }
+        DropdownMenu(menu, { menu = false }) {
+            DropdownMenuItem(text = { Text(stringResource(R.string.resend)) }, leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                onClick = { menu = false; vm.resendFailed(m) }, enabled = !vm.streaming)
+            DropdownMenuItem(text = { Text(stringResource(R.string.edit)) }, leadingIcon = { Icon(Icons.Default.Edit, null) },
+                onClick = { menu = false; editing = true }, enabled = !vm.streaming)
+            DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, leadingIcon = { Icon(Icons.Default.Delete, null) },
+                onClick = { menu = false; vm.deleteFailed(m) })
+        }
+    }
+    if (editing) {
+        var t by remember { mutableStateOf(m.resend ?: m.text) }
+        AlertDialog(onDismissRequest = { editing = false }, title = { Text(stringResource(R.string.edit_message)) },
+            text = { OutlinedTextField(t, { t = it }, Modifier.fillMaxWidth(), maxLines = 10) },
+            confirmButton = { Button(onClick = { editing = false; vm.editFailed(m, t) }, enabled = t.isNotBlank()) { Text(stringResource(R.string.send)) } },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text(stringResource(R.string.cancel)) } })
     }
 }
 

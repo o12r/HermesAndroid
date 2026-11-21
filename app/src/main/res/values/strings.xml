@@ -145,4 +145,9 @@
     <string name="n_error">Hermes error</string>
     <string name="n_disconnected">Lost connection to the PC</string>
     <string name="n_disconnected_text">Retrying in the background…</string>
+    <string name="send_failed">Not sent</string>
+    <string name="resend">Resend</string>
+    <string name="n_send_failed">Message not sent</string>
+    <string name="reconnecting">Connection lost, reconnecting…</string>
+    <string name="reconnected_running">Reconnected · Hermes is still working…</string>
 </resources>
