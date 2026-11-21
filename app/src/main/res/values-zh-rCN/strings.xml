@@ -162,10 +162,6 @@
     <string name="folder_missing_text">电脑上没有 %1$s，要创建这个文件夹吗？</string>
     <string name="create_folder">创建文件夹</string>
     <string name="not_a_folder">%1$s 是文件，不是文件夹</string>
-    <string name="tile_usb_tether">USB 共享网络</string>
-    <string name="tile_on">已开启</string>
-    <string name="tile_off">已关闭</string>
-    <string name="tile_settings_mode">打开共享设置</string>
     <string name="app_icon">应用图标</string>
     <string name="icon_dark">黑底白字</string>
     <string name="icon_light">白底黑字</string>

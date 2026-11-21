@@ -162,10 +162,6 @@
     <string name="folder_missing_text">%1$s doesn\'t exist on the PC. Create it?</string>
     <string name="create_folder">Create folder</string>
     <string name="not_a_folder">%1$s is a file, not a folder</string>
-    <string name="tile_usb_tether">USB tethering</string>
-    <string name="tile_on">On</string>
-    <string name="tile_off">Off</string>
-    <string name="tile_settings_mode">Opens tethering settings</string>
     <string name="app_icon">App icon</string>
     <string name="icon_dark">Black</string>
     <string name="icon_light">White</string>

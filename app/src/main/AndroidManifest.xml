@@ -46,15 +46,5 @@
         </activity-alias>
         <service android:name=".KeepAliveService" android:exported="false" android:foregroundServiceType="remoteMessaging" />
         <receiver android:name=".InstallReceiver" android:exported="false" />
-        <service
-            android:name=".UsbTetherTileService"
-            android:exported="true"
-            android:icon="@drawable/ic_usb_tether"
-            android:label="@string/tile_usb_tether"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
-            </intent-filter>
-        </service>
     </application>
 </manifest>
