@@ -177,4 +177,11 @@
     <string name="confirm_model">切换到这个模型？</string>
     <string name="confirm_model_title">确认切换模型</string>
     <string name="switch_anyway">切换</string>
+    <string name="vdisplay">PC Agent 虚拟屏</string>
+    <string name="vd_unavailable">不可用（请更新 PC 中继）</string>
+    <string name="vd_no_driver">未安装虚拟屏驱动——请在 PC 托盘菜单中安装</string>
+    <string name="vd_off">关闭</string>
+    <string name="vd_extend">扩展</string>
+    <string name="vd_second">仅虚拟屏</string>
+    <string name="vd_hint">Agent 在虚拟屏上操作，不抢焦点。“仅虚拟屏”会让主屏息屏。</string>
 </resources>

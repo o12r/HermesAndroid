@@ -59,6 +59,37 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 - Hotfix without a release: edit `hotfix.json` (banner text, `min_version_code`, feature flags), then `python scripts/release.py --hotfix`.
 - Updates must be signed with the same key as the installed app: the debug keystore of the PC that built it.
 
+## Agent virtual screen (work without taking the user's screen)
+
+An open-source IddCx virtual monitor (VirtualDrivers/Virtual-Display-Driver, MIT; never Parsec) gives the agent its
+own screen. CLI: `python -I "%LOCALAPPDATA%\hermes\launchers\hermes-vdisplay.py" <cmd>` (JSON output). Driver
+install/uninstall: tray menu → Agent virtual screen, or `install-vdd.ps1 [-Uninstall]` (one UAC; also registers the
+elevated guard task `HermesVDisplayGuard`).
+
+| Command | Effect |
+|---|---|
+| `status` | installed / attached / mode / geometry |
+| `on` or `mode extend` | virtual screen right of the main screen; starts the guard |
+| `mode second-only` | only the virtual screen is on: the main screen sleeps |
+| `off` | detach; windows that were on the main screen are put back where they were |
+| `launch -- <cmd...>` | start an app on the virtual screen (registered as an agent window) |
+| `move <hwnd\|title> virtual\|main` | move a window; `virtual` registers it, `main` unregisters it |
+| `allow` / `disallow <hwnd\|title>` | edit the agent-window list without moving |
+| `windows` | list top-level windows with their display |
+| `bg-click <hwnd> x y` | click inside a window without focus/cursor (PostMessage/UIA, real input only as fallback) |
+
+Phone app: Settings → PC agent screen (relay `POST /vdisplay/status|on|off|extend|second-only`).
+
+Rules for the agent:
+- Do GUI work on the virtual screen: `on`, then `launch` the app there. Never steal the user's focus or cursor; use
+  `bg-click`/UIA first.
+- Only windows on the agent list may stay on the virtual screen. The guard moves every other window (including ones
+  the user drags there) back to the main screen without activating it, and keeps the user's mouse off the virtual
+  screen (it is only released during an agent fallback click).
+- **When the user needs to see something, bring it to them:** `move <window> main` (that also takes it off the list).
+- Turn it `off` when the task is done, unless the user asked to keep it.
+- `second-only` blanks the user's main screen: only when the user asked for it.
+
 ## Sending a file to the phone
 
 When the user asks you to send, share or "put on my phone" a file (a report, image, export, log…), put it in the phone's Inbox:

@@ -85,6 +85,25 @@ $menu.Items.Add((T "Restart relay" "重启中继")).add_Click({ Restart-Relay; $
 $menu.Items.Add((T "Open log" "打开日志")).add_Click({ if (Test-Path $Log) { Start-Process notepad.exe $Log } })
 $menu.Items.Add((T "Show pairing QR code" "显示配对二维码")).add_Click({
     Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$Install`"", "-PairOnly", "-NoAdb" -WindowStyle Hidden })
+# ---- agent virtual screen (hermes-vdisplay.py; driver installed on demand)
+$VdCli = Join-Path $PSScriptRoot "hermes-vdisplay.py"
+$VdPy  = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"
+function Vd([string[]]$a) {
+    Start-Process $VdPy -ArgumentList (@("-I", "`"$VdCli`"") + $a) -WindowStyle Hidden }
+$miVd = New-Object System.Windows.Forms.ToolStripMenuItem (T "Agent virtual screen" "Agent 虚拟屏")
+foreach ($it in @(
+        @((T "On (extend)" "开启（扩展）"), @("mode", "extend")),
+        @((T "Second screen only (main screen off)" "仅虚拟屏（主屏息屏）"), @("mode", "second-only")),
+        @((T "Off" "关闭"), @("off")))) {
+    $a = $it[1]; $mi = $miVd.DropDownItems.Add($it[0]); $mi.Tag = $a
+    $mi.add_Click({ param($s) Vd $s.Tag }) }
+[void]$miVd.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+$miVd.DropDownItems.Add((T "Install driver…" "安装驱动…")).add_Click({
+    Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $PSScriptRoot 'install-vdd.ps1')`"" })
+$miVd.DropDownItems.Add((T "Uninstall driver" "卸载驱动")).add_Click({
+    Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $PSScriptRoot 'install-vdd.ps1')`"", "-Uninstall" })
+$miVd.Visible = Test-Path $VdCli
+[void]$menu.Items.Add($miVd)
 $miAuto = New-Object System.Windows.Forms.ToolStripMenuItem (T "Start with Windows" "开机自启")
 $miAuto.CheckOnClick = $true
 $miAuto.Checked = [bool](Get-ItemProperty $RunKey -Name $RunName -ErrorAction SilentlyContinue)

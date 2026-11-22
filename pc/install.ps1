@@ -88,7 +88,7 @@ if ($Uninstall) {
     Ok "tray app removed"
     Stop-Relay; Ok "relay stopped"
     Remove-Item (Join-Path $Launch "phone-outbox") -Recurse -ErrorAction SilentlyContinue
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "install.ps1", "hermes-android-pair.html") {
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "install-vdd.ps1") {
         Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
     Remove-Item $PyLib -Recurse -ErrorAction SilentlyContinue
@@ -189,6 +189,8 @@ if (-not $PairOnly) {
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*hermes-tray.ps1*" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
+    # virtual display (agent screen) CLI + driver installer; the driver itself is installed on demand from the tray
+    foreach ($f in "hermes-vdisplay.py", "install-vdd.ps1") { Copy-Item (Join-Path $Here "vdisplay\$f") $Launch -Force }
     Copy-Item (Join-Path $Here "install.ps1") $Launch -Force      # the tray's "Show pairing QR code" runs it with -PairOnly
     Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -Value "wscript.exe //B //Nologo `"$Launch\hermes-tray.vbs`""
     Start-Process wscript.exe -ArgumentList "//B", "//Nologo", "`"$Launch\hermes-tray.vbs`""

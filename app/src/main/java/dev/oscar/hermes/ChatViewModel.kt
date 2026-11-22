@@ -627,6 +627,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** New project whose folder doesn't exist on the PC yet: ask before creating it. */
     var missingFolder by mutableStateOf<Pair<String, String>?>(null)
 
+    /** PC agent virtual screen: null = unknown/old relay, "none" = driver not installed, else off|extend|second-only. */
+    var vdMode by mutableStateOf<String?>(null)
+    var vdBusy by mutableStateOf(false)
+
+    fun vdisplay(op: String) = viewModelScope.launch {
+        vdBusy = true
+        try {
+            val o = withContext(Dispatchers.IO) {
+                val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+                val url = store.relayBase().trimEnd('/') + "/vdisplay/" + op
+                okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
+                    .newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key")
+                        .post("{}".toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
+                        if (r.code == 404) return@withContext null
+                        runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+                    }
+            }
+            vdMode = when {
+                o == null -> null
+                o.has("installed") && !o.optBoolean("installed") -> "none"
+                o.has("attached") && !o.optBoolean("attached") -> "off"
+                else -> o.optString("mode").ifBlank { null } ?: if (op == "off") "off" else vdMode
+            }
+            o?.optString("error")?.takeIf { it.isNotBlank() }?.let { status = it }
+        } catch (e: Exception) { status = e.message } finally { vdBusy = false }
+    }
+
     private suspend fun fsCall(op: String, path: String): JSONObject = withContext(Dispatchers.IO) {
         val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
         val url = store.relayBase().trimEnd('/') + "/fs/" + op

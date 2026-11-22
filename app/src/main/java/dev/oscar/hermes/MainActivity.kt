@@ -764,6 +764,20 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 "zh" to stringResource(R.string.lang_zh)), vm.store.lang) { if (it != vm.store.lang) { vm.store.lang = it; recreate() } }
 
             HorizontalDivider()
+            Text(stringResource(R.string.vdisplay), style = MaterialTheme.typography.titleSmall)
+            LaunchedEffect(Unit) { vm.vdisplay("status") }
+            when (vm.vdMode) {
+                null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
+                "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
+                else -> {
+                    ChoiceRow(listOf("off" to stringResource(R.string.vd_off), "extend" to stringResource(R.string.vd_extend),
+                        "second-only" to stringResource(R.string.vd_second)), vm.vdMode!!) { if (!vm.vdBusy && it != vm.vdMode) vm.vdisplay(it) }
+                    Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (vm.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+
+            HorizontalDivider()
             Text(stringResource(R.string.updates), style = MaterialTheme.typography.titleSmall)
             Text(stringResource(R.string.version, vm.updates.currentName, vm.updates.currentCode))
             vm.update?.let { u -> Text(stringResource(R.string.update_available, u.versionName, u.versionCode), color = MaterialTheme.colorScheme.primary)

@@ -98,6 +98,7 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
         val wifi = ctx.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
             ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:update")?.apply { acquire() }
         try {
+          for (pass in 0..1) {
             // Resumable: on a dropped connection, retry with Range from where it stopped (up to 8 tries, backoff).
             var total = -1L; var attempt = 0
             while (true) {
@@ -130,6 +131,12 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
                     kotlinx.coroutines.delay(minOf(30_000L, 1500L shl (attempt - 1)))
                 }
             }
+            // A corrupt/partial file (stale leftover, HTML error page, bad resume) makes the installer fail with
+            // "package info is null". Check it parses as our APK; otherwise wipe it and download once from scratch.
+            if (apkOk(file, u)) break
+            file.delete()
+            if (pass == 1) throw ApiException("Downloaded APK is invalid (${file.length()} bytes); try again")
+          }
         } finally { runCatching { wake.release() }; runCatching { wifi?.release() } }
         val pi = ctx.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
@@ -142,6 +149,14 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
             s.commit(PendingIntent.getBroadcast(ctx, id, intent, flags).intentSender)
         }
         file.delete()
+    }
+
+    private fun apkOk(f: File, u: UpdateInfo): Boolean {
+        if (!f.exists() || f.length() < 4096) return false
+        val info = runCatching { ctx.packageManager.getPackageArchiveInfo(f.path, 0) }.getOrNull() ?: return false
+        @Suppress("DEPRECATION")
+        val code = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+        return info.packageName == ctx.packageName && (u.versionCode <= 0 || code == u.versionCode.toLong())
     }
 
     companion object {

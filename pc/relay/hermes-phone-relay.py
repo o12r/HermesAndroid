@@ -162,6 +162,37 @@ async def fs_op(req: web.Request):
     return web.json_response({"error": "not found"}, status=404)
 
 
+VDISPLAY = HERMES_HOME / "launchers" / "hermes-vdisplay.py"   # open-source virtual display CLI (pc/vdisplay)
+VD_OPS = {"status": ["status"], "on": ["on"], "off": ["off"],
+          "extend": ["mode", "extend"], "second-only": ["mode", "second-only"]}
+
+
+async def vdisplay_op(req: web.Request):
+    """POST /vdisplay/status|on|off|extend|second-only: the phone app's virtual-screen switch."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    args = VD_OPS.get(req.match_info["op"])
+    if not args:
+        return web.json_response({"error": "not found"}, status=404)
+    if not VDISPLAY.exists():
+        return web.json_response({"installed": False, "error": "virtual display not installed on the PC"})
+    py = Path(sys.executable).with_name("python.exe")
+    proc = await asyncio.create_subprocess_exec(str(py if py.exists() else sys.executable), "-I", str(VDISPLAY), *args,
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), 90)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"error": "timed out"}, status=504)
+    try:
+        res = json.loads(out.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        res = {"ok": False, "error": "bad output from hermes-vdisplay"}
+    if args[0] != "status":
+        log.info("phone vdisplay %s -> %s", req.match_info["op"], res.get("ok"))
+    return web.json_response(res)
+
+
 OUTBOX = HERMES_HOME / "launchers" / "phone-outbox"   # files the agent sends to the phone (send-to-phone.py)
 SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._() \-]{0,200}")
 
@@ -298,6 +329,7 @@ def main():
     app.router.add_route("*", "/api/{tail:.*}", http_proxy)
     app.router.add_get("/app/{app}/{what}", app_files)
     app.router.add_post("/fs/{op}", fs_op)
+    app.router.add_post("/vdisplay/{op}", vdisplay_op)
     app.router.add_get("/outbox", outbox_list)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
     app.on_startup.append(_watchdog)
@@ -316,6 +348,7 @@ def main():
             app.router.add_route("*", "/api/{tail:.*}", http_proxy)
             app.router.add_get("/app/{app}/{what}", app_files)
             app.router.add_post("/fs/{op}", fs_op)
+            app.router.add_post("/vdisplay/{op}", vdisplay_op)
             app.router.add_get("/outbox", outbox_list)
             app.router.add_route("*", "/outbox/{name}", outbox_item)
             app.on_startup.append(_watchdog)
