@@ -69,9 +69,21 @@ def main():
     if a.github:
         asset = ROOT / "app" / "build" / f"HermesAndroid-{name}-{code}.apk"
         shutil.copy2(APK, asset)
-        subprocess.run(["gh", "release", "create", f"v{name}", str(asset), "--title", f"v{name}",
+        pc = pc_zip(name)
+        subprocess.run(["gh", "release", "create", f"v{name}", str(asset), str(pc), "--title", f"v{name}",
                         "--notes", a.notes or f"Version {name} ({code})"], cwd=ROOT, check=True, timeout=600)
         print("published GitHub release", f"v{name}")
+
+
+def pc_zip(name):
+    """PC install bundle: run install.cmd (relay, tray, skill, virtual-screen CLI + driver installer)."""
+    import zipfile
+    out = ROOT / "app" / "build" / f"HermesAndroid-PC-{name}.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted((ROOT / "pc").rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".pyc":
+                z.write(f, Path("HermesAndroid-PC") / f.relative_to(ROOT / "pc"))
+    return out
 
 
 if __name__ == "__main__":
