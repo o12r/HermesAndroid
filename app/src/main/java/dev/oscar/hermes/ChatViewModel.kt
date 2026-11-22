@@ -653,8 +653,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         elevate = elevate.filter { it.optString("id") != id }
     }
 
-    /** PC agent virtual screen: null = unknown/old relay, "none" = driver not installed, else off|extend|second-only. */
+    /** PC virtual screens: null = unknown/old relay, "none" = driver not installed, else "ok".
+     *  Agent screen and screen-off are independent switches. */
     var vdMode by mutableStateOf<String?>(null)
+    var vdAgent by mutableStateOf(false)
+    var vdScreenOff by mutableStateOf(false)
+    var vdScreenOffAvailable by mutableStateOf(true)
     var vdBusy by mutableStateOf(false)
 
     fun vdisplay(op: String) = viewModelScope.launch {
@@ -673,8 +677,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             vdMode = when {
                 o == null -> null
                 o.has("installed") && !o.optBoolean("installed") -> "none"
-                o.has("attached") && !o.optBoolean("attached") -> "off"
-                else -> o.optString("mode").ifBlank { null } ?: if (op == "off") "off" else vdMode
+                else -> "ok"
+            }
+            if (o != null) {
+                val m = o.optString("mode")
+                vdAgent = if (o.has("agent")) o.optBoolean("agent") else m == "extend"
+                vdScreenOff = if (o.has("screen_off")) o.optBoolean("screen_off") else m == "second-only"
+                if (o.has("user_screen_available")) vdScreenOffAvailable = o.optBoolean("user_screen_available")
             }
             o?.optString("error")?.takeIf { it.isNotBlank() }?.let { status = it }
         } catch (e: Exception) { status = e.message } finally { vdBusy = false }

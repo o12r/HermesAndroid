@@ -784,9 +784,18 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
                 "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
                 else -> {
-                    ChoiceRow(listOf("off" to stringResource(R.string.vd_off), "extend" to stringResource(R.string.vd_extend),
-                        "second-only" to stringResource(R.string.vd_second)), vm.vdMode!!) { if (!vm.vdBusy && it != vm.vdMode) vm.vdisplay(it) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.vd_agent), Modifier.weight(1f))
+                        Switch(vm.vdAgent, { if (!vm.vdBusy) vm.vdisplay(if (it) "on" else "off") }, enabled = !vm.vdBusy)
+                    }
                     Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.vd_screen_off), Modifier.weight(1f))
+                        Switch(vm.vdScreenOff, { if (!vm.vdBusy) vm.vdisplay(if (it) "screen-off" else "screen-on") },
+                            enabled = !vm.vdBusy && (vm.vdScreenOff || vm.vdScreenOffAvailable))
+                    }
+                    Text(stringResource(if (vm.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
+                        style = MaterialTheme.typography.bodySmall)
                 }
             }
             if (vm.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())

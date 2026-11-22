@@ -163,12 +163,13 @@ async def fs_op(req: web.Request):
 
 
 VDISPLAY = HERMES_HOME / "launchers" / "hermes-vdisplay.py"   # open-source virtual display CLI (pc/vdisplay)
-VD_OPS = {"status": ["status"], "on": ["on"], "off": ["off"],
-          "extend": ["mode", "extend"], "second-only": ["mode", "second-only"]}
+# on/off = agent screen; screen-off/screen-on = main screen dark + user windows on the user screen (independent)
+VD_OPS = {"status": ["status"], "on": ["on"], "off": ["off"], "screen-off": ["screen", "off"],
+          "screen-on": ["screen", "on"], "extend": ["mode", "extend"], "second-only": ["mode", "second-only"]}
 
 
 async def vdisplay_op(req: web.Request):
-    """POST /vdisplay/status|on|off|extend|second-only: the phone app's virtual-screen switch."""
+    """POST /vdisplay/status|on|off|screen-off|screen-on: the phone app's agent-screen and screen-off switches."""
     if not _authed(req):
         return web.json_response({"error": "unauthorized"}, status=401)
     args = VD_OPS.get(req.match_info["op"])

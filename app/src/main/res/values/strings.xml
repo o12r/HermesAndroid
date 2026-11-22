@@ -180,10 +180,11 @@
     <string name="vdisplay">PC agent screen</string>
     <string name="vd_unavailable">Not available (update the PC relay)</string>
     <string name="vd_no_driver">Virtual display driver not installed — install it from the PC tray menu</string>
-    <string name="vd_off">Off</string>
-    <string name="vd_extend">Extend</string>
-    <string name="vd_second">Agent screen only</string>
-    <string name="vd_hint">The agent works on a virtual screen without stealing focus. "Agent screen only" turns the main screen off.</string>
+    <string name="vd_agent">Agent screen</string>
+    <string name="vd_hint">The agent works on its own virtual screen (extended to the right) without stealing focus.</string>
+    <string name="vd_screen_off">Turn PC screen off</string>
+    <string name="vd_screen_off_hint">The main screen goes dark and your windows move to a separate virtual screen. Any key or mouse move on the PC turns it back on.</string>
+    <string name="vd_screen_off_need_driver">Needs the second virtual monitor: reinstall the driver from the PC tray menu.</string>
     <string name="elevate_title">PC elevation request</string>
     <string name="elevate_body">The agent wants to run this program as administrator on your PC:</string>
     <string name="elevate_publisher">Publisher: %1$s</string>

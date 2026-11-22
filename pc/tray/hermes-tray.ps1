@@ -92,9 +92,12 @@ function Vd([string[]]$a) {
     Start-Process $VdPy -ArgumentList (@("-I", "`"$VdCli`"") + $a) -WindowStyle Hidden }
 $miVd = New-Object System.Windows.Forms.ToolStripMenuItem (T "Agent virtual screen" "Agent 虚拟屏")
 foreach ($it in @(
-        @((T "On (extend)" "开启（扩展）"), @("mode", "extend")),
-        @((T "Second screen only (main screen off)" "仅虚拟屏（主屏息屏）"), @("mode", "second-only")),
-        @((T "Off" "关闭"), @("off")))) {
+        @((T "Agent screen on" "开启 Agent 屏"), @("on")),
+        @((T "Agent screen off" "关闭 Agent 屏"), @("off")),
+        @("-", $null),
+        @((T "Screen off (windows to virtual screen)" "关闭屏幕（窗口挪到虚拟屏）"), @("screen", "off")),
+        @((T "Screen on" "打开屏幕"), @("screen", "on")))) {
+    if ($it[0] -eq "-") { [void]$miVd.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)); continue }
     $a = $it[1]; $mi = $miVd.DropDownItems.Add($it[0]); $mi.Tag = $a
     $mi.add_Click({ param($s) Vd $s.Tag }) }
 [void]$miVd.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))

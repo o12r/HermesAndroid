@@ -4,9 +4,10 @@ The agent opens and drives windows on a virtual monitor so the user's focus on t
 
   status                         JSON: installed / attached / mode / display bounds
   install | uninstall            install-vdd.ps1 (one UAC prompt)
-  on | off                       attach (extend) / detach the virtual display
-  mode extend|second-only        second-only = the virtual display is the only one, physical screens go dark;
-                                 any real keyboard/mouse input wakes them (back to extend)
+  on | off  (agent on|off)       agent screen (1st virtual monitor) on / off; independent of screen-off
+  screen off | screen on         physical screens go dark and the user's windows move to the user screen
+                                 (2nd virtual monitor); real keyboard/mouse input turns them back on.
+                                 Independent of the agent screen. Legacy: mode second-only|extend
   windows                        visible top-level windows: hwnd, pid, display, title
   launch -- <cmd> [args]         start a program and put its windows on the virtual display, without focus
   move <win> virtual|main        move a window (no activation for virtual)
@@ -99,7 +100,9 @@ def displays():
 
 
 def vdds():
-    return sorted((d for d in displays() if d["virtual"]), key=lambda d: d["name"])
+    import re
+    return sorted((d for d in displays() if d["virtual"]),
+                  key=lambda d: int((re.findall(r"\d+", d["name"]) or [0])[-1]))
 
 
 def vdd():
@@ -108,7 +111,7 @@ def vdd():
 
 
 def vuser():
-    """Second virtual monitor: parks the user's windows while the physical screens are off (second-only)."""
+    """Second virtual monitor (user screen): takes the user's windows while the physical screens are off."""
     v = vdds()
     return v[1] if len(v) > 1 else None
 
@@ -151,11 +154,21 @@ def _best_mode(name, want_w, want_h):
     return best[1] if best else (1920, 1080, 60)
 
 
-def mode_now():
+def agent_on():
     v = vdd()
-    if not v or not v["attached"]:
-        return "off"
-    return "second-only" if not any(d["attached"] for d in physical()) else "extend"
+    return bool(v and v["attached"])
+
+
+def screen_off():
+    """Physical screens are off and the user works on the user screen (or nothing is on at all)."""
+    return not any(d["attached"] for d in physical())
+
+
+def mode_now():
+    """Legacy summary: off | extend | second-only (screen-off wins)."""
+    if screen_off():
+        return "second-only"
+    return "extend" if agent_on() else "off"
 
 
 # IddCx: Windows' own topology switch only activates one virtual monitor, so the second one is added via SetDisplayConfig
@@ -206,20 +219,41 @@ def _dc_tpath(p):
     return n.path if u32.DisplayConfigGetDeviceInfo(ctypes.byref(n)) == 0 else ""
 
 
-def _attach_second():
+class _DCSNAME(ctypes.Structure):
+    _fields_ = [("h", _DCHDR), ("name", W.WCHAR * 32)]
+
+
+def _dc_sname(p):
+    n = _DCSNAME(); n.h.type, n.h.size, n.h.adapter, n.h.id = 1, ctypes.sizeof(n), p.src.adapter, p.src.id
+    return n.name if u32.DisplayConfigGetDeviceInfo(ctypes.byref(n)) == 0 else ""
+
+
+def _attach(role):
+    """Activate one virtual monitor (0 = agent screen, 1 = user screen) on its own GDI source, leaving the other
+    one alone. Windows' DisplaySwitch only knows 'all on', so this goes through SetDisplayConfig."""
+    vs = vdds()
+    if len(vs) <= role:
+        return "no such virtual monitor"
+    name = vs[role]["name"]
     ap, am = _dc_query(1)    # all paths
     act, _ = _dc_query(2)    # only active
-    ids = {(p.tgt.adapter.lo, p.tgt.adapter.hi, p.tgt.id) for p in act}
-    srcs = {(p.src.adapter.lo, p.src.adapter.hi, p.src.id) for p in act}
+    mtt = [p for p in ap if "mtt1337" in _dc_tpath(p).lower()]
+    tids = sorted({p.tgt.id for p in mtt})
+    if len(tids) <= role:
+        return "no MTT target"
+    tid = tids[role]
+    busy_t = {(p.tgt.adapter.lo, p.tgt.adapter.hi, p.tgt.id) for p in act}
+    busy_s = {(p.src.adapter.lo, p.src.adapter.hi, p.src.id) for p in act}
     pick = None
-    for p in ap:
-        k = (p.tgt.adapter.lo, p.tgt.adapter.hi, p.tgt.id)
-        if k not in ids and p.tgt.avail and "mtt1337" in _dc_tpath(p).lower():
-            s = (p.src.adapter.lo, p.src.adapter.hi, p.src.id)
-            if s not in srcs:
-                pick = p; break
+    for p in mtt:
+        if p.tgt.id != tid or not p.tgt.avail or (p.tgt.adapter.lo, p.tgt.adapter.hi, p.tgt.id) in busy_t \
+                or (p.src.adapter.lo, p.src.adapter.hi, p.src.id) in busy_s:
+            continue
+        if _dc_sname(p) == name:
+            pick = p; break
+        pick = pick or p
     if pick is None:
-        return "no inactive MTT path"
+        return "no inactive path"
     sel = [p for p in ap if p.flags & 1]
     pick.flags |= 1; pick.src.modeIdx = 0xFFFFFFFF; pick.tgt.modeIdx = 0xFFFFFFFF
     sel.append(pick)
@@ -232,105 +266,131 @@ def _attach_second():
     return 0
 
 
+def _attached_role(role):
+    vs = vdds()
+    return vs[role] if len(vs) > role and vs[role]["attached"] else None
 
 
-def _ensure_user_screen():
-    """Attach the second virtual monitor (user screen) and give it the agent screen's mode; returns it or None."""
-    u = vuser()
-    if not u:
-        return None
-    if not u["attached"]:
-        _attach_second()
-        for _ in range(10):
-            time.sleep(0.5)
-            u = vuser()
-            if u and u["attached"]:
-                break
-    return u if u and u["attached"] else None
+def _ensure(role):
+    """Attach virtual monitor `role` and return it (or None)."""
+    d = _attached_role(role)
+    if d:
+        return d
+    r = _attach(role)
+    for _ in range(12):
+        time.sleep(0.5)
+        d = _attached_role(role)
+        if d:
+            return d
+    if r != 0 and role == 0 and not any(_attached_role(i) for i in range(len(vdds()))):
+        # last resort: Windows' own topology switch (turns every virtual monitor on); drop the user screen again
+        subprocess.run(["DisplaySwitch.exe", "/extend"], timeout=30)
+        time.sleep(3)
+        u = _attached_role(1)
+        if u and not screen_off():
+            _stage(u["name"]); _apply()
+        return _attached_role(0)
+    return None
+
+
+def _right_edge():
+    """x right of every attached non-agent display (physical screens, or the user screen when they are off)."""
+    a = vdd()
+    ds = [d for d in displays() if d["attached"] and not (a and d["name"] == a["name"])
+          and "parsec" not in d["adapter"].lower()]
+    return (max(d["x"] + d["w"] for d in ds), min(d["y"] for d in ds)) if ds else (0, 0)
 
 
 def turn_on():
+    """Agent screen on (independent of the screen-off feature)."""
     v = vdd()
     if not v:
         raise RuntimeError("virtual display driver not installed (run: hermes-vdisplay install)")
-    if v["attached"]:
-        _spawn_guard(); return
-    prim = next((d for d in physical() if d["primary"]), None) or {"x": 0, "y": 0, "w": 1920, "h": 1080}
-    # IddCx monitors can't be attached with ChangeDisplaySettingsEx; Windows' own topology switch can.
-    subprocess.run(["DisplaySwitch.exe", "/extend"], timeout=30)
-    for _ in range(20):
-        time.sleep(0.5)
+    if not v["attached"]:
+        if not _ensure(0):
+            raise RuntimeError("agent screen did not attach")
         v = vdd()
-        if v and v["attached"]:
-            break
-    else:
-        raise RuntimeError("virtual display did not attach")
-    right = max(d["x"] + d["w"] for d in physical() if d["attached"]) if any(d["attached"] for d in physical()) else 0
-    w, h, hz = _best_mode(v["name"], prim["w"], prim["h"])
-    _stage(v["name"], right, prim["y"], w, h, hz)
-    u = _ensure_user_screen()
-    if u:   # the user screen sits next to the agent screen; the guard keeps the mouse/windows off both
-        _stage(u["name"], right + w, prim["y"], w, h, hz)
-    _apply()
+        prim = next((d for d in displays() if d["attached"] and d["primary"]), None) or {"w": 1920, "h": 1080}
+        x, y = _right_edge()
+        w, h, hz = _best_mode(v["name"], prim["w"], prim["h"])
+        _stage(v["name"], x, y, w, h, hz)
+        _apply()
     _spawn_guard()
 
 
 def turn_off():
-    if mode_now() == "second-only":
-        to_extend()
-    for v in vdds():
-        if v["attached"]:
-            _stage(v["name"])
-    _apply()
+    """Agent screen off; the user screen / screen-off state is left as it is."""
+    v = vdd()
+    if v and v["attached"]:
+        if not any(d["attached"] for d in displays() if d["name"] != v["name"]):
+            raise RuntimeError("the agent screen is the only screen on; turn the screen back on first")
+        _stage(v["name"])
+        _apply()
+    _allow()   # prune dead entries
 
 
 def to_second_only():
-    turn_on()
-    if mode_now() == "second-only":
+    """Screen off: physical screens go dark, the user's windows move to the user screen (2nd virtual monitor).
+    Works with the agent screen on or off; the agent screen is never used for the user's windows."""
+    if screen_off():
         return
+    if not vuser():
+        raise RuntimeError("screen-off needs the second virtual monitor (reinstall the driver: hermes-vdisplay install)")
     phys = [d for d in physical() if d["attached"]]
-    v = vdd()
-    if not v:
-        raise RuntimeError("virtual display driver not installed")
+    prim = next((d for d in phys if d["primary"]), phys[0])
     names = {d["name"] for d in phys}
     wins = [{"hwnd": w["hwnd"], "pid": w["pid"], "title": w["title"], "pl": _get_placement(w["hwnd"])}
             for w in windows() if w["display"] in names]
-    LAYOUT.write_text(json.dumps({"physical": phys, "virtual": v, "windows": wins}), encoding="utf-8")
-    u = _ensure_user_screen()
-    _stage(v["name"], 0, 0, v["w"], v["h"], v["hz"], primary=True)
-    if u:
-        _stage(u["name"], v["w"], 0, v["w"], v["h"], v["hz"])
+    LAYOUT.write_text(json.dumps({"physical": phys, "windows": wins}), encoding="utf-8")
+    u = _ensure(1)
+    if not u:
+        raise RuntimeError("user screen did not attach")
+    w, h, hz = _best_mode(u["name"], prim["w"], prim["h"])
+    _stage(u["name"], 0, 0, w, h, hz, primary=True)
+    a = _attached_role(0)
+    if a:
+        _stage(a["name"], w, 0, a["w"], a["h"], a["hz"])
     for d in phys:
         _stage(d["name"])
     _apply()
-    if u and u["attached"]:
-        _to_user_screen()
+    _to_user_screen()
     _spawn_watcher()
+    _spawn_guard()
 
 
 def to_extend():
+    """Screen on again: physical layout and the user's windows come back, the user screen is detached.
+    The agent screen keeps its on/off state."""
     _kill_watcher()
-    if mode_now() == "extend":
+    if not screen_off():
         return
-    if mode_now() == "off":
-        turn_on(); return
     try:
         lay = json.loads(LAYOUT.read_text(encoding="utf-8"))
-        for d in lay["physical"]:
-            _stage(d["name"], d["x"], d["y"], d["w"], d["h"], d["hz"], primary=d["primary"])
-        v = lay["virtual"]
-        _stage(v["name"], v["x"], v["y"], v["w"], v["h"], v["hz"])
-        u = vuser()
-        if u and u["attached"]:
-            _stage(u["name"], v["x"] + v["w"], v["y"], v["w"], v["h"], v["hz"])
-        _apply()
     except Exception:
         lay = None
+    try:
+        if not lay:
+            raise RuntimeError("no saved layout")
+        for d in lay["physical"]:
+            _stage(d["name"], d["x"], d["y"], d["w"], d["h"], d["hz"], primary=d["primary"])
+        right = max(d["x"] + d["w"] for d in lay["physical"])
+        top = min(d["y"] for d in lay["physical"])
+        a = _attached_role(0)
+        if a:
+            _stage(a["name"], right, top, a["w"], a["h"], a["hz"])
+        u = _attached_role(1)
+        if u:
+            _stage(u["name"])
+        _apply()
+    except Exception:
+        agent = agent_on()
         subprocess.run(["DisplaySwitch.exe", "/extend"], timeout=20)
         time.sleep(3)
-    if mode_now() != "extend":
-        subprocess.run(["DisplaySwitch.exe", "/extend"], timeout=20)
-        time.sleep(3)
+        for i, keep in ((1, False), (0, agent)):
+            d = _attached_role(i)
+            if d and not keep and not screen_off():
+                _stage(d["name"])
+        _apply()
     _restore_windows(lay)
 
 
@@ -345,9 +405,9 @@ def _shift_to(h, d):
 
 
 def _to_user_screen():
-    """second-only: every window that is not an agent window goes to the user screen, the agent screen stays clean."""
-    u, v = vuser(), vdd()
-    if not (u and u["attached"] and v):
+    """Screen off: every non-agent window on the agent screen goes to the user screen, the agent screen stays clean."""
+    u, v = _attached_role(1), _attached_role(0)
+    if not (u and v):
         return
     a = _allowed(); hw, pids = set(a.get("hwnds", [])), set(a.get("pids", []))
     me = os.getpid()
@@ -361,7 +421,7 @@ def _to_user_screen():
 
 
 def _restore_windows(lay):
-    """Put every window that was on the physical screens before second-only back where it was (no activation)."""
+    """Put every window that was on the physical screens before screen-off back where it was (no activation)."""
     if not lay:
         return
     time.sleep(1.0)   # let Windows finish its own monitor-change shuffling first
@@ -561,6 +621,10 @@ def find(sel):
 
 
 def _target_bounds(where):
+    if where != "virtual" and screen_off():
+        d = _attached_role(1)
+        if d:
+            return d["x"], d["y"], d["w"], d["h"]
     d = vdd() if where == "virtual" else next((d for d in physical() if d["attached"] and d["primary"]), None) \
         or next((d for d in physical() if d["attached"]), None)
     if not d or not d["attached"]:
@@ -647,10 +711,10 @@ def _fence():
     """Keep the user's mouse off the virtual screen: clamp the cursor back to the nearest edge."""
     if time.time() - _vb["t"] > 2:
         _vb["t"] = time.time()
-        _vb["r"] = [(v["x"], v["y"], v["x"] + v["w"], v["y"] + v["h"]) for v in vdds() if v["attached"]] \
-            if mode_now() != "second-only" else None
+        a = _attached_role(0)
+        _vb["r"] = [(a["x"], a["y"], a["x"] + a["w"], a["y"] + a["h"])] if a else None
         _vb["phys"] = [(d["x"], d["y"], d["x"] + d["w"], d["y"] + d["h"])
-                       for d in displays() if d["attached"] and not d["virtual"]]
+                       for d in displays() if d["attached"] and not (a and d["name"] == a["name"])]
     r = _vb["r"]
     if not r or AGENT_INPUT.exists():
         return
@@ -681,16 +745,18 @@ def _guard():
         if time.time() - last < 0.5:
             continue
         last = time.time()
-        v = vdd()
-        if not v or not v["attached"]:
-            GUARD_PID.unlink(missing_ok=True); return
+        v = _attached_role(0)
+        if not v:
+            if not _attached_role(1):
+                GUARD_PID.unlink(missing_ok=True); return
+            continue   # only the user screen is on: nothing to guard
         if u32.GetAsyncKeyState(0x01) & 0x8000:   # mid-drag
             continue
-        if mode_now() == "second-only":
+        if screen_off():
             _to_user_screen()
             continue
         a = _allowed(); hw, pids = set(a.get("hwnds", [])), set(a.get("pids", []))
-        vnames = {d["name"] for d in vdds() if d["attached"]}
+        vnames = {v["name"]}
         for w in windows():
             if w["display"] in vnames and w["hwnd"] not in hw and w["pid"] not in pids and w["pid"] != me \
                     and not _cloaked(w["hwnd"]):
@@ -702,8 +768,6 @@ def _guard():
 
 def move(h, where):
     _allow([h], remove=(where != "virtual"))
-    if where == "main" and mode_now() == "second-only":
-        to_extend()
     if where == "virtual":
         turn_on()
     _place(h, where)
@@ -729,6 +793,7 @@ def _place(h, where):
 
 
 def show(h):
+    to_extend()   # the user wants to see it: wake the physical screen
     move(h, "main")
     if u32.IsIconic(h):
         u32.ShowWindow(h, 9)   # SW_RESTORE
@@ -860,8 +925,9 @@ def shot(out=None):
 # ---------------------------------------------------------------- CLI
 def status():
     v = vdd()
-    return {"installed": bool(v), "attached": bool(v and v["attached"]), "mode": mode_now() if v else "off",
-            "virtual": v, "physical": [d for d in physical() if d["attached"]]}
+    return {"installed": bool(v), "agent": agent_on(), "screen_off": bool(v) and screen_off(),
+            "attached": agent_on(), "mode": mode_now() if v else "off", "user_screen_available": bool(vuser()),
+            "virtual": v, "user_screen": vuser(), "physical": [d for d in physical() if d["attached"]]}
 
 
 def main(a):
@@ -882,10 +948,13 @@ def main(a):
         print(json.dumps(status())); return 0
     if c == "status":
         print(json.dumps(status(), indent=1)); return 0
-    if c == "on":
+    if c in ("on", "agent-on") or (c == "agent" and r[:1] == ["on"]):
         turn_on()
-    elif c == "off":
+    elif c in ("off", "agent-off") or (c == "agent" and r[:1] == ["off"]):
         turn_off()
+    elif c in ("screen-off", "screen-on") or c == "screen":
+        off = c == "screen-off" or (c == "screen" and r[:1] == ["off"])
+        (to_second_only if off else to_extend)()
     elif c == "mode":
         {"extend": to_extend, "second-only": to_second_only}[r[0]]()
     elif c in ("extend", "second-only"):
@@ -912,7 +981,7 @@ def main(a):
         print(shot(r[0] if r else None)); return 0
     else:
         print(f"unknown command {c!r}\n\n{__doc__}", file=sys.stderr); return 2
-    print(json.dumps({"ok": True, "mode": mode_now()}))
+    print(json.dumps({"ok": True, "mode": mode_now(), "agent": agent_on(), "screen_off": screen_off()}))
     return 0
 
 

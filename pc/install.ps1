@@ -70,6 +70,22 @@ function Lan-IP {
     return $null
 }
 
+# Start menu + desktop shortcuts for the tray app (it is single-instance, so clicking it again is harmless)
+$Lnks = @((Join-Path ([Environment]::GetFolderPath("Programs")) "Hermes Android.lnk"),
+          (Join-Path ([Environment]::GetFolderPath("Desktop")) "Hermes Android.lnk"))
+function Add-TrayShortcuts {
+    $sh = New-Object -ComObject WScript.Shell
+    foreach ($l in $Lnks) {
+        $s = $sh.CreateShortcut($l)
+        $s.TargetPath = Join-Path $env:WINDIR "System32\wscript.exe"
+        $s.Arguments = "//B //Nologo `"$Launch\hermes-tray.vbs`""
+        $s.WorkingDirectory = $Launch
+        $s.IconLocation = (Join-Path $env:WINDIR "System32\shell32.dll") + ",13"
+        $s.Description = "Hermes Android tray (phone relay status, agent screen)"
+        $s.Save()
+    }
+}
+
 function Find-Adb {
     $c = Get-Command adb.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($c) { return $c.Source }
@@ -85,6 +101,7 @@ if ($Uninstall) {
     Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -ErrorAction SilentlyContinue
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*hermes-tray.ps1*" } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    foreach ($l in $Lnks) { Remove-Item $l -ErrorAction SilentlyContinue }
     Ok "tray app removed"
     Stop-Relay; Ok "relay stopped"
     Remove-Item (Join-Path $Launch "phone-outbox") -Recurse -ErrorAction SilentlyContinue
@@ -196,7 +213,8 @@ if (-not $PairOnly) {
     Copy-Item (Join-Path $Here "install.ps1") $Launch -Force      # the tray's "Show pairing QR code" runs it with -PairOnly
     Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -Value "wscript.exe //B //Nologo `"$Launch\hermes-tray.vbs`""
     Start-Process wscript.exe -ArgumentList "//B", "//Nologo", "`"$Launch\hermes-tray.vbs`""
-    Ok "tray icon started (starts with Windows; toggle in its menu)"
+    Add-TrayShortcuts
+    Ok "tray icon started (starts with Windows; toggle in its menu); shortcuts in Start menu and on the desktop"
 } else {
     $key = Get-Key; if (-not $key) { throw "No API_SERVER_KEY yet: run install.cmd without -PairOnly first." }
     $script:ApkUrl = "https://github.com/$Repo/releases/latest"

@@ -68,17 +68,16 @@ elevated guard task `HermesVDisplayGuard`).
 
 | Command | Effect |
 |---|---|
-| `status` | installed / attached / mode / geometry |
-| `on` or `mode extend` | virtual screen right of the main screen; starts the guard |
-| `mode second-only` | only the virtual screen is on: the main screen sleeps |
-| `off` | detach; windows that were on the main screen are put back where they were |
+| `status` | installed / `agent` / `screen_off` / geometry |
+| `on` / `off` | agent screen on (right of the other screens, starts the guard) / off; screen-off state is not touched |
+| `screen off` / `screen on` | main screen dark + user windows moved to the user screen (2nd virtual monitor) / restored. Works whether the agent screen is on or off |
 | `launch -- <cmd...>` | start an app on the virtual screen (registered as an agent window) |
 | `move <hwnd\|title> virtual\|main` | move a window; `virtual` registers it, `main` unregisters it |
 | `allow` / `disallow <hwnd\|title>` | edit the agent-window list without moving |
 | `windows` | list top-level windows with their display |
 | `bg-click <hwnd> x y` | click inside a window without focus/cursor (PostMessage/UIA, real input only as fallback) |
 
-Phone app: Settings → PC agent screen (relay `POST /vdisplay/status|on|off|extend|second-only`).
+Phone app: Settings → PC agent screen (relay `POST /vdisplay/status|on|off|screen-off|screen-on`: two separate switches).
 
 Rules for the agent:
 - Do GUI work on the virtual screen: `on`, then `launch` the app there. Never steal the user's focus or cursor; use
@@ -88,8 +87,8 @@ Rules for the agent:
   screen (it is only released during an agent fallback click).
 - **When the user needs to see something, bring it to them:** `move <window> main` (that also takes it off the list).
 - Turn it `off` when the task is done, unless the user asked to keep it.
-- `second-only` blanks the user's main screen: only when the user asked for it. The user's windows are parked on a second
-  virtual screen (user screen) so they never mix with agent windows; leaving the mode puts them back.
+- `screen off` blanks the user's main screen: only use it when the user asked for it. The user's windows go to the user screen
+  (never the agent screen); `screen on` or any real input puts them back. Agent on/off is a separate switch.
 
 ## Elevation approved from the phone (no UAC prompt on the PC)
 
