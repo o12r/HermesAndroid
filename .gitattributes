@@ -2,3 +2,7 @@
 *.bat text eol=crlf
 *.jar binary
 *.apk binary
+*.dll binary
+*.cat binary
+*.cer binary
+pc/vdisplay/sudovda/*.inf binary

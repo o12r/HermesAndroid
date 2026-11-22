@@ -1,28 +1,28 @@
-# Installs the open-source VirtualDrivers "Virtual Display Driver" (MttVDD, IddCx) for Hermes' agent screen.
-# Same steps as the project's own Community Scripts\silent-install.ps1, with pinned + hash-checked downloads.
-#   https://github.com/VirtualDrivers/Virtual-Display-Driver   (driver, MIT)
-#   https://github.com/nefarius/nefcon                         (device-node installer, MIT)
+# Installs SudoVDA (SudoMaker, MIT; signed build from Apollo v0.4.6, unchanged) for Hermes' virtual monitors.
+# Every monitor (per-session agent screens, screen-off screens) is created on demand by hermes-vdisplay and removed
+# when no longer needed, so nothing sits idle and the mouse has nowhere to wander.
+# Also removes the older VirtualDrivers MttVDD device if an earlier Hermes version installed it.
+#   https://github.com/SudoMaker/SudoVDA   (driver, MIT)
+#   https://github.com/nefarius/nefcon     (device-node installer, MIT)
 # Needs admin (one UAC prompt). Run with -Uninstall to remove the device.
-param([switch]$Uninstall, [int]$Width = 0, [int]$Height = 0,
+param([switch]$Uninstall,
       [string]$Python = "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\pythonw.exe",
       [string]$Cli = "$env:LOCALAPPDATA\hermes\launchers\hermes-vdisplay.py")
 $ErrorActionPreference = "Stop"
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-Width", $Width, "-Height", $Height,
+    $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"",
            "-Python", "`"$Python`"", "-Cli", "`"$Cli`"")
     if ($Uninstall) { $a += "-Uninstall" }
     Start-Process powershell -Verb RunAs -ArgumentList $a -Wait
     exit
 }
 
-$DriverUrl = "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip"
-$DriverSha = "e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a"
-$NefUrl    = "https://github.com/nefarius/nefcon/releases/download/v1.21.1/nefcon_v1.21.1.zip"
-$NefSha    = "28292f4b1417484db6ad23c47ffc18ea99d3de3bdb3bbbe60c8ed11703a3780a"
-$Work      = Join-Path $env:LOCALAPPDATA "hermes\vdisplay"
-$Settings  = "C:\VirtualDisplayDriver"          # where MttVDD reads vdd_settings.xml
+$NefUrl = "https://github.com/nefarius/nefcon/releases/download/v1.21.1/nefcon_v1.21.1.zip"
+$NefSha = "28292f4b1417484db6ad23c47ffc18ea99d3de3bdb3bbbe60c8ed11703a3780a"
+$Work   = Join-Path $env:LOCALAPPDATA "hermes\vdisplay"
+$Class  = "4D36E968-E325-11CE-BFC1-08002BE10318"
 
 function Get-Pinned($url, $sha, $out) {
     if (-not (Test-Path $out) -or (Get-FileHash $out -Algorithm SHA256).Hash.ToLower() -ne $sha) {
@@ -38,66 +38,49 @@ Get-Pinned $NefUrl $NefSha (Join-Path $Work "nefcon.zip")
 Expand-Archive (Join-Path $Work "nefcon.zip") (Join-Path $Work "nefcon") -Force
 $Nef = Join-Path $Work "nefcon\x64\nefconc.exe"
 
+# Legacy MttVDD (agent screen of Hermes <= 0.2.28): remove device + driver package + settings folder.
+if (Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains "Root\MttVDD" }) {
+    Write-Host "Removing the old MttVDD virtual display"
+    & $Nef --remove-device-node --hardware-id "Root\MttVDD" --class-guid $Class
+}
+pnputil /enum-drivers | Select-String -Context 1,0 "mttvdd.inf" | ForEach-Object {
+    if ($_.Context.PreContext[0] -match "(oem\d+\.inf)") { pnputil /delete-driver $Matches[1] /uninstall /force | Out-Null }
+}
+Remove-Item "C:\VirtualDisplayDriver", (Join-Path $Work "driver"), (Join-Path $Work "driver.zip") -Recurse -Force -ErrorAction SilentlyContinue
+
 $Task = "HermesVDisplayGuard"
 if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
-    & $Nef --remove-device-node --hardware-id "Root\MttVDD" --class-guid "4D36E968-E325-11CE-BFC1-08002BE10318"
-    & $Nef --uninstall-driver --inf-path (Join-Path $Work "driver\VirtualDisplayDriver\MttVDD.inf")
+    & $Nef --remove-device-node --hardware-id "root\sudomaker\sudovda" --class-guid $Class
     Write-Host "Virtual display removed." -ForegroundColor Green
     Start-Sleep 3; exit
 }
 
-Get-Pinned $DriverUrl $DriverSha (Join-Path $Work "driver.zip")
-Expand-Archive (Join-Path $Work "driver.zip") (Join-Path $Work "driver") -Force
-$Drv = Join-Path $Work "driver\VirtualDisplayDriver"
-
-# Modes: the main screen's real (unscaled) size for the user screen, 1280x800 for the agent screen, both at 30 Hz
-# (hermes-vdisplay picks 30 Hz to keep the GPU cost low; nobody watches these screens).
-if ($Width -le 0) {
-    $vc = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution -and $_.Name -notlike "*Virtual*" } | Select-Object -First 1
-    if ($vc) { $Width = $vc.CurrentHorizontalResolution; $Height = $vc.CurrentVerticalResolution }
-    else { Add-Type -AssemblyName System.Windows.Forms; $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $Width = $b.Width; $Height = $b.Height }
+$Sv = Join-Path $PSScriptRoot "sudovda"
+$SvSha = @{ "SudoVDA.inf" = "ad69ac682756f0cf339b081fac7e6e8159fdf2ca01ca69df8945c7246c286925"
+            "sudovda.cat" = "2f9189de5604bec9d86f51640cc540639e394d9ad0f8e689129375e95f2d22f8"
+            "SudoVDA.dll" = "47ee263cb5de9382c6630a2d7f3dafec4a49419f953beec869ca5dd0c460ff63"
+            "sudovda.cer" = "6accdcd519f6179d967db4eaa20ecf25a732ba30e87f4cffebc768b2c13c9007" }
+foreach ($f in $SvSha.Keys) {
+    $h = (Get-FileHash (Join-Path $Sv $f) -Algorithm SHA256).Hash.ToLower()
+    if ($h -ne $SvSha[$f]) { throw "Checksum mismatch for sudovda\$f ($h)" }
 }
-New-Item -ItemType Directory -Force -Path $Settings | Out-Null
-[xml]$x = Get-Content (Join-Path $Drv "vdd_settings.xml")
-$x.vdd_settings.monitors.count = "2"   # 1st = agent screen, 2nd = parks the user's windows in second-only mode
-$g = $x.vdd_settings.global
-if (-not ($g.g_refresh_rate | Where-Object { $_ -eq "30" })) {
-    $e = $x.CreateElement("g_refresh_rate"); $e.InnerText = "30"; [void]$g.PrependChild($e)
+$cer = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2((Join-Path $Sv "sudovda.cer"))
+foreach ($sn in "Root", "TrustedPublisher") {
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($sn, "LocalMachine")
+    $store.Open("ReadWrite"); $store.Add($cer); $store.Close()
 }
-foreach ($wh in @(@($Width, $Height), @(1280, 800))) {
-    $have = $x.vdd_settings.resolutions.resolution | Where-Object { $_.width -eq "$($wh[0])" -and $_.height -eq "$($wh[1])" }
-    if ($have) { continue }
-    $r = $x.CreateElement("resolution")
-    foreach ($kv in @(@("width", $wh[0]), @("height", $wh[1]), @("refresh_rate", 30))) {
-        $e = $x.CreateElement($kv[0]); $e.InnerText = "$($kv[1])"; [void]$r.AppendChild($e)
-    }
-    [void]$x.vdd_settings.resolutions.AppendChild($r)
-}
-$x.Save((Join-Path $Settings "vdd_settings.xml"))
+& $Nef --create-device-node --hardware-id "root\sudomaker\sudovda" --class-name Display --class-guid $Class --no-duplicates
+& $Nef --install-driver --inf-path (Join-Path $Sv "SudoVDA.inf")
+if ($LASTEXITCODE -ne 0) { throw "SudoVDA install failed ($LASTEXITCODE)" }
+Start-Sleep 3
 
-# Trust the driver's signing certificate (the upstream installer does the same), then create the device.
-$certs = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-$certs.Import([IO.File]::ReadAllBytes((Join-Path $Drv "mttvdd.cat")))
-$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
-$store.Open("ReadWrite"); foreach ($c in $certs) { $store.Add($c) }; $store.Close()
-
-Push-Location $Drv
-& $Nef --create-device-node --hardware-id "Root\MttVDD" --class-name Display --class-guid "4D36E968-E325-11CE-BFC1-08002BE10318" --no-duplicates
-& $Nef --install-driver --inf-path ".\MttVDD.inf"
-if ($LASTEXITCODE -ne 0) { throw "driver install failed ($LASTEXITCODE)" }
-Pop-Location
-# Already installed: restart the device so it re-reads vdd_settings.xml (new modes).
-Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains "Root\MttVDD" } |
-    ForEach-Object { pnputil /restart-device "$($_.InstanceId)" | Out-Null }
-Start-Sleep 8
-
-# Guard (keeps non-agent windows and the user's mouse off the agent screen) runs elevated on demand, so it can
+# Guard (keeps non-agent windows and the user's mouse off the agent screens) runs elevated on demand, so it can
 # also move admin windows (UIPI blocks a normal process). hermes-vdisplay starts it with: schtasks /run /tn $Task
 $act = New-ScheduledTaskAction -Execute $Python -Argument "-I `"$Cli`" _guard"
 $pr  = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $Task -Action $act -Principal $pr -Settings $set -Force | Out-Null
 
-Write-Host "Virtual display installed ($Width x $Height). Use: hermes-vdisplay status" -ForegroundColor Green
+Write-Host "Virtual display installed. Use: hermes-vdisplay status" -ForegroundColor Green
 Start-Sleep 3
