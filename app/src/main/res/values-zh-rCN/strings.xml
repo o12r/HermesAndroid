@@ -173,4 +173,5 @@
     <string name="inbox_saved">已保存到下载：%1$s</string>
     <string name="file_open">打开</string>
     <string name="file_open_with">用哪个应用打开？</string>
+    <string name="switch_failed">切换失败</string>
 </resources>

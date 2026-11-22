@@ -17,6 +17,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -457,12 +458,57 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun modelLabel(): String = if (model.isBlank()) "Default: " + (modelOptions?.currentModel?.ifBlank { null } ?: "server")
         else model.substringAfter('|')
-    fun chooseModel(key: String) { model = key; store.setModelFor(profile, key); cur.id?.let { store.setSessionModel(it, key) } }
-    fun chooseEffort(e: String) { effort = e; store.setEffortFor(profile, e); cur.id?.let { store.setSessionEffort(it, e) } }
+    /** True while a model/effort switch is in flight to the PC; the chips show the PC's state until it confirms. */
+    var switching by mutableStateOf(false)
+
+    /**
+     * Model pick. A chat that already has a PC session switches it on the PC (config.set) and then re-reads the
+     * session, so the chip only changes once the PC confirms. A not-yet-created chat keeps the pick locally; it goes
+     * out with the first prompt.
+     */
+    fun chooseModel(key: String) {
+        store.setModelFor(profile, key)
+        val c = cur
+        if (c.id == null || c.createdHere && c.serverModel == null) { model = key; return }
+        val m = key.substringAfter('|', "").ifBlank { null }
+        val pr = key.substringBefore('|', "").ifBlank { null }
+        val value = if (m == null) "reset" else m + (pr?.let { " --provider $it" } ?: "")
+        switchOnPc(c, "model", value)
+    }
+    fun chooseEffort(e: String) {
+        store.setEffortFor(profile, e)
+        val c = cur
+        if (c.id == null || c.createdHere && c.serverModel == null) { effort = e; return }
+        switchOnPc(c, "reasoning", e.ifBlank { "medium" })
+    }
+
+    private fun switchOnPc(c: Chat, key: String, value: String) = viewModelScope.launch {
+        switching = true
+        try {
+            val g = gatewayFor(c.profile); val sid = ensureLive(g, c)
+            val r = g.call("config.set", JSONObject().put("session_id", sid).put("key", key).put("value", value))
+            if (r.optBoolean("confirm_required")) error = r.optString("confirm_message").ifBlank { s(R.string.switch_failed) }
+            else r.optString("warning").ifBlank { null }?.let { c.messages.add(UiMsg("system", it)) }
+            syncFromPc(g, c, sid)
+        } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { error = s(R.string.switch_failed) + ": " + (e.message ?: e.javaClass.simpleName)
+            runCatching { syncFromPc(gatewayFor(c.profile), c, c.liveId ?: return@runCatching) }
+        } finally { switching = false }
+    }
+
+    /** Re-read model/effort from the PC session (the only source of truth once it exists). */
+    private suspend fun syncFromPc(g: GatewayWs, c: Chat, sid: String) {
+        val info = runCatching { g.call("session.info", JSONObject().put("session_id", sid)) }.getOrNull()
+            ?: g.call("session.resume", JSONObject().put("session_id", c.id).put("omit_messages", true)).optJSONObject("info")
+            ?: return
+        c.createdHere = false
+        adoptServerModel(c, info)
+    }
 
     private fun modelOverride(): JSONObject? {
         // Same model/effort as the PC session already runs: send nothing, so the session (and its prompt cache) is untouched.
-        if (cur.serverModel != null && model == cur.serverModel && effort == (cur.serverEffort ?: "")) return null
+        // Once a PC session exists, switches go through config.set (chooseModel/chooseEffort), never with a prompt.
+        if (!cur.createdHere || cur.serverModel != null && model == cur.serverModel && effort == (cur.serverEffort ?: "")) return null
         val m = model.substringAfter('|', "").ifBlank { null }
         val p = model.substringBefore('|', "").ifBlank { null }
         if (m == null && effort.isBlank()) return null

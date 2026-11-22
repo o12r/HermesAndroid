@@ -484,7 +484,7 @@ fun RuntimeChips(vm: ChatViewModel) {
         Box {
             val label = if (vm.model.isBlank()) stringResource(R.string.model_default, vm.modelOptions?.currentModel?.ifBlank { null } ?: "…")
                 else vm.model.substringAfter('|')
-            FilterChip(selected = vm.model.isNotBlank(), onClick = { vm.modelMenuOpen = true; if (vm.modelOptions == null) vm.loadMeta() },
+            FilterChip(selected = vm.model.isNotBlank(), enabled = !vm.switching, onClick = { vm.modelMenuOpen = true; if (vm.modelOptions == null) vm.loadMeta() },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(Icons.Default.Memory, null, Modifier.size(16.dp)) }, modifier = Modifier.widthIn(max = 260.dp))
             DropdownMenu(vm.modelMenuOpen, { vm.modelMenuOpen = false }, Modifier.heightIn(max = 480.dp)) {
@@ -516,7 +516,7 @@ fun RuntimeChips(vm: ChatViewModel) {
             }
         }
         Box {
-            FilterChip(selected = vm.effort.isNotBlank(), onClick = { effortOpen = true },
+            FilterChip(selected = vm.effort.isNotBlank(), enabled = !vm.switching, onClick = { effortOpen = true },
                 label = { Text(stringResource(R.string.thinking, vm.effort.ifBlank { def })) },
                 leadingIcon = { Icon(Icons.Default.Psychology, null, Modifier.size(16.dp)) })
             DropdownMenu(effortOpen, { effortOpen = false }) {
