@@ -26,6 +26,12 @@ $PY = "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe"
 | `mode second-only` | second display only | Only the virtual screen stays on; the main screen goes dark |
 | `off` | off | Detaches the virtual screen and puts the main-screen windows back where they were |
 
+The driver creates **two** virtual monitors: the first is the agent screen, the second is the user screen. In
+`second-only` the main screen goes dark and every non-agent window is moved onto the user screen (keeping size, position
+and minimized/maximized state), so the agent screen only holds agent windows. In `extend` the user screen is attached
+too but stays empty: the guard keeps windows and the mouse off both virtual screens. Re-run `install-vdd.ps1` once to
+upgrade an existing single-monitor install.
+
 Switching from `second-only` back to `extend` or `off` also restores every window that was on the main screen.
 
 ## Windows and input

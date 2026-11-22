@@ -58,7 +58,7 @@ if ($Width -le 0) {
 }
 New-Item -ItemType Directory -Force -Path $Settings | Out-Null
 [xml]$x = Get-Content (Join-Path $Drv "vdd_settings.xml")
-$x.vdd_settings.monitors.count = "1"
+$x.vdd_settings.monitors.count = "2"   # 1st = agent screen, 2nd = parks the user's windows in second-only mode
 $have = $x.vdd_settings.resolutions.resolution | Where-Object { $_.width -eq "$Width" -and $_.height -eq "$Height" }
 if (-not $have) {
     $r = $x.CreateElement("resolution")

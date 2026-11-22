@@ -88,7 +88,8 @@ Rules for the agent:
   screen (it is only released during an agent fallback click).
 - **When the user needs to see something, bring it to them:** `move <window> main` (that also takes it off the list).
 - Turn it `off` when the task is done, unless the user asked to keep it.
-- `second-only` blanks the user's main screen: only when the user asked for it.
+- `second-only` blanks the user's main screen: only when the user asked for it. The user's windows are parked on a second
+  virtual screen (user screen) so they never mix with agent windows; leaving the mode puts them back.
 
 ## Elevation approved from the phone (no UAC prompt on the PC)
 

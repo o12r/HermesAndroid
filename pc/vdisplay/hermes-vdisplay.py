@@ -98,8 +98,19 @@ def displays():
                     "hz": m.dmDisplayFrequency if ok else 0})
 
 
+def vdds():
+    return sorted((d for d in displays() if d["virtual"]), key=lambda d: d["name"])
+
+
 def vdd():
-    return next((d for d in displays() if d["virtual"]), None)
+    """The agent's screen (first virtual monitor)."""
+    return next(iter(vdds()), None)
+
+
+def vuser():
+    """Second virtual monitor: parks the user's windows while the physical screens are off (second-only)."""
+    v = vdds()
+    return v[1] if len(v) > 1 else None
 
 
 def physical():
@@ -147,6 +158,97 @@ def mode_now():
     return "second-only" if not any(d["attached"] for d in physical()) else "extend"
 
 
+# IddCx: Windows' own topology switch only activates one virtual monitor, so the second one is added via SetDisplayConfig
+class _DCLUID(ctypes.Structure):
+    _fields_ = [("lo", W.DWORD), ("hi", W.LONG)]
+
+
+class _DCSRC(ctypes.Structure):
+    _fields_ = [("adapter", _DCLUID), ("id", W.UINT), ("modeIdx", W.UINT), ("status", W.UINT)]
+
+
+class _DCTGT(ctypes.Structure):
+    _fields_ = [("adapter", _DCLUID), ("id", W.UINT), ("modeIdx", W.UINT), ("tech", W.UINT), ("rot", W.UINT),
+                ("scal", W.UINT), ("rn", W.UINT), ("rd", W.UINT), ("scan", W.UINT), ("avail", W.BOOL),
+                ("status", W.UINT)]
+
+
+class _DCPATH(ctypes.Structure):
+    _fields_ = [("src", _DCSRC), ("tgt", _DCTGT), ("flags", W.UINT)]
+
+
+class _DCMODE(ctypes.Structure):
+    _fields_ = [("type", W.UINT), ("id", W.UINT), ("adapter", _DCLUID), ("u", ctypes.c_byte * 48)]
+
+
+class _DCHDR(ctypes.Structure):
+    _fields_ = [("type", W.UINT), ("size", W.UINT), ("adapter", _DCLUID), ("id", W.UINT)]
+
+
+class _DCTNAME(ctypes.Structure):
+    _fields_ = [("h", _DCHDR), ("flags", W.UINT), ("tech", W.UINT), ("manu", W.WORD), ("prod", W.WORD),
+                ("conn", W.UINT), ("friendly", W.WCHAR * 64), ("path", W.WCHAR * 128)]
+
+
+assert ctypes.sizeof(_DCPATH) == 72 and ctypes.sizeof(_DCMODE) == 64, (ctypes.sizeof(_DCPATH), ctypes.sizeof(_DCMODE))
+
+
+def _dc_query(flags):
+    np_, nm = W.UINT(), W.UINT()
+    assert u32.GetDisplayConfigBufferSizes(flags, ctypes.byref(np_), ctypes.byref(nm)) == 0
+    paths, modes = (_DCPATH * np_.value)(), (_DCMODE * nm.value)()
+    assert u32.QueryDisplayConfig(flags, ctypes.byref(np_), paths, ctypes.byref(nm), modes, None) == 0
+    return list(paths)[:np_.value], list(modes)[:nm.value]
+
+
+def _dc_tpath(p):
+    n = _DCTNAME(); n.h.type, n.h.size, n.h.adapter, n.h.id = 2, ctypes.sizeof(n), p.tgt.adapter, p.tgt.id
+    return n.path if u32.DisplayConfigGetDeviceInfo(ctypes.byref(n)) == 0 else ""
+
+
+def _attach_second():
+    ap, am = _dc_query(1)    # all paths
+    act, _ = _dc_query(2)    # only active
+    ids = {(p.tgt.adapter.lo, p.tgt.adapter.hi, p.tgt.id) for p in act}
+    srcs = {(p.src.adapter.lo, p.src.adapter.hi, p.src.id) for p in act}
+    pick = None
+    for p in ap:
+        k = (p.tgt.adapter.lo, p.tgt.adapter.hi, p.tgt.id)
+        if k not in ids and p.tgt.avail and "mtt1337" in _dc_tpath(p).lower():
+            s = (p.src.adapter.lo, p.src.adapter.hi, p.src.id)
+            if s not in srcs:
+                pick = p; break
+    if pick is None:
+        return "no inactive MTT path"
+    sel = [p for p in ap if p.flags & 1]
+    pick.flags |= 1; pick.src.modeIdx = 0xFFFFFFFF; pick.tgt.modeIdx = 0xFFFFFFFF
+    sel.append(pick)
+    arr = (_DCPATH * len(sel))(*sel)
+    marr = (_DCMODE * len(am))(*am)
+    for fl in (0x40, 0x80):   # validate, then apply
+        r = u32.SetDisplayConfig(len(sel), arr, len(am), marr, 0x20 | 0x400 | fl)
+        if r != 0:
+            return r
+    return 0
+
+
+
+
+def _ensure_user_screen():
+    """Attach the second virtual monitor (user screen) and give it the agent screen's mode; returns it or None."""
+    u = vuser()
+    if not u:
+        return None
+    if not u["attached"]:
+        _attach_second()
+        for _ in range(10):
+            time.sleep(0.5)
+            u = vuser()
+            if u and u["attached"]:
+                break
+    return u if u and u["attached"] else None
+
+
 def turn_on():
     v = vdd()
     if not v:
@@ -166,6 +268,9 @@ def turn_on():
     right = max(d["x"] + d["w"] for d in physical() if d["attached"]) if any(d["attached"] for d in physical()) else 0
     w, h, hz = _best_mode(v["name"], prim["w"], prim["h"])
     _stage(v["name"], right, prim["y"], w, h, hz)
+    u = _ensure_user_screen()
+    if u:   # the user screen sits next to the agent screen; the guard keeps the mouse/windows off both
+        _stage(u["name"], right + w, prim["y"], w, h, hz)
     _apply()
     _spawn_guard()
 
@@ -173,10 +278,10 @@ def turn_on():
 def turn_off():
     if mode_now() == "second-only":
         to_extend()
-    v = vdd()
-    if v and v["attached"]:
-        _stage(v["name"])
-        _apply()
+    for v in vdds():
+        if v["attached"]:
+            _stage(v["name"])
+    _apply()
 
 
 def to_second_only():
@@ -191,10 +296,15 @@ def to_second_only():
     wins = [{"hwnd": w["hwnd"], "pid": w["pid"], "title": w["title"], "pl": _get_placement(w["hwnd"])}
             for w in windows() if w["display"] in names]
     LAYOUT.write_text(json.dumps({"physical": phys, "virtual": v, "windows": wins}), encoding="utf-8")
+    u = _ensure_user_screen()
     _stage(v["name"], 0, 0, v["w"], v["h"], v["hz"], primary=True)
+    if u:
+        _stage(u["name"], v["w"], 0, v["w"], v["h"], v["hz"])
     for d in phys:
         _stage(d["name"])
     _apply()
+    if u and u["attached"]:
+        _to_user_screen()
     _spawn_watcher()
 
 
@@ -210,6 +320,9 @@ def to_extend():
             _stage(d["name"], d["x"], d["y"], d["w"], d["h"], d["hz"], primary=d["primary"])
         v = lay["virtual"]
         _stage(v["name"], v["x"], v["y"], v["w"], v["h"], v["hz"])
+        u = vuser()
+        if u and u["attached"]:
+            _stage(u["name"], v["x"] + v["w"], v["y"], v["w"], v["h"], v["hz"])
         _apply()
     except Exception:
         lay = None
@@ -219,6 +332,32 @@ def to_extend():
         subprocess.run(["DisplaySwitch.exe", "/extend"], timeout=20)
         time.sleep(3)
     _restore_windows(lay)
+
+
+def _shift_to(h, d):
+    """Move a window to display d keeping its size, relative position and minimized/maximized state, no activation."""
+    mon = _monitor(h).rcMonitor
+    wp = _get_placement(h)
+    dx, dy = d["x"] - mon.l, d["y"] - mon.t
+    l, t, r, b = wp["rc"]
+    wp["rc"] = [l + dx, t + dy, r + dx, b + dy]
+    _set_placement(h, wp)
+
+
+def _to_user_screen():
+    """second-only: every window that is not an agent window goes to the user screen, the agent screen stays clean."""
+    u, v = vuser(), vdd()
+    if not (u and u["attached"] and v):
+        return
+    a = _allowed(); hw, pids = set(a.get("hwnds", [])), set(a.get("pids", []))
+    me = os.getpid()
+    for w in windows():
+        if w["display"] == v["name"] and w["hwnd"] not in hw and w["pid"] not in pids and w["pid"] != me \
+                and not _cloaked(w["hwnd"]):
+            try:
+                _shift_to(w["hwnd"], u)
+            except Exception:
+                pass
 
 
 def _restore_windows(lay):
@@ -507,16 +646,16 @@ _vb = {"t": 0, "r": None}
 def _fence():
     """Keep the user's mouse off the virtual screen: clamp the cursor back to the nearest edge."""
     if time.time() - _vb["t"] > 2:
-        v = vdd(); _vb["t"] = time.time()
-        _vb["r"] = (v["x"], v["y"], v["x"] + v["w"], v["y"] + v["h"]) if v and v["attached"] \
-            and mode_now() != "second-only" else None
+        _vb["t"] = time.time()
+        _vb["r"] = [(v["x"], v["y"], v["x"] + v["w"], v["y"] + v["h"]) for v in vdds() if v["attached"]] \
+            if mode_now() != "second-only" else None
         _vb["phys"] = [(d["x"], d["y"], d["x"] + d["w"], d["y"] + d["h"])
                        for d in displays() if d["attached"] and not d["virtual"]]
     r = _vb["r"]
     if not r or AGENT_INPUT.exists():
         return
     pt = W.POINT(); u32.GetCursorPos(ctypes.byref(pt))
-    if r[0] <= pt.x < r[2] and r[1] <= pt.y < r[3]:
+    if any(l <= pt.x < rr and t <= pt.y < b for l, t, rr, b in r):
         # clamp to the nearest point on a physical screen
         best = None
         for l, t, rr, b in _vb.get("phys") or []:
@@ -545,11 +684,15 @@ def _guard():
         v = vdd()
         if not v or not v["attached"]:
             GUARD_PID.unlink(missing_ok=True); return
-        if mode_now() == "second-only" or u32.GetAsyncKeyState(0x01) & 0x8000:   # nowhere to move / mid-drag
+        if u32.GetAsyncKeyState(0x01) & 0x8000:   # mid-drag
+            continue
+        if mode_now() == "second-only":
+            _to_user_screen()
             continue
         a = _allowed(); hw, pids = set(a.get("hwnds", [])), set(a.get("pids", []))
+        vnames = {d["name"] for d in vdds() if d["attached"]}
         for w in windows():
-            if w["display"] == v["name"] and w["hwnd"] not in hw and w["pid"] not in pids and w["pid"] != me \
+            if w["display"] in vnames and w["hwnd"] not in hw and w["pid"] not in pids and w["pid"] != me \
                     and not _cloaked(w["hwnd"]):
                 try:
                     _place(w["hwnd"], "main")
