@@ -193,6 +193,44 @@ async def vdisplay_op(req: web.Request):
     return web.json_response(res)
 
 
+ELEVATE = HERMES_HOME / "launchers" / "hermes-elevate.py"   # phone-approved elevation (pc/elevate)
+
+
+async def _elevate_cli(*args):
+    py = Path(sys.executable).with_name("python.exe")
+    proc = await asyncio.create_subprocess_exec(str(py if py.exists() else sys.executable), "-I", str(ELEVATE), *args,
+                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+    out, _ = await asyncio.wait_for(proc.communicate(), 30)
+    return json.loads(out.decode("utf-8", "replace") or "null")
+
+
+async def elevate_pending(req: web.Request):
+    """GET /elevate/pending: elevation requests the agent made, waiting for the phone's decision."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    if not ELEVATE.exists():
+        return web.json_response([])
+    try:
+        return web.json_response(await _elevate_cli("pending") or [])
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def elevate_decide(req: web.Request):
+    """POST /elevate/approve/<id> | /elevate/deny/<id>"""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    op, rid = req.match_info["op"], req.match_info["id"]
+    if op not in ("approve", "deny") or not re.fullmatch(r"[0-9a-f]{8}", rid) or not ELEVATE.exists():
+        return web.json_response({"error": "not found"}, status=404)
+    try:
+        res = await _elevate_cli(op, rid)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    log.info("phone elevate %s %s -> %s", op, rid, (res or {}).get("ok"))
+    return web.json_response(res or {"ok": False})
+
+
 OUTBOX = HERMES_HOME / "launchers" / "phone-outbox"   # files the agent sends to the phone (send-to-phone.py)
 SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._() \-]{0,200}")
 
@@ -330,6 +368,8 @@ def main():
     app.router.add_get("/app/{app}/{what}", app_files)
     app.router.add_post("/fs/{op}", fs_op)
     app.router.add_post("/vdisplay/{op}", vdisplay_op)
+    app.router.add_get("/elevate/pending", elevate_pending)
+    app.router.add_post("/elevate/{op}/{id}", elevate_decide)
     app.router.add_get("/outbox", outbox_list)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
     app.on_startup.append(_watchdog)
@@ -349,6 +389,8 @@ def main():
             app.router.add_get("/app/{app}/{what}", app_files)
             app.router.add_post("/fs/{op}", fs_op)
             app.router.add_post("/vdisplay/{op}", vdisplay_op)
+            app.router.add_get("/elevate/pending", elevate_pending)
+            app.router.add_post("/elevate/{op}/{id}", elevate_decide)
             app.router.add_get("/outbox", outbox_list)
             app.router.add_route("*", "/outbox/{name}", outbox_item)
             app.on_startup.append(_watchdog)

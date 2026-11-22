@@ -90,6 +90,17 @@ Rules for the agent:
 - Turn it `off` when the task is done, unless the user asked to keep it.
 - `second-only` blanks the user's main screen: only when the user asked for it.
 
+## Elevation approved from the phone (no UAC prompt on the PC)
+
+When a task needs a program to run as administrator, do NOT trigger a UAC prompt (the user may be away and the
+secure desktop cannot be driven). Ask the phone instead:
+`python -I "%LOCALAPPDATA%\hermes\launchers\hermes-elevate.py" request --wait -- <exe> [args...]`
+- The phone shows the program, arguments, publisher and SHA-256; the user must tap Approve every time (never auto).
+- Only whitelisted programs work (`allow add <exe>`, one UAC prompt, the user does it on the PC; whitelist is in
+  `%ProgramData%\HermesElevate\allow.json`, admin-writable only). Never ask to whitelist shells/interpreters.
+- Result JSON: `status` = done | running | denied | failed | expired. Do not retry a denied request.
+- One-time setup: `install-elevate.ps1` (creates the elevated task `HermesElevate`).
+
 ## Sending a file to the phone
 
 When the user asks you to send, share or "put on my phone" a file (a report, image, export, log…), put it in the phone's Inbox:

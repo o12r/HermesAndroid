@@ -627,6 +627,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** New project whose folder doesn't exist on the PC yet: ask before creating it. */
     var missingFolder by mutableStateOf<Pair<String, String>?>(null)
 
+    /** Elevation requests from the PC agent (phone-approved, no UAC prompt on the PC). */
+    var elevate by mutableStateOf<List<JSONObject>>(emptyList())
+
+    private fun relayCall(method: String, path: String): String? {
+        val key = store.apiKey ?: return null
+        val rb = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + path).header("Authorization", "Bearer $key")
+        if (method == "POST") rb.post("{}".toRequestBody("application/json".toMediaType()))
+        return okhttp3.OkHttpClient.Builder().readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build()
+            .newCall(rb.build()).execute().use { r -> if (r.isSuccessful) r.body?.string() else null }
+    }
+
+    suspend fun pollElevate() {
+        while (true) {
+            val list = runCatching {
+                withContext(Dispatchers.IO) { relayCall("GET", "/elevate/pending") }?.let { org.json.JSONArray(it) }
+            }.getOrNull()
+            elevate = if (list == null) emptyList() else List(list.length()) { list.getJSONObject(it) }
+            kotlinx.coroutines.delay(3000)
+        }
+    }
+
+    fun decideElevate(id: String, ok: Boolean) = viewModelScope.launch {
+        runCatching { withContext(Dispatchers.IO) { relayCall("POST", "/elevate/" + (if (ok) "approve/" else "deny/") + id) } }
+        elevate = elevate.filter { it.optString("id") != id }
+    }
+
     /** PC agent virtual screen: null = unknown/old relay, "none" = driver not installed, else off|extend|second-only. */
     var vdMode by mutableStateOf<String?>(null)
     var vdBusy by mutableStateOf(false)

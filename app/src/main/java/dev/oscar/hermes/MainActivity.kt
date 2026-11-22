@@ -136,6 +136,20 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
         }
     }
     UpdateDialog(vm)
+    LaunchedEffect(Unit) { vm.pollElevate() }
+    vm.elevate.firstOrNull()?.let { e ->
+        AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.elevate_title)) },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(stringResource(R.string.elevate_body))
+                Text(e.optString("exe"), fontFamily = FontFamily.Monospace)
+                val args = e.optJSONArray("args")
+                if (args != null && args.length() > 0) Text((0 until args.length()).joinToString(" ") { args.optString(it) }, fontFamily = FontFamily.Monospace)
+                Text(stringResource(R.string.elevate_publisher, e.optString("publisher")), style = MaterialTheme.typography.bodySmall)
+                Text("SHA-256 " + e.optString("sha256").take(16) + "…", style = MaterialTheme.typography.bodySmall)
+            } },
+            confirmButton = { TextButton({ vm.decideElevate(e.optString("id"), true) }) { Text(stringResource(R.string.elevate_allow)) } },
+            dismissButton = { OutlinedButton({ vm.decideElevate(e.optString("id"), false) }) { Text(stringResource(R.string.deny)) } })
+    }
     vm.modelConfirm?.let { (msg, _) ->
         AlertDialog(onDismissRequest = { vm.confirmModel(false) }, title = { Text(stringResource(R.string.confirm_model_title)) },
             text = { Text(msg) },

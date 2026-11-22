@@ -184,4 +184,8 @@
     <string name="vd_extend">扩展</string>
     <string name="vd_second">仅虚拟屏</string>
     <string name="vd_hint">Agent 在虚拟屏上操作，不抢焦点。“仅虚拟屏”会让主屏息屏。</string>
+    <string name="elevate_title">PC 提权请求</string>
+    <string name="elevate_body">Agent 想在你的电脑上以管理员身份运行此程序：</string>
+    <string name="elevate_publisher">发布者：%1$s</string>
+    <string name="elevate_allow">批准</string>
 </resources>
