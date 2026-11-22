@@ -174,4 +174,7 @@
     <string name="file_open">打开</string>
     <string name="file_open_with">用哪个应用打开？</string>
     <string name="switch_failed">切换失败</string>
+    <string name="confirm_model">切换到这个模型？</string>
+    <string name="confirm_model_title">确认切换模型</string>
+    <string name="switch_anyway">切换</string>
 </resources>

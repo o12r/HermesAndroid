@@ -174,4 +174,7 @@
     <string name="file_open">Open</string>
     <string name="file_open_with">Open with</string>
     <string name="switch_failed">Model switch failed</string>
+    <string name="confirm_model">Switch to this model?</string>
+    <string name="confirm_model_title">Confirm model switch</string>
+    <string name="switch_anyway">Switch</string>
 </resources>

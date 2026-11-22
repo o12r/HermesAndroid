@@ -491,23 +491,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (c.id == null || c.createdHere && c.serverModel == null) { model = key; return }
         val m = key.substringAfter('|', "").ifBlank { null }
         val pr = key.substringBefore('|', "").ifBlank { null }
-        val value = if (m == null) "reset" else m + (pr?.let { " --provider $it" } ?: "")
-        switchOnPc(c, "model", value)
+        val payload = JSONObject().put("model", m ?: "reset")
+        if (m != null && pr != null) payload.put("provider", pr)
+        switchOnPc(c, "model", payload)
     }
     fun chooseEffort(e: String) {
         store.setEffortFor(profile, e)
         val c = cur
         if (c.id == null || c.createdHere && c.serverModel == null) { effort = e; return }
-        switchOnPc(c, "reasoning", e.ifBlank { "medium" })
+        switchOnPc(c, "reasoning", JSONObject().put("effort", e.ifBlank { JSONObject.NULL }))
     }
 
-    private fun switchOnPc(c: Chat, key: String, value: String) = viewModelScope.launch {
+    /** A guarded model pick the PC wants confirmed: (message, payload to resend with its confirm token). */
+    var modelConfirm by mutableStateOf<Pair<String, JSONObject>?>(null)
+    fun confirmModel(yes: Boolean) {
+        val p = modelConfirm ?: return; modelConfirm = null
+        if (yes) switchOnPc(cur, "model", p.second)
+    }
+
+    /** Model/effort pick as the PC's revision-fenced session.mutate (what the desktop does), then re-read the session. */
+    private fun switchOnPc(c: Chat, op: String, payload: JSONObject) = viewModelScope.launch {
         switching = true
         try {
             val g = gatewayFor(c.profile); val sid = ensureLive(g, c)
-            val r = g.call("config.set", JSONObject().put("session_id", sid).put("key", key).put("value", value))
-            if (r.optBoolean("confirm_required")) error = r.optString("confirm_message").ifBlank { s(R.string.switch_failed) }
-            else r.optString("warning").ifBlank { null }?.let { c.messages.add(UiMsg("system", it)) }
+            val r = mutate(op, payload)
+            if (r.optString("status") == "confirmation_required" || r.optBoolean("confirm_required")) {
+                val token = r.optString("confirm")
+                modelConfirm = r.optString("confirm_message").ifBlank { s(R.string.confirm_model) } to
+                    JSONObject(payload.toString()).put("confirm", token)
+            } else (r.optString("note").ifBlank { r.optString("warning") }).ifBlank { null }?.let { c.messages.add(UiMsg("system", it)) }
             syncFromPc(g, c, sid)
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) { error = s(R.string.switch_failed) + ": " + (e.message ?: e.javaClass.simpleName)

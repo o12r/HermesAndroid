@@ -136,6 +136,12 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
         }
     }
     UpdateDialog(vm)
+    vm.modelConfirm?.let { (msg, _) ->
+        AlertDialog(onDismissRequest = { vm.confirmModel(false) }, title = { Text(stringResource(R.string.confirm_model_title)) },
+            text = { Text(msg) },
+            confirmButton = { TextButton({ vm.confirmModel(true) }) { Text(stringResource(R.string.switch_anyway)) } },
+            dismissButton = { TextButton({ vm.confirmModel(false) }) { Text(stringResource(android.R.string.cancel)) } })
+    }
     vm.approval?.let { a ->
         AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.approve_q)) },
             text = { Column { if (a.description.isNotBlank()) Text(a.description); Spacer(Modifier.height(8.dp))
@@ -420,8 +426,10 @@ fun ChatScreen(vm: ChatViewModel) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = { ProfileMenu(vm) }, windowInsets = WindowInsets(0))
         ChatTabs(vm)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            itemsIndexed(vm.messages) { _, m -> Bubble(m, vm) }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
+            itemsIndexed(vm.messages) { i, m ->
+                if (i > 0) HorizontalDivider(thickness = 0.5.dp, color = androidx.compose.ui.graphics.Color(0xFF9E9E9E).copy(alpha = 0.45f))
+                Bubble(m, vm) }
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -592,7 +600,7 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
     val user = m.role == "user"
     // Full-width colour bands (no rounded bubbles) so each line fits more text.
     Box(Modifier.fillMaxWidth()) {
-        Surface(shape = androidx.compose.ui.graphics.RectangleShape, color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        Surface(shape = androidx.compose.ui.graphics.RectangleShape, color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background,
             modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
                 if (m.steps.isNotEmpty()) StepsView(m.steps, live = vm.cur.streaming && m === vm.cur.messages.lastOrNull()) else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
