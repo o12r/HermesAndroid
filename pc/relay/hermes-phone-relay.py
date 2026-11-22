@@ -37,7 +37,7 @@ def profile_ok(p: str) -> bool:
 
 
 async def attach(profile: str) -> dict:
-    args = [HERMES] + ([] if profile == "default" else ["-p", profile]) + ["gateway", "attach", "--json"]
+    args = [HERMES] + ([] if profile == "default" else ["-p", profile]) + ["gateway", "attach", "--start", "--json"]  # --start: works without the desktop app open
     proc = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
