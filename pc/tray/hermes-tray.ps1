@@ -17,6 +17,8 @@ $Port    = 8643
 $RunKey  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $RunName = "HermesAndroidTray"
 $Vbs     = Join-Path $Launch "hermes-tray.vbs"
+$TsFix   = Join-Path $Launch "tailscale-connect.ps1"
+$TsRes   = Join-Path $Launch "tailscale-connect.result"
 
 # zh UI when Windows is Chinese
 $zh = (Get-UICulture).Name -like "zh*"
@@ -60,6 +62,7 @@ function Check-Gateway {
 }
 function Check-Tailscale {
     $ts = Get-Command tailscale -ErrorAction SilentlyContinue
+    if (-not $ts) { $ts = Get-Command (Join-Path $env:ProgramFiles "Tailscale\tailscale.exe") -ErrorAction SilentlyContinue }
     if ($ts) {
         try { $j = (& $ts.Source status --json 2>$null | Out-String | ConvertFrom-Json); if ($j.BackendState -eq "Running") { return "ok" } else { return "warn" } } catch {}
     }
@@ -123,7 +126,8 @@ $names = @{ relay = (T "Relay" "中继"); gw = "Hermes gateway"; ts = "Tailscale
 $word  = @{ ok = (T "OK" "正常"); warn = (T "not connected" "未连接"); bad = (T "down" "异常") }
 $mark  = @{ ok = "●"; warn = "◐"; bad = "○" }
 $state = @{ relay = "ok"; gw = "ok"; ts = "ok" }; $fails = @{ relay = 0; gw = 0; ts = 0 }
-$script:next = 0; $script:lastRestart = [datetime]::MinValue
+$script:next = 0; $script:lastRestart = [datetime]::MinValue; $script:lastTsFix = [datetime]::MinValue
+$script:tsResSeen = if (Test-Path $TsRes) { (Get-Item $TsRes).LastWriteTime } else { [datetime]::MinValue }
 
 function Tick {
     $now = @{ relay = (Check-Relay) }
@@ -134,6 +138,17 @@ function Tick {
     if ($now.relay -ne "ok" -and $fails.relay -ge 1 -and ((Get-Date) - $script:lastRestart).TotalSeconds -gt 60) {
         $script:lastRestart = Get-Date
         Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$Ensure`"" -WindowStyle Hidden
+    }
+    # Tailscale down: start it and connect (login page if needed); right away, then at most once a minute.
+    if ($now.ts -ne "ok" -and (Test-Path $TsFix) -and ((Get-Date) - $script:lastTsFix).TotalSeconds -ge 60) {
+        $script:lastTsFix = Get-Date
+        Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$TsFix`"" -WindowStyle Hidden
+    }
+    if ((Test-Path $TsRes) -and (Get-Item $TsRes).LastWriteTime -gt $script:tsResSeen) {
+        $script:tsResSeen = (Get-Item $TsRes).LastWriteTime
+        $r = (Get-Content $TsRes -Raw).Trim()
+        if ($r -like "fail*") { $tray.ShowBalloonTip(8000, "Hermes Android", (T "Tailscale reconnect: " "Tailscale 重连：") + $r.Substring(5).Trim(), "Warning") }
+        else { $script:next = 2 }    # connected: refresh the menu soon
     }
     foreach ($k in "relay", "gw", "ts") {
         $fails[$k] = if ($now[$k] -eq "ok") { 0 } else { $fails[$k] + 1 }

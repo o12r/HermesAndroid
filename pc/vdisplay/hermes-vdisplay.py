@@ -138,7 +138,13 @@ def _apply():
     time.sleep(1.0)
 
 
-def _best_mode(name, want_w, want_h):
+# Nobody looks at the virtual screens directly, so keep them cheap on the GPU: the agent screen is small and 30 Hz
+# (smaller screenshots too); the user screen keeps the main screen's size (windows keep their layout) at 30 Hz.
+AGENT_MODE = (1280, 800, 30)
+USER_HZ = 30
+
+
+def _best_mode(name, want_w, want_h, want_hz=USER_HZ):
     best, i = None, 0
     while True:
         m = DEVMODEW(); m.dmSize = ctypes.sizeof(m)
@@ -146,9 +152,9 @@ def _best_mode(name, want_w, want_h):
             break
         i += 1
         w, h, hz = m.dmPelsWidth, m.dmPelsHeight, m.dmDisplayFrequency
-        # exact size wins; otherwise the largest mode that fits; ties -> refresh closest to 60..165, highest
+        # exact size wins; otherwise the largest mode that fits; ties -> refresh closest to want_hz, then the lower one
         key = ((w, h) == (want_w, want_h), w <= want_w and h <= want_h, w * h if w <= want_w and h <= want_h else -w * h,
-               min(hz, 165))
+               -abs(hz - want_hz), -hz)
         if best is None or key > best[0]:
             best = (key, (w, h, hz))
     return best[1] if best else (1920, 1080, 60)
@@ -310,9 +316,8 @@ def turn_on():
         if not _ensure(0):
             raise RuntimeError("agent screen did not attach")
         v = vdd()
-        prim = next((d for d in displays() if d["attached"] and d["primary"]), None) or {"w": 1920, "h": 1080}
         x, y = _right_edge()
-        w, h, hz = _best_mode(v["name"], prim["w"], prim["h"])
+        w, h, hz = _best_mode(v["name"], *AGENT_MODE)
         _stage(v["name"], x, y, w, h, hz)
         _apply()
     _spawn_guard()

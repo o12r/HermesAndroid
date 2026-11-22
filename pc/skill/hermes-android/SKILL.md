@@ -119,3 +119,10 @@ Rules:
 - If the phone isn't connected, the file just waits in the outbox; nothing is lost.
 
 Verify it works (optional): `curl -H "Authorization: Bearer <key>" http://127.0.0.1:8643/outbox` lists the waiting files (the key is in `%LOCALAPPDATA%\hermes\.env`; never print it).
+
+- Tray auto-reconnects Tailscale (`tailscale-connect.ps1`, right away then at most once a minute): starts the service
+  (BUILTIN\Users may start it, no elevation), `tailscale-ipn`, then `tailscale up`. Pitfall: `up` refuses unless every
+  non-default pref is mentioned, and Tailscale's own suggested command can fail too ("--exit-node-allow-lan-access can
+  only be used with --exit-node"); retry with `--flag=false`. LocalAPI PATCH /prefs over the pipe answers 401 even with
+  `Sec-Tailscale: localapi`. Never test with `tailscale down` without a safety reconnect: it cuts the phone off.
+- Phone elevation can't run `install-vdd.ps1`: shells/interpreters are never whitelisted, so driver changes need a UAC click.

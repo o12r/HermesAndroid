@@ -25,6 +25,11 @@ $PY = "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe"
 | `screen off` | Main screen goes dark; your windows move to the user screen (2nd virtual monitor). Any real key or mouse input turns it back on |
 | `screen on` | Main screen back, windows restored to where they were, user screen detached |
 
+Modes are picked to keep the GPU cost low (nobody watches these screens): the agent screen is 1280×800 at 30 Hz,
+the user screen uses the main screen's real size at 30 Hz (`AGENT_MODE` / `USER_HZ` in `hermes-vdisplay.py`).
+`install-vdd.ps1` adds those modes to `vdd_settings.xml` and restarts the device; if a mode is missing, the
+closest size and refresh are used.
+
 The two switches don't depend on each other. `screen off` works with the agent screen on or off, and never puts your
 windows on the agent screen. `on`/`off` don't change the screen-off state (`off` is refused when the agent screen is
 the only screen on). Each monitor is attached on its own through SetDisplayConfig. `mode second-only` / `mode extend`

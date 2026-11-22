@@ -51,18 +51,25 @@ Get-Pinned $DriverUrl $DriverSha (Join-Path $Work "driver.zip")
 Expand-Archive (Join-Path $Work "driver.zip") (Join-Path $Work "driver") -Force
 $Drv = Join-Path $Work "driver\VirtualDisplayDriver"
 
-# One monitor; add the main screen's resolution so the agent screen can match it.
+# Modes: the main screen's real (unscaled) size for the user screen, 1280x800 for the agent screen, both at 30 Hz
+# (hermes-vdisplay picks 30 Hz to keep the GPU cost low; nobody watches these screens).
 if ($Width -le 0) {
-    Add-Type -AssemblyName System.Windows.Forms
-    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $Width = $b.Width; $Height = $b.Height
+    $vc = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution -and $_.Name -notlike "*Virtual*" } | Select-Object -First 1
+    if ($vc) { $Width = $vc.CurrentHorizontalResolution; $Height = $vc.CurrentVerticalResolution }
+    else { Add-Type -AssemblyName System.Windows.Forms; $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $Width = $b.Width; $Height = $b.Height }
 }
 New-Item -ItemType Directory -Force -Path $Settings | Out-Null
 [xml]$x = Get-Content (Join-Path $Drv "vdd_settings.xml")
 $x.vdd_settings.monitors.count = "2"   # 1st = agent screen, 2nd = parks the user's windows in second-only mode
-$have = $x.vdd_settings.resolutions.resolution | Where-Object { $_.width -eq "$Width" -and $_.height -eq "$Height" }
-if (-not $have) {
+$g = $x.vdd_settings.global
+if (-not ($g.g_refresh_rate | Where-Object { $_ -eq "30" })) {
+    $e = $x.CreateElement("g_refresh_rate"); $e.InnerText = "30"; [void]$g.PrependChild($e)
+}
+foreach ($wh in @(@($Width, $Height), @(1280, 800))) {
+    $have = $x.vdd_settings.resolutions.resolution | Where-Object { $_.width -eq "$($wh[0])" -and $_.height -eq "$($wh[1])" }
+    if ($have) { continue }
     $r = $x.CreateElement("resolution")
-    foreach ($kv in @(@("width", $Width), @("height", $Height), @("refresh_rate", 60))) {
+    foreach ($kv in @(@("width", $wh[0]), @("height", $wh[1]), @("refresh_rate", 30))) {
         $e = $x.CreateElement($kv[0]); $e.InnerText = "$($kv[1])"; [void]$r.AppendChild($e)
     }
     [void]$x.vdd_settings.resolutions.AppendChild($r)
@@ -80,6 +87,9 @@ Push-Location $Drv
 & $Nef --install-driver --inf-path ".\MttVDD.inf"
 if ($LASTEXITCODE -ne 0) { throw "driver install failed ($LASTEXITCODE)" }
 Pop-Location
+# Already installed: restart the device so it re-reads vdd_settings.xml (new modes).
+Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains "Root\MttVDD" } |
+    ForEach-Object { pnputil /restart-device "$($_.InstanceId)" | Out-Null }
 Start-Sleep 8
 
 # Guard (keeps non-agent windows and the user's mouse off the agent screen) runs elevated on demand, so it can
