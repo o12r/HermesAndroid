@@ -420,7 +420,7 @@ fun ChatScreen(vm: ChatViewModel) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = { ProfileMenu(vm) }, windowInsets = WindowInsets(0))
         ChatTabs(vm)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             itemsIndexed(vm.messages) { _, m -> Bubble(m, vm) }
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
@@ -524,6 +524,11 @@ fun RuntimeChips(vm: ChatViewModel) {
                     onClick = { vm.chooseEffort(e); effortOpen = false }, trailingIcon = { if (vm.effort == e) Icon(Icons.Default.Check, null) }) }
             }
         }
+        val c = vm.cur
+        if (c.ctxMax > 0) Text(fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax) + " (" + (c.ctxUsed * 100 / c.ctxMax) + "%)",
+            Modifier.align(Alignment.CenterVertically).weight(1f), style = MaterialTheme.typography.labelSmall,
+            color = if (c.ctxUsed * 100 / c.ctxMax >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.End)
     }
 }
 
@@ -585,10 +590,11 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
         return
     }
     val user = m.role == "user"
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
-        Surface(shape = RoundedCornerShape(14.dp), color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.widthIn(max = if (user) 320.dp else 600.dp)) {
-            Column(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
+    // Full-width colour bands (no rounded bubbles) so each line fits more text.
+    Box(Modifier.fillMaxWidth()) {
+        Surface(shape = androidx.compose.ui.graphics.RectangleShape, color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
                 if (m.steps.isNotEmpty()) StepsView(m.steps, live = vm.cur.streaming && m === vm.cur.messages.lastOrNull()) else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
                 if (user) Text(m.text) else Markdown(if (m.text.isEmpty()) "…" else m.text)
                 if (m.failed) FailedActions(m, vm) else MessageActions(m, vm)
@@ -674,8 +680,10 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
     val ctx = LocalContext.current
     var editing by remember { mutableStateOf(false) }
     val copied = stringResource(R.string.copied)
-    Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.End) {
+    Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         val mod = Modifier.size(32.dp)
+        if (m.tokIn != null || m.tokOut != null) Text("↑" + fmtTok(m.tokIn ?: 0) + " ↓" + fmtTok(m.tokOut ?: 0),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
         IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(m.text))
             android.widget.Toast.makeText(ctx, copied, android.widget.Toast.LENGTH_SHORT).show() }, mod) {
             Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), Modifier.size(16.dp)) }
@@ -757,4 +765,11 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             vm.updateStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
     }
+}
+
+/** 1234 -> 1.2k, 1234567 -> 1.2M. */
+fun fmtTok(n: Long): String = when {
+    n >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", n / 1_000_000.0)
+    n >= 1_000 -> String.format(java.util.Locale.US, "%.1fk", n / 1_000.0)
+    else -> n.toString()
 }

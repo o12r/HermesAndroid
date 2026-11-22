@@ -38,7 +38,9 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** A file the phone saved from the Inbox (role "file"): content Uri, shown inline. */
     val file: String? = null,
     /** Session the file belongs to (file messages only). */
-    val session: String? = null)
+    val session: String? = null,
+    /** Tokens this reply used (input/output), from the PC's session totals; null if unknown. */
+    val tokIn: Long? = null, val tokOut: Long? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
@@ -67,6 +69,12 @@ class Chat(val profile: String, id: String?, title: String?) {
     /** Created on the phone and no prompt sent yet: the phone's model pick wins until the first turn. */
     var createdHere = false
     var effort by mutableStateOf("")
+    /** Context in use / context window of the PC session (0 = unknown). */
+    var ctxUsed by mutableStateOf(0L)
+    var ctxMax by mutableStateOf(0L)
+    /** Session token totals at the last reply, to work out what each reply used. */
+    var totIn: Long? = null
+    var totOut: Long? = null
     var loaded = false
     /** Unsent text in the input box; survives leaving and re-opening the chat. */
     var draft by mutableStateOf("")
@@ -404,6 +412,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         c.generation = snap.optInt("execution_generation", c.generation)
         c.revision = snap.optInt("revision", c.revision)
+        snap.optJSONObject("usage")?.let { applyUsage(c, it) }
         snap.optJSONObject("info")?.let { adoptServerModel(c, it) }
         val live = snap.getString("session_id").also { c.liveId = it }
         snap.optJSONArray("prompts")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { pr ->
@@ -426,6 +435,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (c.createdHere && c.model.isNotBlank()) return          // new chat: the phone's choice goes out with the first prompt
         c.model = key; c.effort = eff
         c.id?.let { store.setSessionModel(it, key); store.setSessionEffort(it, eff) }
+    }
+
+    /** Context bar + reply token baseline from a PC usage object. Returns (input, output) totals. */
+    private fun applyUsage(c: Chat, u: JSONObject): Pair<Long, Long>? {
+        u.optLong("context_used", -1).takeIf { it >= 0 }?.let { c.ctxUsed = it }
+        u.optLong("context_max", 0).takeIf { it > 0 }?.let { c.ctxMax = it }
+        if (!u.has("input") && !u.has("output")) return null
+        val t = u.optLong("input") to u.optLong("output")
+        if (c.totIn == null) { c.totIn = t.first; c.totOut = t.second }
+        return t
     }
 
     /** Live id for [c] on its profile's connection. */
@@ -902,6 +921,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val away = !Notify.visible || c !== cur          // not looking at this chat
         val name = c.title ?: s(R.string.chat)
         when (type) {
+            "session.usage" -> p.optJSONObject("usage")?.let { u -> applyUsage(c, u) }
             "session.info", "session.control.update", "session.updated" -> {
                 if (p.has("execution_generation")) c.generation = p.optInt("execution_generation", c.generation)
                 if (p.has("revision")) c.revision = p.optInt("revision", c.revision)
@@ -925,6 +945,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "message.complete" -> {
                 val text = p.str("text").ifBlank { p.str("content") }
                 if (text.isNotBlank()) updateLast(c) { it.copy(text = text) }
+                p.optJSONObject("usage")?.let { u ->
+                    val i0 = c.totIn; val o0 = c.totOut
+                    applyUsage(c, u)?.let { (i, o) ->
+                        if (i0 != null && o0 != null && (i > i0 || o > o0)) updateLast(c) { it.copy(tokIn = i - i0, tokOut = o - o0) }
+                        c.totIn = i; c.totOut = o } }
                 if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id)
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
                 viewModelScope.launch { refreshIds(c) }
