@@ -177,8 +177,16 @@ async def vdisplay_op(req: web.Request):
         return web.json_response({"error": "not found"}, status=404)
     if not VDISPLAY.exists():
         return web.json_response({"installed": False, "error": "virtual display not installed on the PC"})
+    try:
+        body = await req.json() if req.can_read_body else {}
+    except ValueError:
+        body = {}
+    sid = str((body or {}).get("session") or "")
+    env = dict(os.environ)
+    if re.fullmatch(r"[\w.:-]{1,160}", sid):          # each phone chat drives its own session's agent screen
+        env["HERMES_VDISPLAY_SESSION"] = sid
     py = Path(sys.executable).with_name("python.exe")
-    proc = await asyncio.create_subprocess_exec(str(py if py.exists() else sys.executable), "-I", str(VDISPLAY), *args,
+    proc = await asyncio.create_subprocess_exec(str(py if py.exists() else sys.executable), "-I", str(VDISPLAY), *args, env=env,
                                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), 90)

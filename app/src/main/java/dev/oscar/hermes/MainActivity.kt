@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
         setIntent(android.content.Intent())   // don't re-apply on rotation
     }
 
-    override fun onStart() { super.onStart(); Notify.visible = true }
+    override fun onStart() { super.onStart(); Notify.visible = true; vm.seen() }
     override fun onStop() { Notify.visible = false; super.onStop() }
     override fun onDestroy() { if (isFinishing) KeepAliveService.stop(this); super.onDestroy() }
 
@@ -125,7 +125,9 @@ fun trueBlack(d: ColorScheme) = d.copy(
 @Composable
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.reconnect(); vm.checkUpdates(manual = false) }
-    BackHandler(vm.screen != Screen.Sessions && vm.store.hasKey) { vm.screen = Screen.Sessions; vm.refreshSessions() }
+    BackHandler(vm.screen != Screen.Sessions && vm.store.hasKey) {
+        if (vm.screen == Screen.Settings && vm.settingsBack == Screen.Chat) { vm.screen = Screen.Chat; vm.settingsBack = Screen.Sessions }
+        else { vm.screen = Screen.Sessions; vm.refreshSessions() } }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
         Banner(vm)
@@ -428,7 +430,11 @@ fun ChatScreen(vm: ChatViewModel) {
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let { u -> vm.addAttachment(u, true) } }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let { u -> vm.addAttachment(u, false) } }
     val last = vm.messages.lastOrNull()
-    LaunchedEffect(vm.messages.size, last?.text?.length) { if (vm.messages.isNotEmpty()) list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) }
+    // Follow new output only while the user is at the bottom; scrolling up to read stops it, scrolling back resumes.
+    var follow by remember(chat) { mutableStateOf(true) }
+    LaunchedEffect(list, chat) { snapshotFlow { list.isScrollInProgress }.collect { if (!it) follow = !list.canScrollForward } }
+    LaunchedEffect(vm.messages.size, last?.text?.length) {
+        if (vm.messages.isNotEmpty() && (follow || last?.role == "user")) { follow = true; list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) } }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Column {
                 Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -438,7 +444,9 @@ fun ChatScreen(vm: ChatViewModel) {
             } },
             navigationIcon = { IconButton(onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
-            actions = { ProfileMenu(vm) }, windowInsets = WindowInsets(0))
+            actions = {
+                IconButton(onClick = { vm.settingsBack = Screen.Chat; vm.screen = Screen.Settings }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
+                ProfileMenu(vm) }, windowInsets = WindowInsets(0))
         ChatTabs(vm)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
             itemsIndexed(vm.messages) { i, m ->
@@ -449,6 +457,11 @@ fun ChatScreen(vm: ChatViewModel) {
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
         SlashSuggestions(vm, chat.draft) { chat.draft = it }
         RuntimeChips(vm)
+        if (chat.queue.isNotEmpty()) Column(Modifier.padding(horizontal = 8.dp)) {
+            chat.queue.toList().forEachIndexed { i, q -> InputChip(selected = false, onClick = { chat.queue.removeAt(i) },
+                label = { Text(stringResource(R.string.queued, q), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.unqueue), Modifier.size(16.dp)) }) }
+        }
         if (vm.attachments.isNotEmpty()) Row(Modifier.padding(horizontal = 8.dp)) {
             vm.attachments.forEach { a -> InputChip(selected = false, onClick = { vm.attachments.remove(a) }, label = { Text(a.name, maxLines = 1) },
                 trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) }, modifier = Modifier.padding(end = 4.dp)) }
@@ -490,6 +503,9 @@ fun ChatScreen(vm: ChatViewModel) {
                 } }
             }
             if (vm.streaming) IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
+            // Queue: send after the running turn ends (Send next to it steers the running turn instead).
+            if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }) {
+                Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
             // While Hermes works, Send steers the running turn instead of waiting.
             if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" },
                 enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
@@ -569,6 +585,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val sel = !onList && c === vm.cur
             val label = buildString {
                 if (c.streaming) append("⏳ ")
+                if (c.id != null && c.id in vm.vdAgents) append("🖥 ")
                 if (c.approval != null || c.clarify != null) append("❓ ")
                 if (c.profile != vm.profile) append(c.profile).append(" · ")
                 append(c.title ?: newChat)
@@ -750,7 +767,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
     var lan by remember { mutableStateOf(vm.store.lanUrl) }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(stringResource(R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
-            if (vm.store.hasKey) IconButton(onClick = { vm.screen = Screen.Sessions }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } })
+            if (vm.store.hasKey) IconButton(onClick = { vm.screen = vm.settingsBack; vm.settingsBack = Screen.Sessions }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } })
         Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(relay, { relay = it }, label = { Text(stringResource(R.string.server_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 supportingText = { Text(stringResource(R.string.server_url_help, SecureStore.DEFAULT_RELAY)) })
@@ -785,8 +803,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
                 else -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(R.string.vd_agent), Modifier.weight(1f))
-                        Switch(vm.vdAgent, { if (!vm.vdBusy) vm.vdisplay(if (it) "on" else "off") }, enabled = !vm.vdBusy)
+                        Text(stringResource(R.string.vd_agent_chat, vm.currentTitle ?: stringResource(R.string.chat)), Modifier.weight(1f))
+                        Switch(vm.vdAgent, { if (!vm.vdBusy) vm.vdisplay(if (it) "on" else "off") }, enabled = !vm.vdBusy && vm.currentId != null)
                     }
                     Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
                     Row(verticalAlignment = Alignment.CenterVertically) {

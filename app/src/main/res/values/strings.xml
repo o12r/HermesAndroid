@@ -181,6 +181,10 @@
     <string name="vd_unavailable">Not available (update the PC relay)</string>
     <string name="vd_no_driver">Virtual display driver not installed — install it from the PC tray menu</string>
     <string name="vd_agent">Agent screen</string>
+    <string name="vd_agent_chat">Agent screen for: %1$s</string>
+    <string name="queue">Queue: send when this turn ends</string>
+    <string name="queued">Queued: %1$s</string>
+    <string name="unqueue">Remove from queue</string>
     <string name="vd_hint">The agent works on its own virtual screen (extended to the right) without stealing focus.</string>
     <string name="vd_screen_off">Turn PC screen off</string>
     <string name="vd_screen_off_hint">The main screen goes dark and your windows move to a separate virtual screen. Any key or mouse move on the PC turns it back on.</string>

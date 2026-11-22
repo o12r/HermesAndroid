@@ -181,6 +181,10 @@
     <string name="vd_unavailable">不可用（请更新 PC 中继）</string>
     <string name="vd_no_driver">未安装虚拟屏驱动——请在 PC 托盘菜单中安装</string>
     <string name="vd_agent">Agent 屏</string>
+    <string name="vd_agent_chat">Agent 屏幕（此会话：%1$s）</string>
+    <string name="queue">排队：本轮结束后发送</string>
+    <string name="queued">已排队：%1$s</string>
+    <string name="unqueue">移出队列</string>
     <string name="vd_hint">Agent 在自己的虚拟屏（扩展到右侧）上操作，不抢焦点。</string>
     <string name="vd_screen_off">关闭 PC 屏幕</string>
     <string name="vd_screen_off_hint">主屏息屏，你的窗口挪到单独的虚拟屏。在 PC 上按任意键或动鼠标即恢复。</string>

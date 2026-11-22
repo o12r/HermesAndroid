@@ -64,6 +64,16 @@ object Notify {
     const val CH_ALERTS = "alerts"
     @Volatile var visible = false
     private var nextId = 100
+    /** "$session|$kind" -> notification ids, so answered prompts / seen replies can be cleared (on any device). */
+    private val shown = java.util.concurrent.ConcurrentHashMap<String, MutableSet<Int>>()
+
+    /** Cancel [session]'s notifications of [kinds] (all kinds when empty). */
+    fun clear(ctx: Context, session: String?, vararg kinds: String) {
+        if (session == null) return
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        for (k in shown.keys.filter { it.startsWith("$session|") && (kinds.isEmpty() || it.substringAfter('|') in kinds) })
+            shown.remove(k)?.forEach { runCatching { nm.cancel(it) } }
+    }
 
     fun channels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
@@ -90,18 +100,22 @@ object Notify {
         alertWith(ctx, ctx.getString(R.string.n_update_ready), ctx.getString(R.string.n_update_ready_text), pi)
     }
 
-    fun alert(ctx: Context, title: String, text: String, force: Boolean = false, profile: String? = null, session: String? = null) {
+    /** [kind]: "reply" / "approval" / "clarify" / "error", used by [clear]. */
+    fun alert(ctx: Context, title: String, text: String, force: Boolean = false, profile: String? = null, session: String? = null,
+              kind: String = "other") {
         if (visible && !force) return
         channels(ctx)
-        alertWith(ctx, title, text, openApp(ctx, profile, session))
+        alertWith(ctx, title, text, openApp(ctx, profile, session), session?.let { "$it|$kind" })
     }
 
-    private fun alertWith(ctx: Context, title: String, text: String, tap: PendingIntent) {
+    private fun alertWith(ctx: Context, title: String, text: String, tap: PendingIntent, key: String? = null) {
         val n = Notification.Builder(ctx, CH_ALERTS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title).setContentText(text.take(300))
             .setStyle(Notification.BigTextStyle().bigText(text.take(1000)))
             .setContentIntent(tap).setAutoCancel(true).build()
-        runCatching { ctx.getSystemService(NotificationManager::class.java).notify(nextId++, n) }
+        val id = nextId++
+        runCatching { ctx.getSystemService(NotificationManager::class.java).notify(id, n) }
+        key?.let { shown.getOrPut(it) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(id) }
     }
 }

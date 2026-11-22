@@ -78,6 +78,8 @@ class Chat(val profile: String, id: String?, title: String?) {
     var loaded = false
     /** Unsent text in the input box; survives leaving and re-opening the chat. */
     var draft by mutableStateOf("")
+    /** Messages waiting for the running turn to finish; sent one by one, in order. */
+    val queue = mutableStateListOf<String>()
 }
 
 /**
@@ -136,7 +138,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             profile = c.profile; store.profile = c.profile
             serverCommands = emptyList(); projects = emptyList(); refreshSessions(); loadMeta()
         }
-        cur = c; screen = Screen.Chat
+        cur = c; screen = Screen.Chat; seen()
         if (c.id != null) viewModelScope.launch {
             if (!c.streaming && !c.loaded) loadMessagesInto(c)
             runCatching { ensureLive(gatewayFor(c.profile), c) }
@@ -152,6 +154,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (next != null) switchTo(next) else { cur = Chat(profile, null, null).initModel(); screen = Screen.Sessions; refreshSessions() }
         }
     }
+
+    /** The open chat is on screen: its notifications are read. */
+    fun seen() { if (screen == Screen.Chat && Notify.visible) Notify.clear(getApplication(), cur.id) }
+
+    /** Where Settings' back button goes (Settings can be opened from the session list or from a chat). */
+    var settingsBack = Screen.Sessions
+
+    /** Queue [text] in the current chat: sent when the running turn ends. */
+    fun queueMsg(text: String) { val t = text.trim(); if (t.isNotEmpty()) cur.queue.add(t) }
+    private fun drainQueue(c: Chat) { if (!c.streaming && c.queue.isNotEmpty()) sendMessage(c.queue.removeAt(0), emptyList(), c) }
 
     /** Chats with a turn running (for the session list). */
     fun busyIds(): Set<String> = chats.filter { it.streaming && it.profile == profile }.mapNotNull { it.id }.toSet()
@@ -660,6 +672,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var vdScreenOff by mutableStateOf(false)
     var vdScreenOffAvailable by mutableStateOf(true)
     var vdBusy by mutableStateOf(false)
+    /** Sessions that have an agent screen open on the PC (each session gets its own). */
+    var vdAgents by mutableStateOf<Set<String>>(emptySet())
 
     fun vdisplay(op: String) = viewModelScope.launch {
         vdBusy = true
@@ -669,7 +683,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val url = store.relayBase().trimEnd('/') + "/vdisplay/" + op
                 okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
                     .newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key")
-                        .post("{}".toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
+                        .post(JSONObject().put("session", cur.id ?: "").toString().toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
                         if (r.code == 404) return@withContext null
                         runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
                     }
@@ -684,6 +698,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 vdAgent = if (o.has("agent")) o.optBoolean("agent") else m == "extend"
                 vdScreenOff = if (o.has("screen_off")) o.optBoolean("screen_off") else m == "second-only"
                 if (o.has("user_screen_available")) vdScreenOffAvailable = o.optBoolean("user_screen_available")
+                o.optJSONObject("agents")?.let { a -> vdAgents = a.keys().asSequence().toSet() }
+                    ?: cur.id?.let { id -> vdAgents = if (vdAgent) vdAgents + id else vdAgents - id }
             }
             o?.optString("error")?.takeIf { it.isNotBlank() }?.let { status = it }
         } catch (e: Exception) { status = e.message } finally { vdBusy = false }
@@ -739,7 +755,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun open(s: Session) {
         val c = chatFor(profile, s.id, s.title)
         if (s.title != null) c.title = s.title
-        cur = c; addTab(c); screen = Screen.Chat
+        cur = c; addTab(c); screen = Screen.Chat; seen()
         viewModelScope.launch {
             // A chat that is still streaming keeps its live transcript; otherwise load the stored one.
             if (!c.streaming || !c.loaded) loadMessagesInto(c)
@@ -934,8 +950,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun sendMessage(text: String, atts: List<Attachment>) {
-        val c = cur
+    private fun sendMessage(text: String, atts: List<Attachment>, c: Chat = cur) {
         if (c.streaming || (text.isBlank() && atts.isEmpty())) return
         lastSent = text to atts
         val shown = (atts.map { if (it.isImage) "🖼️ ${it.name}" else "📎 ${it.name}" } + text).filter { it.isNotBlank() }.joinToString("\n")
@@ -1002,6 +1017,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (type == "session.info") adoptServerModel(c, p)
             }
             "message.start" -> { c.streaming = true; c.status = null
+                Notify.clear(app, c.id, "reply")       // a new turn (from the phone or the PC): the last reply was seen
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
             "message.delta" -> { c.status = null; updateLast(c) { it.copy(text = it.text + p.str("text"),
                 steps = it.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }) } }
@@ -1024,26 +1040,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     applyUsage(c, u)?.let { (i, o) ->
                         if (i0 != null && o0 != null && (i > i0 || o > o0)) updateLast(c) { it.copy(tokIn = i - i0, tokOut = o - o0) }
                         c.totIn = i; c.totOut = o } }
-                if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id)
+                if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
                 viewModelScope.launch { refreshIds(c) }
                 if (p.optString("outcome") !in setOf("", "completed") && c === cur) error = "Turn ended: ${p.optString("outcome")}"
                 if (c.title == null) refreshSessions()
+                if (p.optString("outcome") in setOf("", "completed")) drainQueue(c)   // stopped: keep the queue
             }
             "approval.request" -> {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: listOf("once", "deny")
                 c.approval = Approval(p.optString("prompt_id"), p.optString("command"), p.optString("description"), ch,
                     p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(R.string.n_approval) + " · " + name, p.optString("command"), force = c !== cur, profile = c.profile, session = c.id)
+                if (away) Notify.alert(app, s(R.string.n_approval) + " · " + name, p.optString("command"), force = c !== cur, profile = c.profile, session = c.id, kind = "approval")
             }
             "clarify.request" -> {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
                 c.clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch, p.optBoolean("multi_select") && ch.isNotEmpty())),
                     p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(R.string.n_clarify) + " · " + name, p.optString("question"), force = c !== cur, profile = c.profile, session = c.id)
+                if (away) Notify.alert(app, s(R.string.n_clarify) + " · " + name, p.optString("question"), force = c !== cur, profile = c.profile, session = c.id, kind = "clarify")
             }
-            "approval.settled" -> if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null
-            "clarify.settled" -> if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null
+            // Answered here or on the PC: the question's notification is stale either way.
+            "approval.settled" -> { if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null; Notify.clear(app, c.id, "approval") }
+            "clarify.settled" -> { if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null; Notify.clear(app, c.id, "clarify") }
             "session.title" -> p.optString("title").ifBlank { null }?.let { c.title = it }
             "error" -> { val msg = p.optString("message").ifBlank { "Hermes error" }
                 c.streaming = false; c.status = null; dropEmpty(c); c.messages.add(UiMsg("system", "⚠ $msg"))
@@ -1070,13 +1088,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun answerApproval(choice: String) {
-        val c = cur; val a = c.approval ?: return; c.approval = null
+        val c = cur; val a = c.approval ?: return; c.approval = null; Notify.clear(getApplication(), c.id, "approval")
         if (a.gen == null) { gw?.respond(a.reqId, JSONObject().put("choice", choice)); return }
         viewModelScope.launch { runCatching { gatewayFor(c.profile).call("approval.respond", JSONObject().put("session_id", c.liveId)
             .put("execution_generation", a.gen).put("prompt_id", a.reqId).put("choice", choice)) }.onFailure { fail(it) } }
     }
     fun answerClarify(answers: Map<String, String>?) {
-        val chat = cur; val c = chat.clarify ?: return; chat.clarify = null
+        val chat = cur; val c = chat.clarify ?: return; chat.clarify = null; Notify.clear(getApplication(), chat.id, "clarify")
         if (c.gen != null) {
             viewModelScope.launch { runCatching { gatewayFor(chat.profile).call("clarify.respond", JSONObject().put("session_id", chat.liveId)
                 .put("execution_generation", c.gen).put("prompt_id", c.reqId).put("answer", answers?.values?.firstOrNull().orEmpty())) }
