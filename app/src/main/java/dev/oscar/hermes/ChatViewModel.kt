@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,7 +35,9 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Send failed: shows a red ! with resend / edit / delete. [resend] is the original text. */
     val failed: Boolean = false, val resend: String? = null, val uid: String = UUID.randomUUID().toString(),
     /** A file the phone saved from the Inbox (role "file"): content Uri, shown inline. */
-    val file: String? = null)
+    val file: String? = null,
+    /** Session the file belongs to (file messages only). */
+    val session: String? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
@@ -57,6 +60,11 @@ class Chat(val profile: String, id: String?, title: String?) {
     var dropped = false                          // a turn was running when the connection dropped
     var newCwd: String? = null
     var model by mutableStateOf("")              // per chat: "provider|model" or "" (server default)
+    /** What the PC session actually runs ("provider|model", effort); null until the server reports it. */
+    var serverModel: String? = null
+    var serverEffort: String? = null
+    /** Created on the phone and no prompt sent yet: the phone's model pick wins until the first turn. */
+    var createdHere = false
     var effort by mutableStateOf("")
     var loaded = false
     /** Unsent text in the input box; survives leaving and re-opening the chat. */
@@ -183,6 +191,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     init {
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(netCb)
+        viewModelScope.launch { inboxWatch() }
         if (store.hasKey) viewModelScope.launch { pickRelay(); refreshSessions(); loadMeta() }
         checkUpdates(manual = false)
     }
@@ -198,15 +207,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         inboxBusy = true
         try { inboxFiles = withContext(Dispatchers.IO) { Inbox.list(store) } } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
     }
-    fun saveInbox(name: String) = viewModelScope.launch {
+    /** Save a PC file into Downloads and show it in its chat (a pending card in that chat becomes the saved file). */
+    suspend fun saveInboxNow(name: String, session: String?): android.net.Uri {
+        val uri = withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) }
+        val u = uri.toString()
+        var found = false
+        for (c in (chats + cur).distinct()) {
+            val i = c.messages.indexOfFirst { it.role == "file" && it.text == name && it.file == null }
+            if (i >= 0) { c.messages[i] = c.messages[i].copy(file = u); found = true }
+        }
+        val sid = session?.takeIf { it.isNotBlank() } ?: cur.id
+        if (!found) (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
+            ?.messages?.add(UiMsg("file", name, file = u, session = sid))
+        sid?.let { store.upsertSessionFile(it, name, u) }
+        return uri
+    }
+
+    fun saveInbox(name: String, session: String?) = viewModelScope.launch {
         inboxBusy = true
         try {
-            val uri = withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) }
-            cur.messages.add(UiMsg("file", name, file = uri.toString()))
-            cur.id?.let { store.addSessionFile(it, name, uri.toString()) }
+            saveInboxNow(name, session)
             inboxFiles = inboxFiles.filterNot { it.name == name }
             android.widget.Toast.makeText(getApplication(), s(R.string.inbox_saved, name), android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
+    }
+
+    /** A non-image file from the PC: a card in its session, saved only when the user taps Save. */
+    private fun showPendingFile(item: Inbox.Item) {
+        val sid = item.session.ifBlank { null } ?: cur.id
+        (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
+            ?.messages?.add(UiMsg("file", item.name, file = null, session = sid))
+        sid?.let { store.upsertSessionFile(it, item.name, "") }
+    }
+
+    /** Real-time inbox: long-polls the PC relay; images are saved at once, other files appear as cards. */
+    private suspend fun inboxWatch() {
+        var known: Set<String> = emptySet()
+        while (true) {
+            if (!store.hasKey) { delay(3000); continue }
+            try {
+                val items = withContext(Dispatchers.IO) { Inbox.list(store, wait = 25, known = known) }
+                known = items.map { it.key }.toSet()
+                for (item in items) {
+                    if (store.inboxSeen(item.key)) continue
+                    try {
+                        if (isImageName(item.name)) saveInboxNow(item.name, item.session) else showPendingFile(item)
+                        store.markInboxSeen(item.key)
+                    } catch (e: Exception) { delay(5000) }
+                }
+            } catch (e: Exception) { delay(5000) }
+        }
+    }
+
+    /** Banner Cancel: stop waiting on the current request, drop reconnect attempts, and clear the banner. */
+    fun cancelRequest() {
+        reconnectJobs.values.forEach { it.cancel() }
+        reconnectJobs.clear()
+        if (cur.streaming) stop()
+        error = null; offline = false; status = null
     }
 
     /** Launcher icon: "dark" (black, white H) or "light" (white, black H); switches which activity-alias is enabled. */
@@ -339,18 +397,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val snap = c.id?.let { g.call("session.resume", JSONObject().put("session_id", it).put("omit_messages", true)) }
             ?: g.call("session.create", JSONObject().put("source", "gui").apply {
                     c.newCwd?.let { put("cwd", it).put("cwd_explicit", true) } }).also { r ->
-                c.newCwd = null
+                c.newCwd = null; c.createdHere = true
                 c.id = r.optString("stored_session_id").ifBlank { r.getString("session_id") }
                 c.id?.let { store.setSessionModel(it, c.model); store.setSessionEffort(it, c.effort) }
             }
         c.generation = snap.optInt("execution_generation", c.generation)
         c.revision = snap.optInt("revision", c.revision)
+        snap.optJSONObject("info")?.let { adoptServerModel(c, it) }
         val live = snap.getString("session_id").also { c.liveId = it }
         snap.optJSONArray("prompts")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { pr ->
             viewModelScope.launch(Dispatchers.Main) { onEvent(c.profile, pr.optString("kind") + ".request", live, pr) } } }
         val running = snap.optBoolean("running")
         if (running) viewModelScope.launch(Dispatchers.Main) { c.streaming = true }
         return running
+    }
+
+    /**
+     * The PC session is the source of truth for its model: show what it runs (desktop picks included) so the phone
+     * never switches it back by accident. A new chat keeps the phone's pick (it is sent with the first prompt).
+     */
+    private fun adoptServerModel(c: Chat, info: JSONObject) {
+        val m = info.optString("model").trim()
+        if (m.isEmpty()) return
+        val key = info.optString("provider").trim() + "|" + m
+        val eff = info.optString("reasoning_effort").trim()
+        c.serverModel = key; c.serverEffort = eff
+        if (c.createdHere && c.model.isNotBlank()) return          // new chat: the phone's choice goes out with the first prompt
+        c.model = key; c.effort = eff
+        c.id?.let { store.setSessionModel(it, key); store.setSessionEffort(it, eff) }
     }
 
     /** Live id for [c] on its profile's connection. */
@@ -387,6 +461,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun chooseEffort(e: String) { effort = e; store.setEffortFor(profile, e); cur.id?.let { store.setSessionEffort(it, e) } }
 
     private fun modelOverride(): JSONObject? {
+        // Same model/effort as the PC session already runs: send nothing, so the session (and its prompt cache) is untouched.
+        if (cur.serverModel != null && model == cur.serverModel && effort == (cur.serverEffort ?: "")) return null
         val m = model.substringAfter('|', "").ifBlank { null }
         val p = model.substringBefore('|', "").ifBlank { null }
         if (m == null && effort.isBlank()) return null
@@ -605,7 +681,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val failed = c.messages.filter { it.failed }
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
                 (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { UiMsg(r.role, it, id = r.id, steps = r.steps) } })
-            c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u) })
+            c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u.ifBlank { null }, session = id) })
             c.messages.addAll(failed); c.loaded = true
             if (c === cur) { offline = false; error = null }
         } catch (e: Exception) { if (c === cur) fail(e) }
@@ -757,6 +833,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val p = JSONObject().put("session_id", sid).put("text", files + text).put("submission_id", UUID.randomUUID().toString())
             modelOverride()?.let { p.put("model_override", it) }
             g.call("prompt.submit", p)
+            c.createdHere = false
         } catch (e: Exception) { c.streaming = false; dropEmpty(c); throw e }
     }
 
@@ -782,6 +859,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "session.info", "session.control.update", "session.updated" -> {
                 if (p.has("execution_generation")) c.generation = p.optInt("execution_generation", c.generation)
                 if (p.has("revision")) c.revision = p.optInt("revision", c.revision)
+                if (type == "session.info") adoptServerModel(c, p)
             }
             "message.start" -> { c.streaming = true; c.status = null
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }

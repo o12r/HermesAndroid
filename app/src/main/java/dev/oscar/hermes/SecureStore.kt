@@ -60,10 +60,21 @@ class SecureStore(ctx: Context) {
         val a = org.json.JSONArray(prefs.getString("files.$id", "[]")!!)
         (0 until a.length()).map { a.getJSONObject(it).let { o -> o.getString("name") to o.getString("uri") } }
     }.getOrDefault(emptyList())
-    fun addSessionFile(id: String, name: String, uri: String) {
+    /** Add or replace (by name) a file in a session. An empty [uri] means the file is still on the PC. */
+    fun upsertSessionFile(id: String, name: String, uri: String) {
         val a = runCatching { org.json.JSONArray(prefs.getString("files.$id", "[]")!!) }.getOrDefault(org.json.JSONArray())
-        a.put(org.json.JSONObject().put("name", name).put("uri", uri))
-        prefs.edit().putString("files.$id", a.toString()).apply()
+        val out = org.json.JSONArray()
+        for (i in 0 until a.length()) a.getJSONObject(i).takeIf { it.getString("name") != name }?.let { out.put(it) }
+        out.put(org.json.JSONObject().put("name", name).put("uri", uri))
+        prefs.edit().putString("files.$id", out.toString()).apply()
+    }
+    /** Outbox entries already handled on this phone, so a file is shown once. */
+    fun inboxSeen(key: String): Boolean = prefs.getStringSet("inboxSeen", emptySet())!!.contains(key)
+    fun markInboxSeen(key: String) {
+        val seen = prefs.getStringSet("inboxSeen", emptySet())!!.toMutableSet()
+        seen.add(key)
+        while (seen.size > 300) seen.remove(seen.first())
+        prefs.edit().putStringSet("inboxSeen", seen).apply()
     }
     fun sessionModel(id: String): String? = prefs.getString("smodel.$id", null)
     fun setSessionModel(id: String, v: String) = prefs.edit().putString("smodel.$id", v).apply()

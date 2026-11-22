@@ -15,7 +15,10 @@ import java.util.concurrent.TimeUnit
 object Inbox {
     private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
 
-    data class Item(val name: String, val size: Long)
+    data class Item(val name: String, val size: Long, val time: Long, val session: String) {
+        /** Identity of this outbox entry; the relay returns it again only if the file is re-sent. */
+        val key: String get() = "$name|$time"
+    }
 
     private fun req(store: SecureStore, path: String): Request? {
         val key = store.apiKey ?: return null
@@ -24,13 +27,17 @@ object Inbox {
         return Request.Builder().url(base + path).header("Authorization", "Bearer $key").build()
     }
 
-    /** Files waiting on the PC relay. Throws if the relay can't be reached. */
-    fun list(store: SecureStore): List<Item> {
-        val r = req(store, "/outbox") ?: throw ApiException("PC relay not reachable")
+    /**
+     * Files waiting on the PC relay. With [wait] > 0 and [known] keys it long-polls: the relay answers as soon as
+     * a file not in [known] appears, or after [wait] seconds. Throws if the relay can't be reached.
+     */
+    fun list(store: SecureStore, wait: Int = 0, known: Set<String> = emptySet()): List<Item> {
+        val q = if (wait > 0) "?wait=$wait&known=" + URLEncoder.encode(known.joinToString(","), "UTF-8") else ""
+        val r = req(store, "/outbox$q") ?: throw ApiException("PC relay not reachable")
         http.newCall(r).execute().use { resp ->
             if (!resp.isSuccessful) throw ApiException("Inbox failed (HTTP ${resp.code})")
             val arr = JSONObject(resp.body!!.string()).optJSONArray("files") ?: return emptyList()
-            return (0 until arr.length()).map { i -> arr.getJSONObject(i).let { Item(it.getString("name"), it.optLong("size")) } }
+            return (0 until arr.length()).map { i -> arr.getJSONObject(i).let { Item(it.getString("name"), it.optLong("size"), it.optLong("time"), it.optString("session")) } }
         }
     }
 

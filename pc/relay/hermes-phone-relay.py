@@ -171,14 +171,38 @@ def _authed(req):
     return auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)
 
 
+def _outbox_files():
+    OUTBOX.mkdir(parents=True, exist_ok=True)
+    files = [f for f in OUTBOX.iterdir() if f.is_file() and SAFE_NAME.fullmatch(f.name) and not f.name.endswith(".session")]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    out = []
+    for f in files:
+        side = f.with_name(f.name + ".session")
+        sess = re.sub(r"[^A-Za-z0-9_\-]", "", side.read_text(encoding="utf-8").strip()) if side.is_file() else ""
+        out.append({"name": f.name, "size": f.stat().st_size, "time": int(f.stat().st_mtime), "session": sess})
+    return out
+
+
 async def outbox_list(req: web.Request):
-    """GET /outbox: files waiting for the phone (put there by send-to-phone.py)."""
+    """GET /outbox?wait=N&known=k1,k2: files waiting for the phone (put there by send-to-phone.py).
+
+    With `known` (keys "name|time" the phone already has) it long-polls: returns as soon as a file
+    the phone doesn't know yet appears, or after `wait` seconds (max 30) with the current list."""
     if not _authed(req):
         return web.json_response({"error": "unauthorized"}, status=401)
-    OUTBOX.mkdir(parents=True, exist_ok=True)
-    files = [f for f in OUTBOX.iterdir() if f.is_file() and SAFE_NAME.fullmatch(f.name)]
-    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-    return web.json_response({"files": [{"name": f.name, "size": f.stat().st_size, "time": int(f.stat().st_mtime)} for f in files]})
+    try:
+        wait = min(max(int(req.query.get("wait", "0")), 0), 30)
+    except ValueError:
+        wait = 0
+    known = set(filter(None, req.query.get("known", "").split(",")))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait
+    while True:
+        files = _outbox_files()
+        if any(f"{x['name']}|{x['time']}" not in known for x in files) or loop.time() >= deadline:
+            break
+        await asyncio.sleep(1)
+    return web.json_response({"files": files})
 
 
 async def outbox_item(req: web.Request):
@@ -189,10 +213,11 @@ async def outbox_item(req: web.Request):
     if not SAFE_NAME.fullmatch(name):
         return web.json_response({"error": "bad name"}, status=400)
     f = OUTBOX / name
-    if not f.is_file():
+    if not f.is_file() or name.endswith(".session"):
         return web.json_response({"error": "not found"}, status=404)
     if req.method == "DELETE":
         f.unlink()
+        f.with_name(name + ".session").unlink(missing_ok=True)
         return web.json_response({"ok": True})
     return web.FileResponse(f, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 

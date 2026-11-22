@@ -65,6 +65,8 @@ When the user asks you to send, share or "put on my phone" a file (a report, ima
 
 1. Run the sender (it is in the launchers folder; stdlib only, no key needed):
    `python -I "%LOCALAPPDATA%\hermes\launchers\send-to-phone.py" "<absolute path to file>" [--name "nice name.ext"]`
+   The file appears **live in this chat** (the session it was sent from). Images are shown inline on the phone at once; other files appear as a card with a Save button.
+   The session is picked up automatically from `$HERMES_SESSION_ID`; only pass `--session <id>` if that variable is empty.
 2. It prints the stored name. Tell the user: "Sent to your phone's Inbox: <name>. Open Hermes → Inbox icon (top bar) → Save; it lands in Downloads."
 3. Limits: files up to 500 MB; a file that doesn't exist makes the command exit with an error. Re-run after fixing the path.
 

@@ -220,6 +220,7 @@ fun Banner(vm: ChatViewModel) {
         Icon(if (vm.offline) Icons.Default.CloudOff else Icons.Default.ErrorOutline, null)
         Text(msg, Modifier.weight(1f).padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { vm.error = null; vm.reconnect() }) { Text(stringResource(R.string.retry)) }
+        TextButton(onClick = { vm.cancelRequest() }) { Text(stringResource(R.string.cancel)) }
     }
 }
 
@@ -372,7 +373,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                 items(vm.inboxFiles, key = { it.name }) { f ->
                     ListItem(headlineContent = { Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = { Text(Inbox.sizeText(f.size)) },
-                        trailingContent = { TextButton(onClick = { vm.saveInbox(f.name) }, enabled = !vm.inboxBusy) { Text(stringResource(R.string.inbox_save)) } })
+                        trailingContent = { TextButton(onClick = { vm.saveInbox(f.name, f.session) }, enabled = !vm.inboxBusy) { Text(stringResource(R.string.inbox_save)) } })
                 }
             }
         } },
@@ -579,8 +580,8 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
         return
     }
-    m.file?.let { uri ->
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, uri) }
+    if (m.role == "file") {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file) { vm.saveInbox(m.text, m.session) } }
         return
     }
     val user = m.role == "user"
