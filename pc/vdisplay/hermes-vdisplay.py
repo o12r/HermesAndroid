@@ -267,10 +267,19 @@ def _watch():
     u32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOK, W.HINSTANCE, W.DWORD]
     u32.SetWindowsHookExW.restype = W.HHOOK
     start, woke = time.time() + 1.5, []
+    wlog = STATE / "watch.log"
+
+    def note(s):
+        try:
+            with open(wlog, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%H:%M:%S ") + s + "\n")
+        except OSError:
+            pass
+    note("watch start")
 
     def fire():
         if not woke and time.time() > start:
-            woke.append(1); u32.PostThreadMessageW(k32.GetCurrentThreadId(), 0x0012, 0, 0)  # WM_QUIT
+            woke.append(1); note("real input -> extend"); u32.PostThreadMessageW(k32.GetCurrentThreadId(), 0x0012, 0, 0)  # WM_QUIT
 
     @HOOK
     def kb(n, wp, lp):
@@ -284,15 +293,23 @@ def _watch():
             fire()
         return u32.CallNextHookEx(None, n, wp, lp)
 
+    k32.GetModuleHandleW.restype = ctypes.c_void_p   # default c_int truncates the 64-bit handle -> hook error 126
+    k32.GetModuleHandleW.argtypes = [W.LPCWSTR]
     mod = k32.GetModuleHandleW(None)
     h1, h2 = u32.SetWindowsHookExW(13, kb, mod, 0), u32.SetWindowsHookExW(14, ms, mod, 0)
+    note(f"hooks kb={bool(h1)} ms={bool(h2)} err={ctypes.get_last_error()}")
     msg = W.MSG()
     while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
         pass
     u32.UnhookWindowsHookEx(h1); u32.UnhookWindowsHookEx(h2)
     if woke:
         WATCH_PID.unlink(missing_ok=True)
-        to_extend()
+        try:
+            to_extend()
+            note("extend done")
+        except Exception:
+            import traceback
+            note(traceback.format_exc())
 
 
 # ---------------------------------------------------------------- windows
