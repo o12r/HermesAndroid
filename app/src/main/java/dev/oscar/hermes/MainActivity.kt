@@ -121,7 +121,7 @@ class MainActivity : ComponentActivity() {
             val sysDark = isSystemInDarkTheme()
             val scheme = when (vm.theme) {
                 "light" -> dynamicLightColorScheme(ctx)
-                "dark" -> dynamicDarkColorScheme(ctx)
+                "dark" -> darkGray(dynamicDarkColorScheme(ctx))
                 "black" -> trueBlack(dynamicDarkColorScheme(ctx))
                 else -> if (sysDark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
             }
@@ -136,6 +136,14 @@ fun trueBlack(d: ColorScheme) = d.copy(
     surfaceContainerLowest = Color.Black, surfaceContainerLow = Color(0xFF080808), surfaceContainer = Color(0xFF0E0E0E),
     surfaceContainerHigh = Color(0xFF151515), surfaceContainerHighest = Color(0xFF1C1C1C),
     surfaceVariant = Color(0xFF161616), inverseOnSurface = Color.Black,
+)
+
+/** Standard dark theme: dark-grey surfaces (clearly lighter than AMOLED black), the dynamic accents kept. */
+fun darkGray(d: ColorScheme) = d.copy(
+    background = Color(0xFF1A1A1A), surface = Color(0xFF1A1A1A), surfaceDim = Color(0xFF141414), surfaceBright = Color(0xFF2E2E2E),
+    surfaceContainerLowest = Color(0xFF121212), surfaceContainerLow = Color(0xFF1C1C1C), surfaceContainer = Color(0xFF222222),
+    surfaceContainerHigh = Color(0xFF292929), surfaceContainerHighest = Color(0xFF303030),
+    surfaceVariant = Color(0xFF262626), inverseOnSurface = Color(0xFF141414),
 )
 
 /** Jump to Settings → context group (the chat page wires its context button to this). */
@@ -527,12 +535,14 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
         TopAppBar(title = { Column {
                 Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.combinedClickable(onDoubleClick = { if (vm.currentId != null) renamingTitle = true }) {})
-                val proj = vm.projects.find { p -> vm.currentId != null && vm.currentId in p.sessionIds }
-                    ?.let { p -> if (p.isHome) stringResource(R.string.home) else p.name }
+                val proj = vm.projects.find { p ->
+                    (chat.projectId != null && p.id == chat.projectId) || (vm.currentId != null && vm.currentId in p.sessionIds)
+                }?.let { p -> if (p.isHome) stringResource(R.string.home) else p.name }
                 Text(listOfNotNull(chat.profile, proj).joinToString(" › "), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             } },
             actions = {
+                IconButton(onClick = { vm.refreshChat() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
                 IconButton(onClick = { vm.settingsBack = Screen.Chat; vm.screen = Screen.Settings }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
             }, windowInsets = WindowInsets(0))
         if (renamingTitle) {
@@ -574,6 +584,11 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
             var focused by remember { mutableStateOf(false) }
             var full by remember { mutableStateOf(false) }
             val half = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 2).dp
+            // Collapse to one line when the soft keyboard closes on a phone with no hardware keyboard.
+            val imeVisible = WindowInsets.isImeVisible
+            val hasHardwareKeyboard = androidx.compose.ui.platform.LocalConfiguration.current.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS
+            val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+            LaunchedEffect(imeVisible) { if (!imeVisible && !hasHardwareKeyboard && focused) focusManager.clearFocus() }
             OutlinedTextField(chat.draft, { chat.draft = it }, Modifier.weight(1f).heightIn(max = half)
                     .onFocusChanged { focused = it.isFocused }.animateContentSize(),
                 placeholder = { Text(stringResource(if (vm.streaming) R.string.steer_hint else R.string.message_hint)) },
@@ -594,26 +609,30 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 } }
             }
-            // Buttons stacked outside the field, on its right: expand, send/steer, stop, queue, attach.
+            // Buttons stacked outside the field, on its right. Collapsed (one line): only send or stop.
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 val small = Modifier.size(40.dp)
-                if (focused || chat.draft.length > 80) IconButton(onClick = { full = true }, small) {
-                    Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }
-                if (vm.streaming) IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
-                // Queue: send after the running turn ends.
-                if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }, small) {
-                    Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
-                var attachMenu by remember { mutableStateOf(false) }
-                if (vm.hotfix.attachments) Box {
-                    IconButton(onClick = { attachMenu = true }, small, enabled = !vm.streaming) { Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
-                    DropdownMenu(attachMenu, { attachMenu = false }) {
-                        DropdownMenuItem(text = { Text(stringResource(R.string.image)) }, leadingIcon = { Icon(Icons.Default.Image, null) },
-                            onClick = { attachMenu = false; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
-                        DropdownMenuItem(text = { Text(stringResource(R.string.text_file)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
-                            onClick = { attachMenu = false; pickFile.launch("*/*") })
-                    } }
-                // While Hermes works, Send steers the running turn instead of waiting.
-                if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
+                if (focused) {
+                    IconButton(onClick = { full = true }, small) { Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }
+                    if (vm.streaming) IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
+                    // Queue: send after the running turn ends.
+                    if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }, small) {
+                        Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
+                    var attachMenu by remember { mutableStateOf(false) }
+                    if (vm.hotfix.attachments) Box {
+                        IconButton(onClick = { attachMenu = true }, small, enabled = !vm.streaming) { Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
+                        DropdownMenu(attachMenu, { attachMenu = false }) {
+                            DropdownMenuItem(text = { Text(stringResource(R.string.image)) }, leadingIcon = { Icon(Icons.Default.Image, null) },
+                                onClick = { attachMenu = false; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.text_file)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
+                                onClick = { attachMenu = false; pickFile.launch("*/*") })
+                        } }
+                } else if (vm.streaming) {
+                    // One line while streaming: stop only, no steer.
+                    IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
+                }
+                // While Hermes works, Send steers the running turn instead of waiting (only when expanded).
+                if (!vm.streaming || (focused && chat.draft.isNotBlank())) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
                     enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
                     Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
             }

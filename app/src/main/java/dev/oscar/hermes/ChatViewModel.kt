@@ -80,6 +80,7 @@ class Chat(val profile: String, id: String?, title: String?) {
     var revision = 0
     var dropped = false                          // a turn was running when the connection dropped
     var newCwd: String? = null
+    var projectId: String? = null               // project this chat was created/opened in (shown before its session exists)
     var model by mutableStateOf("")              // per chat: "provider|model" or "" (server default)
     /** What the PC session actually runs ("provider|model", effort); null until the server reports it. */
     var serverModel: String? = null
@@ -704,6 +705,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         loadSessionCtx()
     }
 
+    /** Reload the current chat's transcript and the session list (top-bar refresh button). */
+    fun refreshChat() = viewModelScope.launch {
+        val c = cur
+        if (c.id != null && !c.streaming) loadMessagesInto(c)
+        refreshSessions()
+    }
+
     private suspend fun loadProjects() {
         val g = gateway()
         val archivedIds = runCatching { g.call("projects.list", JSONObject()) }.getOrNull()?.let { r ->
@@ -1016,6 +1024,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun open(s: Session) {
         val c = chatFor(profile, s.id, s.title)
         if (s.title != null) c.title = s.title
+        c.projectId = projects.find { s.id in it.sessionIds }?.id ?: c.projectId
         cur = c; addTab(c); screen = Screen.Chat; seen()
         viewModelScope.launch {
             // A chat that is still streaming keeps its live transcript; otherwise load the stored one.
@@ -1081,7 +1090,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun newChat() {
-        cur = Chat(profile, null, null).initModel().also { it.newCwd = newChatCwd ?: fabProject?.let { p -> p.path ?: p.homeCwd }; chats.add(it); addTab(it) }
+        val project = newChatCwd?.let { cwd -> projects.find { it.path == cwd || it.homeCwd == cwd } } ?: fabProject
+        val c = Chat(profile, null, null).initModel()
+        c.newCwd = newChatCwd ?: project?.let { p -> p.path ?: p.homeCwd }
+        c.projectId = project?.id
+        cur = c; chats.add(c); addTab(c)
         newChatCwd = null; attachments.clear(); screen = Screen.Chat
     }
 
