@@ -539,7 +539,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     // like the desktop composer). prompt.submit's model_override only lasts one turn.
                     c.model.substringAfter('|', "").ifBlank { null }?.let { m -> put("model", m)
                         c.model.substringBefore('|', "").ifBlank { null }?.let { put("provider", it) } }
-                    c.effort.ifBlank { null }?.let { put("reasoning_effort", it) } }).also { r ->
+                    c.effort.ifBlank { null }?.let { put("reasoning", it) } }).also { r ->
                 c.newCwd = null; c.createdHere = true
                 c.id = r.optString("stored_session_id").ifBlank { r.getString("session_id") }
                 c.id?.let { store.setSessionModel(it, c.model); store.setSessionEffort(it, c.effort) }

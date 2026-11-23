@@ -444,7 +444,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                     }
                 }
             }
-            if (profOpen) item(key = "archived-toggle") {
+            if (profOpen) item(key = "archived-toggle:$prof") {
                 if (projsOf.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(4.dp)) {
                     Text(stringResource(if (showArchived) R.string.hide_archived else R.string.show_archived)) }
             }
