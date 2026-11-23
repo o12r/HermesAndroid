@@ -6,6 +6,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.ui.graphics.graphicsLayer
 import android.content.Context
@@ -293,10 +297,11 @@ fun SessionsScreen(vm: ChatViewModel) {
     var creating by remember { mutableStateOf(false) }
     var deletingProject by remember { mutableStateOf<Project?>(null) }
     var showArchived by remember { mutableStateOf(false) }
+    var profileOpen by rememberSaveable { mutableStateOf(true) }
     // Collapsed state per project; the active project (or Home) starts open.
     val open = remember { mutableStateMapOf<String, Boolean>() }
     val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
-    val busy = vm.busyIds()
+    val busy by remember { derivedStateOf { vm.busyIds() } }
     // Group sessions; anything the tree doesn't know about goes to Home.
     val groups = remember(vm.sessions, vm.projects, showArchived) {
         val byId = vm.sessions.associateBy { it.id }
@@ -322,49 +327,50 @@ fun SessionsScreen(vm: ChatViewModel) {
     ) { pad ->
         if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
         val cs = MaterialTheme.colorScheme
+        // Compact rows (plain Row instead of ListItem: fewer slots/measure passes per row, fixed heights).
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
           vm.profiles.forEach { (prof, desc) ->
             val isCur = prof == vm.profile
-            item(key = "prof:$prof") {
+            val profOpen = isCur && profileOpen
+            item(key = "prof:$prof", contentType = "prof") {
                 var menu by remember { mutableStateOf(false) }
-                ListItem(
-                    headlineContent = { Text(prof, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        color = cs.primary) },
-                    supportingContent = desc.takeIf { it.isNotBlank() }?.let { { Text(it, style = MaterialTheme.typography.labelSmall) } },
-                    leadingContent = { Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.width(4.dp).height(32.dp).background(cs.primary)); Spacer(Modifier.width(8.dp))
-                        Icon(if (isCur) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) } },
-                    trailingContent = { if (isCur) Row {
-                        IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-                        Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                Row(Modifier.fillMaxWidth().height(34.dp)
+                    .background(if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface)
+                    .clickable { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.width(4.dp).fillMaxHeight().background(cs.primary))
+                    Icon(if (profOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 8.dp, end = 6.dp).size(18.dp))
+                    Text(prof, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = cs.primary)
+                    Spacer(Modifier.weight(1f))
+                    if (isCur) {
+                        Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
                                     onClick = { menu = false; creating = true })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
                                     onClick = { menu = false; vm.newChatIn(null) })
-                            } } } },
-                    colors = ListItemDefaults.colors(containerColor = if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface),
-                    modifier = Modifier.clickable { if (!isCur) vm.setProfileTo(prof) })
+                            } }
+                    }
+                }
                 HorizontalDivider()
             }
-            if (isCur) groups.forEach { (p, list) ->
+            if (profOpen) groups.forEach { (p, list) ->
                 val isOpen = p.id == "__all" || (open[p.id] ?: (p.id == vm.activeProject || (vm.activeProject == null && p.isHome)))
-                if (p.id != "__all") item(key = "h:" + p.id) {
+                if (p.id != "__all") item(key = "h:" + p.id, contentType = "proj") {
                     var menu by remember { mutableStateOf(false) }
                     val active = p.id == vm.activeProject
                     val picked = vm.fabProject?.id == p.id
-                    ListItem(
-                        headlineContent = { Text((if (p.isHome) stringResource(R.string.home) else p.name) + "  (" + list.size + ")",
-                            style = MaterialTheme.typography.titleSmall, color = cs.secondary) },
-                        supportingContent = { listOfNotNull(p.path, if (p.archived) stringResource(R.string.archived) else null,
-                            if (p.isAuto) stringResource(R.string.auto_group) else null).joinToString(" · ").ifBlank { null }?.let {
-                            Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) } },
-                        leadingContent = { Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.width(3.dp).height(28.dp).background(cs.secondary)); Spacer(Modifier.width(8.dp))
-                            Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) } },
-                        trailingContent = { Row { IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-                          Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                    Row(Modifier.fillMaxWidth().height(32.dp)
+                        .background(if (active || picked) cs.primaryContainer else cs.surfaceContainerLow)
+                        .clickable { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
+                        Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
+                        Text((if (p.isHome) stringResource(R.string.home) else p.name) + " " + list.size,
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
+                                p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
                                     onClick = { menu = false; vm.newChatIn(p) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(if (active) R.string.unset_default else R.string.set_default)) },
@@ -373,33 +379,33 @@ fun SessionsScreen(vm: ChatViewModel) {
                                     leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { menu = false; vm.archiveProject(p, restore = p.archived) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(R.string.delete_project)) },
                                     leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; deletingProject = p })
-                            } } } },
-                        colors = ListItemDefaults.colors(containerColor = if (active || picked) cs.primaryContainer else cs.surfaceContainerLow),
-                        modifier = Modifier.clickable { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 16.dp))
-                    HorizontalDivider()
+                            } }
+                    }
                 }
-                if (isOpen) items(list, key = { p.id + ":" + it.id }) { s ->
+                if (isOpen) items(list, key = { p.id + ":" + it.id }, contentType = { "sess" }) { s ->
                     var menu by remember { mutableStateOf(false) }
-                    ListItem(
-                        headlineContent = { Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(listOfNotNull(s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) },
-                            stringResource(R.string.msgs, s.count)).joinToString(" · ")) },
-                        trailingContent = { Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                    val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
+                    Row(Modifier.fillMaxWidth().height(36.dp)
+                        .combinedClickable(onLongClick = { menu = true }) { if (p.id != "__all") vm.lastProject = p; vm.open(s) }
+                        .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
+                        Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = s })
-                            } } },
-                        modifier = Modifier.clickable { if (p.id != "__all") vm.lastProject = p; vm.open(s) }.padding(start = 32.dp))
-                    HorizontalDivider()
+                            } }
+                    }
                 }
             }
-            if (isCur) item(key = "archived-toggle") {
-                if (vm.projects.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(8.dp)) {
+            if (profOpen) item(key = "archived-toggle") {
+                if (vm.projects.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(4.dp)) {
                     Text(stringResource(if (showArchived) R.string.hide_archived else R.string.show_archived)) }
-                Spacer(Modifier.height(88.dp))
             }
           }
+          item(key = "fab-space") { Spacer(Modifier.height(88.dp)) }
         }
     }
     moving?.let { s ->
