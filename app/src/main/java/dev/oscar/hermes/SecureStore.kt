@@ -35,6 +35,9 @@ class SecureStore(ctx: Context) {
         get() = prefs.getString("profileCache", "")!!.lines().filter { it.isNotBlank() }
             .map { it.substringBefore('\t') to it.substringAfter('\t', "") }
         set(v) = prefs.edit().putString("profileCache", v.joinToString("\n") { it.first + "\t" + it.second.replace('\n', ' ') }).apply()
+    /** Last session list + project tree per profile (JSON), so the session page opens instantly. */
+    fun snap(profile: String): String? = prefs.getString("snap_$profile", null)
+    fun setSnap(profile: String, json: String) = prefs.edit().putString("snap_$profile", json).apply()
     /** User-chosen profile order (names); profiles not listed follow alphabetically. */
     var profileOrder: List<String>
         get() = prefs.getString("profileOrder", "")!!.lines().filter { it.isNotBlank() }

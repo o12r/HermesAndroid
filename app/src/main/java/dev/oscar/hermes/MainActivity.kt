@@ -47,6 +47,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.flow.drop
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
@@ -307,6 +310,39 @@ fun ProfileMenu(vm: ChatViewModel) {
     }
 }
 
+/** Profile order editor: drag a row by its handle; the order is saved when the drag ends. */
+@Composable
+fun ReorderProfiles(vm: ChatViewModel, modifier: Modifier = Modifier) {
+    val order = remember { mutableStateListOf<String>().apply { addAll(vm.orderedProfiles.map { it.first }) } }
+    var dragging by remember { mutableStateOf<String?>(null) }
+    var off by remember { mutableFloatStateOf(0f) }
+    val rowH = 52.dp
+    val hPx = with(androidx.compose.ui.platform.LocalDensity.current) { rowH.toPx() }
+    val cs = MaterialTheme.colorScheme
+    Column(modifier.verticalScroll(rememberScrollState())) {
+        order.toList().forEach { prof -> key(prof) {
+            val isDrag = dragging == prof
+            Row(Modifier.fillMaxWidth().height(rowH).zIndex(if (isDrag) 1f else 0f)
+                .offset { androidx.compose.ui.unit.IntOffset(0, if (isDrag) off.toInt() else 0) }
+                .background(if (isDrag) cs.primaryContainer else cs.surface).padding(start = 16.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(prof, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = cs.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Default.DragHandle, null, Modifier.size(40.dp).padding(8.dp).pointerInput(prof) {
+                    detectDragGestures(onDragStart = { dragging = prof; off = 0f },
+                        onDragEnd = { dragging = null; off = 0f; vm.saveProfileOrder(order.toList()) },
+                        onDragCancel = { dragging = null; off = 0f; vm.saveProfileOrder(order.toList()) }) { c, d ->
+                        c.consume(); off += d.y
+                        val i = order.indexOf(prof)
+                        if (off > hPx / 2 && i < order.lastIndex) { order.add(i + 1, order.removeAt(i)); off -= hPx }
+                        else if (off < -hPx / 2 && i > 0) { order.add(i - 1, order.removeAt(i)); off += hPx }
+                    }
+                })
+            }
+            HorizontalDivider()
+        } }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionsScreen(vm: ChatViewModel) {
@@ -316,6 +352,14 @@ fun SessionsScreen(vm: ChatViewModel) {
     var creating by remember { mutableStateOf(false) }
     var deletingProject by remember { mutableStateOf<Project?>(null) }
     var showArchived by remember { mutableStateOf(false) }
+    var reordering by remember { mutableStateOf(false) }
+    var selMode by remember { mutableStateOf(false) }
+    var sel by remember { mutableStateOf(setOf<String>()) }
+    var deletingMany by remember { mutableStateOf(false) }
+    var movingMany by remember { mutableStateOf(false) }
+    val picked = vm.sessions.filter { it.id in sel }
+    fun toggleSel(id: String) { sel = if (id in sel) sel - id else sel + id; if (sel.isEmpty()) selMode = false }
+    androidx.activity.compose.BackHandler(selMode || reordering) { selMode = false; sel = emptySet(); reordering = false }
     // Collapsed state per project; the active project (or Home) starts open.
     val open = remember { mutableStateMapOf<String, Boolean>() }
     val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
@@ -341,17 +385,24 @@ fun SessionsScreen(vm: ChatViewModel) {
         }
     }
     Scaffold(
-        topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name), maxLines = 1, softWrap = false) }, actions = {
-            IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
+        topBar = { Column { TopAppBar(title = { Text(if (selMode) stringResource(R.string.n_selected, picked.size) else stringResource(R.string.app_name), maxLines = 1, softWrap = false) },
+            navigationIcon = { if (selMode) IconButton(onClick = { selMode = false; sel = emptySet() }) { Icon(Icons.Default.Close, null) } },
+            actions = {
+            if (reordering) TextButton(onClick = { reordering = false }) { Text(stringResource(R.string.reorder_done)) }
+            else if (selMode) {
+                IconButton(onClick = { movingMany = true }, enabled = picked.isNotEmpty()) { Icon(Icons.Default.Folder, stringResource(R.string.move_to_project)) }
+                IconButton(onClick = { deletingMany = true }, enabled = picked.isNotEmpty()) { Icon(Icons.Default.Delete, stringResource(R.string.delete)) }
+            } else IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
         }, windowInsets = WindowInsets(0))
             ChatTabs(vm, onList = true) } },
-        floatingActionButton = { ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
+        floatingActionButton = { if (!selMode && !reordering) ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
             text = { Text(vm.fabProject?.let { stringResource(R.string.new_chat_in, if (it.isHome) stringResource(R.string.home) else it.name) } ?: stringResource(R.string.new_chat)) }) },
         contentWindowInsets = WindowInsets(0)
     ) { pad ->
         if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
         val cs = MaterialTheme.colorScheme
         // Compact rows (plain Row instead of ListItem: fewer slots/measure passes per row, fixed heights).
+        if (reordering) ReorderProfiles(vm, Modifier.padding(pad).fillMaxSize()) else
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
           vm.orderedProfiles.forEach { (prof, desc) ->
             val isCur = prof == vm.profile
@@ -380,23 +431,22 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 onClick = { menu = false; vm.enterProfile(prof); creating = true })
                             DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
                                 onClick = { menu = false; vm.enterProfile(prof); vm.newChatIn(null) })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.move_up)) }, leadingIcon = { Icon(Icons.Default.ArrowUpward, null) },
-                                onClick = { menu = false; vm.moveProfile(prof, -1) })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.move_down)) }, leadingIcon = { Icon(Icons.Default.ArrowDownward, null) },
-                                onClick = { menu = false; vm.moveProfile(prof, 1) })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.reorder_profiles)) }, leadingIcon = { Icon(Icons.Default.DragHandle, null) },
+                                onClick = { menu = false; selMode = false; sel = emptySet(); reordering = true })
                         } }
                 }
                 HorizontalDivider()
             }
+            if (profOpen && !isCur && vm.otherData[prof] == null) item(key = "load:$prof") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (profOpen) groups.forEach { (p, list) ->
                 val okey = prof + ":" + p.id
                 val isOpen = p.id == "__all" || (open[okey] ?: (p.id == activeOf || (activeOf == null && p.isHome)))
                 if (p.id != "__all") item(key = "h:" + okey, contentType = "proj") {
                     var menu by remember { mutableStateOf(false) }
                     val active = p.id == activeOf
-                    val picked = isCur && vm.fabProject?.id == p.id
+                    val fabPicked = isCur && vm.fabProject?.id == p.id
                     Row(Modifier.fillMaxWidth().height(32.dp)
-                        .background(if (active || picked) cs.primaryContainer else cs.surfaceContainerLow)
+                        .background(if (active || fabPicked) cs.primaryContainer else cs.surfaceContainerLow)
                         .combinedClickable(onLongClick = { menu = true }) { if (!isCur) vm.enterProfile(prof); open[okey] = !isOpen; vm.lastProject = p }.padding(start = 20.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
@@ -424,8 +474,13 @@ fun SessionsScreen(vm: ChatViewModel) {
                     var menu by remember { mutableStateOf(false) }
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
+                    val isSel = isCur && s.id in sel
                     Row(Modifier.fillMaxWidth().heightIn(min = if (ctxRow != null) 46.dp else 36.dp)
-                        .combinedClickable(onLongClick = { menu = true }, onDoubleClick = { renaming = s }) { if (!isCur) vm.enterProfile(prof); if (p.id != "__all") vm.lastProject = p; vm.open(s) }
+                        .then(if (isSel) Modifier.background(cs.primaryContainer) else Modifier)
+                        .combinedClickable(onLongClick = { if (selMode) { if (isCur) toggleSel(s.id) } else menu = true },
+                            onDoubleClick = { if (!selMode) { vm.enterProfile(prof); renaming = s } }) {
+                            if (selMode) { if (isCur) toggleSel(s.id) }
+                            else { if (!isCur) vm.enterProfile(prof); if (p.id != "__all") vm.lastProject = p; vm.open(s) } }
                         .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id),
@@ -435,8 +490,11 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
                         }
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
-                        Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
+                        if (selMode) Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) { if (isSel) Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
+                        else Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.select_multiple)) }, leadingIcon = { Icon(Icons.Default.Checklist, null) },
+                                    onClick = { menu = false; vm.enterProfile(prof); sel = setOf(s.id); selMode = true })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; vm.enterProfile(prof); moving = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; vm.enterProfile(prof); renaming = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; vm.enterProfile(prof); deleting = s })
@@ -452,6 +510,19 @@ fun SessionsScreen(vm: ChatViewModel) {
           item(key = "fab-space") { Spacer(Modifier.height(88.dp)) }
         }
     }
+    if (deletingMany) AlertDialog(onDismissRequest = { deletingMany = false }, title = { Text(stringResource(R.string.delete_n_sessions_q, picked.size)) },
+        confirmButton = { TextButton(onClick = { vm.deleteMany(picked); deletingMany = false; selMode = false; sel = emptySet() }) { Text(stringResource(R.string.delete)) } },
+        dismissButton = { TextButton(onClick = { deletingMany = false }) { Text(stringResource(R.string.cancel)) } })
+    if (movingMany) AlertDialog(onDismissRequest = { movingMany = false }, title = { Text(stringResource(R.string.move_to_project)) },
+        text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+            vm.projects.filter { !it.archived }.forEach { p ->
+                val can = p.path != null || p.homeCwd != null
+                ListItem(headlineContent = { Text(if (p.isHome) stringResource(R.string.home) else p.name) },
+                    supportingContent = { Text(p.path ?: p.homeCwd ?: stringResource(R.string.move_no_folder), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    modifier = Modifier.clickable(enabled = can) { vm.moveManyToProject(picked, p); movingMany = false; selMode = false; sel = emptySet() })
+            }
+        } },
+        confirmButton = {}, dismissButton = { TextButton(onClick = { movingMany = false }) { Text(stringResource(R.string.cancel)) } })
     moving?.let { s ->
         val current = vm.projects.find { s.id in it.sessionIds }
         AlertDialog(onDismissRequest = { moving = null }, title = { Text(stringResource(R.string.move_to_project)) },

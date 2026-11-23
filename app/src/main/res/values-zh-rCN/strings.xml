@@ -244,6 +244,9 @@
     <string name="update_source">更新来源</string>
     <string name="update_source_auto">自动（电脑优先，失败回退 GitHub）</string>
     <string name="projects_count">%1$d 个项目</string>
-    <string name="move_up">上移</string>
-    <string name="move_down">下移</string>
+    <string name="reorder_profiles">调整档案顺序</string>
+    <string name="reorder_done">完成</string>
+    <string name="select_multiple">多选</string>
+    <string name="n_selected">已选 %1$d 项</string>
+    <string name="delete_n_sessions_q">删除 %1$d 个会话？</string>
 </resources>

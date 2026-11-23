@@ -121,13 +121,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var profileOrder by mutableStateOf(store.profileOrder)
     val orderedProfiles: List<Pair<String, String>> get() = profiles.sortedWith(
         compareBy<Pair<String, String>> { p -> profileOrder.indexOf(p.first).let { if (it < 0) Int.MAX_VALUE else it } }.thenBy { it.first.lowercase() })
-    fun moveProfile(name: String, delta: Int) {
-        val names = orderedProfiles.map { it.first }.toMutableList()
-        val i = names.indexOf(name); val j = i + delta
-        if (i < 0 || j !in names.indices) return
-        names[i] = names[j].also { names[j] = names[i] }
-        profileOrder = names; store.profileOrder = names
-    }
+    fun saveProfileOrder(names: List<String>) { profileOrder = names; store.profileOrder = names }
     fun scanProfiles() = viewModelScope.launch {
         runCatching {
             val r = gateway().call("profiles.list", JSONObject())
@@ -141,6 +135,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Project groups from projects.tree (Home = sessions outside any project). */
     var projects by mutableStateOf<List<Project>>(emptyList())
     var activeProject by mutableStateOf<String?>(null)
+    init { loadSnap(store.profile)?.let { sessions = it.first; projects = it.second; activeProject = it.third } }
     /** Project the user last tapped on the session list; the "New chat" button uses it before the default project. */
     var lastProject by mutableStateOf<Project?>(null)
     val fabProject: Project? get() = lastProject?.let { l -> projects.find { it.id == l.id } ?: l } ?: projects.find { it.id == activeProject }
@@ -696,13 +691,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshSessions() = viewModelScope.launch {
         loading = true
+        val prof = profile
+        expandedProfiles.filter { it != prof }.forEach { loadOther(it) }
         try {
-            sessions = api().sessions(); offline = false; error = null
-            runCatching { loadProjects() }.onFailure { android.util.Log.w("HermesRpc", "loadProjects: $it") }
+            // Sessions and the project tree load in parallel and are applied together, so the list never
+            // shows everything under Home first and re-sorts into projects a moment later.
+            val (ss, pj) = kotlinx.coroutines.coroutineScope {
+                val a = async { api().sessions() }
+                val b = async { runCatching { fetchProjects(gateway()) }.onFailure { android.util.Log.w("HermesRpc", "loadProjects: $it") }.getOrNull() }
+                a.await() to b.await()
+            }
+            if (prof != profile) return@launch
+            sessions = ss; offline = false; error = null
+            if (pj != null) { projects = pj.first; activeProject = pj.second; saveSnap(prof, ss, pj.first, pj.second) }
             currentId?.let { id -> sessions.find { it.id == id }?.title?.let { currentTitle = it } }
-            expandedProfiles.filter { it != profile }.forEach { loadOther(it) }
-        } catch (e: Exception) { fail(e) }
-        loading = false
+        } catch (e: Exception) { fail(e) } finally { loading = false }
         loadSessionCtx()
     }
 
@@ -725,13 +728,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleProfileExpanded(p: String) {
         expandedProfiles = if (p in expandedProfiles) expandedProfiles - p else expandedProfiles + p
-        if (p in expandedProfiles && p != profile) loadOther(p)
+        if (p in expandedProfiles && p != profile) { cachedFor(p)?.let { otherData = otherData + (p to it) }; loadOther(p) }
     }
+
+    private fun cachedFor(p: String) = otherData[p] ?: loadSnap(p)
+
+    private fun saveSnap(p: String, ss: List<Session>, pr: List<Project>, act: String?) = runCatching {
+        val o = JSONObject().put("active", act ?: "")
+        o.put("sessions", JSONArray().also { a -> ss.forEach { s -> a.put(JSONObject().put("id", s.id).put("title", s.title ?: JSONObject.NULL)
+            .put("preview", s.preview ?: JSONObject.NULL).put("la", s.lastActive ?: JSONObject.NULL).put("n", s.count).put("src", s.source ?: JSONObject.NULL)) } })
+        o.put("projects", JSONArray().also { a -> pr.forEach { x -> a.put(JSONObject().put("id", x.id).put("name", x.name).put("path", x.path ?: JSONObject.NULL)
+            .put("home", x.isHome).put("auto", x.isAuto).put("arch", x.archived).put("ids", JSONArray(x.sessionIds)).put("cwd", x.homeCwd ?: JSONObject.NULL)) } })
+        store.setSnap(p, o.toString())
+    }
+
+    private fun loadSnap(p: String): Triple<List<Session>, List<Project>, String?>? = runCatching {
+        val o = JSONObject(store.snap(p) ?: return null)
+        fun JSONObject.s(k: String) = if (isNull(k)) null else optString(k)
+        val sa = o.getJSONArray("sessions"); val pa = o.getJSONArray("projects")
+        Triple((0 until sa.length()).map { sa.getJSONObject(it) }.map { Session(it.getString("id"), it.s("title"), it.s("preview"),
+                if (it.isNull("la")) null else it.getDouble("la"), it.optInt("n"), it.s("src")) },
+            (0 until pa.length()).map { pa.getJSONObject(it) }.map { x -> Project(x.getString("id"), x.getString("name"), x.s("path"), x.optBoolean("home"),
+                x.optBoolean("auto"), x.optBoolean("arch"), x.getJSONArray("ids").let { a -> (0 until a.length()).map { a.getString(it) } }, x.s("cwd")) },
+            o.optString("active").ifBlank { null })
+    }.getOrNull()
 
     fun loadOther(p: String) = viewModelScope.launch {
         runCatching {
-            val ss = apiFor(p).sessions(); val (pr, act) = fetchProjects(gatewayFor(p))
-            otherData = otherData + (p to Triple(ss, pr, act))
+            val (ss, pj) = kotlinx.coroutines.coroutineScope {
+                val a = async { apiFor(p).sessions() }; val b = async { fetchProjects(gatewayFor(p)) }
+                a.await() to b.await()
+            }
+            otherData = otherData + (p to Triple(ss, pj.first, pj.second)); saveSnap(p, ss, pj.first, pj.second)
         }.onFailure { android.util.Log.w("HermesRpc", "loadOther $p: $it") }
     }
 
@@ -739,7 +767,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun enterProfile(p: String) {
         if (p == profile) return
         otherData = otherData + (profile to Triple(sessions, projects, activeProject))
-        val d = otherData[p]
+        val d = cachedFor(p)
         serverCommands = emptyList(); profile = p; store.profile = p
         cur = Chat(p, null, null).initModel(); sessions = d?.first ?: emptyList(); projects = d?.second ?: emptyList(); activeProject = d?.third
         expandedProfiles = expandedProfiles + p
@@ -748,12 +776,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun fetchProjects(g: GatewayWs): Pair<List<Project>, String?> {
         var active: String? = null
-        val archivedIds = runCatching { g.call("projects.list", JSONObject()) }.getOrNull()?.let { r ->
+        val listCall = kotlinx.coroutines.coroutineScope {
+            val l = async { runCatching { g.call("projects.list", JSONObject()) }.getOrNull() }
+            val t = async { g.call("projects.tree", JSONObject().put("preview_limit", 1).put("session_limit", 1000)) }
+            l.await() to t.await()
+        }
+        val archivedIds = listCall.first?.let { r ->
             active = r.str("active_id").ifBlank { null }
             val a = r.optJSONArray("projects") ?: JSONArray()
             (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { it.optBoolean("archived") }.map { it.optString("id") }.toSet()
         } ?: emptySet()
-        val tree = g.call("projects.tree", JSONObject().put("preview_limit", 1).put("session_limit", 1000))
+        val tree = listCall.second
         val nodes = tree.optJSONArray("projects") ?: JSONArray()
         val list = (0 until nodes.length()).mapNotNull { nodes.optJSONObject(it) }.map { n ->
             val ids = n.optJSONArray("sessionIds")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
@@ -773,19 +806,49 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val cwd = p.path ?: p.homeCwd
         if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
         try {
+            if (!moveOne(s, cwd)) { error = s(R.string.move_busy); return@launch }
+            status = s(R.string.moved_to, p.name); refreshSessions()
+        } catch (e: Exception) { fail(e) }
+    }
+
+    /** Move several sessions of the current profile into [p] (busy ones are skipped). */
+    fun moveManyToProject(list: List<Session>, p: Project) = viewModelScope.launch {
+        val cwd = p.path ?: p.homeCwd
+        if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
+        try {
+            var skipped = 0
+            for (x in list) if (!moveOne(x, cwd)) skipped++
+            if (skipped > 0) error = s(R.string.move_busy) else status = s(R.string.moved_to, p.name)
+            refreshSessions()
+        } catch (e: Exception) { fail(e); refreshSessions() }
+    }
+
+    fun deleteMany(list: List<Session>) = viewModelScope.launch {
+        try {
+            val ids = list.map { it.id }.toSet()
+            for (x in list) api().delete(x.id)
+            chats.removeAll { it.profile == profile && it.id in ids }; tabs.removeAll { it.profile == profile && it.id in ids }
+            if (currentId in ids) newChat()
+        } catch (e: Exception) { fail(e) }
+        refreshSessions()
+    }
+
+    /** false = the session is busy and was not moved. */
+    private suspend fun moveOne(s: Session, cwd: String): Boolean {
+        run {
             val g = gateway()
             val snap = g.call("session.resume", JSONObject().put("session_id", s.id).put("omit_messages", true))
             fun params(rev: Int, gen: Int) = JSONObject().put("session_id", snap.getString("session_id")).put("request_id", UUID.randomUUID().toString())
                 .put("expected_revision", rev).put("expected_generation", gen).put("operation", "workspace").put("payload", JSONObject().put("cwd", cwd))
             try { g.call("session.mutate", params(snap.optInt("revision"), snap.optInt("execution_generation"))) }
             catch (e: ApiException) {
-                if (e.message == "session_busy") { error = s(R.string.move_busy); return@launch }
+                if (e.message == "session_busy") return false
                 val again = g.call("session.resume", JSONObject().put("session_id", s.id).put("omit_messages", true))
                 g.call("session.mutate", params(again.optInt("revision"), again.optInt("execution_generation")))
             }
             chats.find { it.profile == profile && it.id == s.id }?.liveId = null
-            status = s(R.string.moved_to, p.name); refreshSessions()
-        } catch (e: Exception) { fail(e) }
+        }
+        return true
     }
 
     /** New project whose folder doesn't exist on the PC yet: ask before creating it. */

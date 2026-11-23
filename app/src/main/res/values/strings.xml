@@ -244,6 +244,9 @@
     <string name="update_source">Update source</string>
     <string name="update_source_auto">Auto (PC, then GitHub)</string>
     <string name="projects_count">%1$d projects</string>
-    <string name="move_up">Move up</string>
-    <string name="move_down">Move down</string>
+    <string name="reorder_profiles">Reorder profiles</string>
+    <string name="reorder_done">Done</string>
+    <string name="select_multiple">Select multiple</string>
+    <string name="n_selected">%1$d selected</string>
+    <string name="delete_n_sessions_q">Delete %1$d sessions?</string>
 </resources>
