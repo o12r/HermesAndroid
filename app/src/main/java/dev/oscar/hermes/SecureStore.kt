@@ -31,6 +31,10 @@ class SecureStore(ctx: Context) {
         get() = prefs.getString("profileCache", "")!!.lines().filter { it.isNotBlank() }
             .map { it.substringBefore('\t') to it.substringAfter('\t', "") }
         set(v) = prefs.edit().putString("profileCache", v.joinToString("\n") { it.first + "\t" + it.second.replace('\n', ' ') }).apply()
+    /** User-chosen profile order (names); profiles not listed follow alphabetically. */
+    var profileOrder: List<String>
+        get() = prefs.getString("profileOrder", "")!!.lines().filter { it.isNotBlank() }
+        set(v) = prefs.edit().putString("profileOrder", v.joinToString("\n")).apply()
     var lang: String
         get() = prefs.getString("lang", "system")!!
         set(v) = prefs.edit().putString("lang", v).commit().let { }

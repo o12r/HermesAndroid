@@ -109,6 +109,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun profileNames() = profiles.map { it.first }
 
     /** Scan the PC for Hermes profiles (profiles.list over the relay). */
+    /** Fixed profile order: the user's saved order, then alphabetical; never by recent use. */
+    var profileOrder by mutableStateOf(store.profileOrder)
+    val orderedProfiles: List<Pair<String, String>> get() = profiles.sortedWith(
+        compareBy<Pair<String, String>> { p -> profileOrder.indexOf(p.first).let { if (it < 0) Int.MAX_VALUE else it } }.thenBy { it.first.lowercase() })
+    fun moveProfile(name: String, delta: Int) {
+        val names = orderedProfiles.map { it.first }.toMutableList()
+        val i = names.indexOf(name); val j = i + delta
+        if (i < 0 || j !in names.indices) return
+        names[i] = names[j].also { names[j] = names[i] }
+        profileOrder = names; store.profileOrder = names
+    }
     fun scanProfiles() = viewModelScope.launch {
         runCatching {
             val r = gateway().call("profiles.list", JSONObject())

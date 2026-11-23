@@ -234,4 +234,7 @@
     <string name="models_all_profiles">One set for every profile. Saved on the PC; shown here once the PC confirms.</string>
     <string name="update_source">Update source</string>
     <string name="update_source_auto">Auto (PC, then GitHub)</string>
+    <string name="projects_count">%1$d projects</string>
+    <string name="move_up">Move up</string>
+    <string name="move_down">Move down</string>
 </resources>

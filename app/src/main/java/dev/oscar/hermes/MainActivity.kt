@@ -289,7 +289,7 @@ fun ProfileMenu(vm: ChatViewModel) {
     Box {
         AssistChip(onClick = { open = true; vm.scanProfiles() }, label = { Text(vm.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
         DropdownMenu(open, { open = false }) {
-            vm.profiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
+            vm.orderedProfiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
                     if (desc.isNotBlank()) Text(desc, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant) } },
                 onClick = { open = false; vm.setProfileTo(p) }, modifier = Modifier.widthIn(max = 360.dp),
@@ -339,28 +339,36 @@ fun SessionsScreen(vm: ChatViewModel) {
         val cs = MaterialTheme.colorScheme
         // Compact rows (plain Row instead of ListItem: fewer slots/measure passes per row, fixed heights).
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
-          vm.profiles.forEach { (prof, desc) ->
+          vm.orderedProfiles.forEach { (prof, desc) ->
             val isCur = prof == vm.profile
             val profOpen = isCur && profileOpen
             item(key = "prof:$prof", contentType = "prof") {
                 var menu by remember { mutableStateOf(false) }
-                Row(Modifier.fillMaxWidth().height(34.dp)
+                Row(Modifier.fillMaxWidth().height(if (isCur) 42.dp else 34.dp)
                     .background(if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface)
-                    .combinedClickable(onLongClick = { if (isCur) menu = true }) { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } },
+                    .combinedClickable(onLongClick = { menu = true }) { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } },
                     verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(4.dp).fillMaxHeight().background(cs.primary))
                     Icon(if (profOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 8.dp, end = 6.dp).size(18.dp))
-                    Text(prof, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = cs.primary)
+                    Column {
+                        Text(prof, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = cs.primary)
+                        if (isCur) Text(stringResource(R.string.projects_count, vm.projects.count { !it.isHome && !it.archived }),
+                            style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                    }
                     Spacer(Modifier.weight(1f))
-                    if (isCur) {
-                        Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
-                            DropdownMenu(menu, { menu = false }) {
+                    Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
+                        DropdownMenu(menu, { menu = false }) {
+                            if (isCur) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
                                     onClick = { menu = false; creating = true })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
                                     onClick = { menu = false; vm.newChatIn(null) })
-                            } }
-                    }
+                            }
+                            DropdownMenuItem(text = { Text(stringResource(R.string.move_up)) }, leadingIcon = { Icon(Icons.Default.ArrowUpward, null) },
+                                onClick = { menu = false; vm.moveProfile(prof, -1) })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.move_down)) }, leadingIcon = { Icon(Icons.Default.ArrowDownward, null) },
+                                onClick = { menu = false; vm.moveProfile(prof, 1) })
+                        } }
                 }
                 HorizontalDivider()
             }
@@ -376,8 +384,10 @@ fun SessionsScreen(vm: ChatViewModel) {
                         verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
                         Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
-                        Text((if (p.isHome) stringResource(R.string.home) else p.name) + " " + list.size,
-                            Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (p.isHome) stringResource(R.string.home) else p.name,
+                            Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(list.size.toString(), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                        Spacer(Modifier.weight(1f))
                         Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
@@ -401,7 +411,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                         Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
                             style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val ctx = vm.sessionCtx[s.id]
-                        Text(time + " · " + s.count + if (ctx != null) " · " + fmtTok(ctx.first) + "/" + fmtTok(ctx.second) else "", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
+                        Text(time + " · " + s.count + if (ctx != null) " · " + fmtTok(ctx.first) + "/" + fmtTok(ctx.second) + " tok" else "", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
                         Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
@@ -581,10 +591,6 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                 val small = Modifier.size(40.dp)
                 if (focused || chat.draft.length > 80) IconButton(onClick = { full = true }, small) {
                     Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }
-                // While Hermes works, Send steers the running turn instead of waiting.
-                if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
-                    enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
-                    Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
                 if (vm.streaming) IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
                 // Queue: send after the running turn ends.
                 if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }, small) {
@@ -598,6 +604,10 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                         DropdownMenuItem(text = { Text(stringResource(R.string.text_file)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
                             onClick = { attachMenu = false; pickFile.launch("*/*") })
                     } }
+                // While Hermes works, Send steers the running turn instead of waiting.
+                if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
+                    enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
+                    Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
             }
         }
     }
@@ -659,8 +669,8 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
         }
         val c = vm.cur
         Spacer(Modifier.weight(1f))
-        val usage = if (c.ctxMax > 0) fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax)
-            else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) else stringResource(R.string.ctx_title)
+        val usage = if (c.ctxMax > 0) fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax) + " tokens"
+            else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) + " tokens" else stringResource(R.string.ctx_title)
         AssistChip(onClick = onOpenContextSettings,
             label = { Text(usage, maxLines = 1,
                 color = if (c.ctxMax > 0 && c.ctxUsed * 100 / c.ctxMax >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
