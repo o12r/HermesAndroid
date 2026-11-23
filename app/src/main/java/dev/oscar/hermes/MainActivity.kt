@@ -6,6 +6,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.ui.graphics.graphicsLayer
 import android.content.Context
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
@@ -140,12 +142,23 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
         Banner(vm)
-        when (vm.screen) {
+        Box(Modifier.weight(1f)) { when (vm.screen) {
             Screen.Settings -> SettingsScreen(vm, recreate)
             Screen.Sessions -> SessionsScreen(vm)
             Screen.Chat -> ChatScreen(vm)
             Screen.Screens -> ScreensScreen(vm)
-        }
+        } }
+        // Bottom navigation: sessions / screens / settings. The chat is full-screen (its tabs lead back).
+        if (vm.screen != Screen.Chat && vm.store.hasKey && !(vm.screen == Screen.Settings && vm.settingsBack == Screen.Chat))
+            NavigationBar(windowInsets = WindowInsets(0)) {
+                NavigationBarItem(vm.screen == Screen.Sessions, { vm.screen = Screen.Sessions; vm.refreshSessions() },
+                    icon = { Icon(Icons.Default.Forum, null) }, label = { Text(stringResource(R.string.sessions)) })
+                NavigationBarItem(vm.screen == Screen.Screens, { if (vm.screen != Screen.Screens) vm.openScreens(Screen.Sessions) },
+                    icon = { Icon(Icons.Default.Monitor, null) }, label = { Text(stringResource(R.string.screens)) })
+                NavigationBarItem(vm.screen == Screen.Settings, { vm.settingsBack = Screen.Sessions; vm.screen = Screen.Settings },
+                    icon = { BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, null) } },
+                    label = { Text(stringResource(R.string.settings)) })
+            }
     }
     UpdateDialog(vm)
     LaunchedEffect(Unit) { vm.pollElevate() }
@@ -300,39 +313,57 @@ fun SessionsScreen(vm: ChatViewModel) {
     }
     Scaffold(
         topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name), maxLines = 1, softWrap = false) }, actions = {
-            ProfileMenu(vm)
-            IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
-            IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-            var more by remember { mutableStateOf(false) }
-            Box {
-                IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, null) }
-                DropdownMenu(more, { more = false }) {
-                    DropdownMenuItem(text = { Text(stringResource(R.string.screens)) }, leadingIcon = { Icon(Icons.Default.Monitor, null) },
-                        onClick = { more = false; vm.openScreens(Screen.Sessions) })
-                }
-            }
-            IconButton(onClick = { vm.screen = Screen.Settings }) {
-                BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } })
+            IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
+        }, windowInsets = WindowInsets(0))
             ChatTabs(vm, onList = true) } },
         floatingActionButton = { ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
             text = { Text(vm.fabProject?.let { stringResource(R.string.new_chat_in, if (it.isHome) stringResource(R.string.home) else it.name) } ?: stringResource(R.string.new_chat)) }) },
         contentWindowInsets = WindowInsets(0)
     ) { pad ->
         if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
+        val cs = MaterialTheme.colorScheme
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
-            groups.forEach { (p, list) ->
+          vm.profiles.forEach { (prof, desc) ->
+            val isCur = prof == vm.profile
+            item(key = "prof:$prof") {
+                var menu by remember { mutableStateOf(false) }
+                ListItem(
+                    headlineContent = { Text(prof, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        color = cs.primary) },
+                    supportingContent = desc.takeIf { it.isNotBlank() }?.let { { Text(it, style = MaterialTheme.typography.labelSmall) } },
+                    leadingContent = { Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.width(4.dp).height(32.dp).background(cs.primary)); Spacer(Modifier.width(8.dp))
+                        Icon(if (isCur) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) } },
+                    trailingContent = { if (isCur) Row {
+                        IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
+                        Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                            DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
+                                    onClick = { menu = false; creating = true })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
+                                    onClick = { menu = false; vm.newChatIn(null) })
+                            } } } },
+                    colors = ListItemDefaults.colors(containerColor = if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface),
+                    modifier = Modifier.clickable { if (!isCur) vm.setProfileTo(prof) })
+                HorizontalDivider()
+            }
+            if (isCur) groups.forEach { (p, list) ->
                 val isOpen = p.id == "__all" || (open[p.id] ?: (p.id == vm.activeProject || (vm.activeProject == null && p.isHome)))
                 if (p.id != "__all") item(key = "h:" + p.id) {
                     var menu by remember { mutableStateOf(false) }
                     val active = p.id == vm.activeProject
+                    val picked = vm.fabProject?.id == p.id
                     ListItem(
                         headlineContent = { Text((if (p.isHome) stringResource(R.string.home) else p.name) + "  (" + list.size + ")",
-                            style = MaterialTheme.typography.titleSmall, color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            style = MaterialTheme.typography.titleSmall, color = cs.secondary) },
                         supportingContent = { listOfNotNull(p.path, if (p.archived) stringResource(R.string.archived) else null,
                             if (p.isAuto) stringResource(R.string.auto_group) else null).joinToString(" · ").ifBlank { null }?.let {
                             Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) } },
-                        leadingContent = { Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) },
-                        trailingContent = { Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                        leadingContent = { Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.width(3.dp).height(28.dp).background(cs.secondary)); Spacer(Modifier.width(8.dp))
+                            Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null) } },
+                        trailingContent = { Row { IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
+                          Box { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
                                     onClick = { menu = false; vm.newChatIn(p) })
@@ -342,9 +373,9 @@ fun SessionsScreen(vm: ChatViewModel) {
                                     leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { menu = false; vm.archiveProject(p, restore = p.archived) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(R.string.delete_project)) },
                                     leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; deletingProject = p })
-                            } } },
-                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                        modifier = Modifier.clickable { open[p.id] = !isOpen; vm.lastProject = p })
+                            } } } },
+                        colors = ListItemDefaults.colors(containerColor = if (active || picked) cs.primaryContainer else cs.surfaceContainerLow),
+                        modifier = Modifier.clickable { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 16.dp))
                     HorizontalDivider()
                 }
                 if (isOpen) items(list, key = { p.id + ":" + it.id }) { s ->
@@ -359,15 +390,16 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = s })
                             } } },
-                        modifier = Modifier.clickable { if (p.id != "__all") vm.lastProject = p; vm.open(s) }.padding(start = 16.dp))
+                        modifier = Modifier.clickable { if (p.id != "__all") vm.lastProject = p; vm.open(s) }.padding(start = 32.dp))
                     HorizontalDivider()
                 }
             }
-            item(key = "archived-toggle") {
+            if (isCur) item(key = "archived-toggle") {
                 if (vm.projects.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(8.dp)) {
                     Text(stringResource(if (showArchived) R.string.hide_archived else R.string.show_archived)) }
                 Spacer(Modifier.height(88.dp))
             }
+          }
         }
     }
     moving?.let { s ->
@@ -853,11 +885,38 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
     var key by remember { mutableStateOf("") }
     var relay by remember { mutableStateOf(vm.store.relayUrl) }
     var lan by remember { mutableStateOf(vm.store.lanUrl) }
+    // Grouped cards; each opens its own page. Without a key, go straight to Connection.
+    var sub by remember { mutableStateOf(if (vm.store.hasKey) "" else "conn") }
+    BackHandler(sub != "" && vm.store.hasKey) { sub = "" }
+    val titles = mapOf("conn" to R.string.connection, "look" to R.string.appearance, "chat" to R.string.chat_defaults,
+        "screens" to R.string.vdisplay, "upd" to R.string.updates, "about" to R.string.about)
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text(stringResource(R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
-            if (vm.store.hasKey) IconButton(onClick = { vm.screen = vm.settingsBack; vm.settingsBack = Screen.Sessions }) {
+        TopAppBar(title = { Text(stringResource(titles[sub] ?: R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
+            if (sub != "" && vm.store.hasKey) IconButton(onClick = { sub = "" }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
+            else if (vm.store.hasKey && vm.settingsBack == Screen.Chat) IconButton(onClick = { vm.screen = Screen.Chat; vm.settingsBack = Screen.Sessions }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } })
         Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+          when (sub) {
+            "" -> {
+                @Composable fun Group(id: String, icon: androidx.compose.ui.graphics.vector.ImageVector, summary: String, badge: Boolean = false) =
+                    Card(Modifier.fillMaxWidth().clickable { if (id == "screens") vm.openScreens(Screen.Settings) else sub = id }) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            BadgedBox(badge = { if (badge) Badge() }) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }
+                            Spacer(Modifier.width(16.dp))
+                            Column(Modifier.weight(1f)) { Text(stringResource(titles[id]!!), style = MaterialTheme.typography.titleSmall)
+                                Text(summary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                            Icon(Icons.Default.KeyboardArrowRight, null)
+                        } }
+                Group("conn", Icons.Default.Link, (vm.store.activeRelay ?: vm.store.relayUrl) + " · " + vm.profile)
+                Group("look", Icons.Default.Palette, stringResource(R.string.appearance_summary))
+                LaunchedEffect(Unit) { if (vm.store.hasKey) vm.loadCtxSettings() }
+                Group("chat", Icons.Default.DataUsage, vm.ctxSettings?.let { c -> listOfNotNull(c.optString("compression_model").takeIf { it.isNotBlank() && it != "null" },
+                    c.opt("context_length")?.takeIf { it != JSONObject.NULL }?.toString()).joinToString(" · ") } ?: stringResource(R.string.ctx_all_profiles))
+                Group("screens", Icons.Default.Monitor, stringResource(R.string.screens_manage))
+                Group("upd", Icons.Default.SystemUpdate, stringResource(R.string.version, vm.updates.currentName, vm.updates.currentCode), badge = vm.update != null)
+                Group("about", Icons.Default.Info, "Hermes Android")
+            }
+            "conn" -> {
             OutlinedTextField(relay, { relay = it }, label = { Text(stringResource(R.string.server_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 supportingText = { Text(stringResource(R.string.server_url_help, SecureStore.DEFAULT_RELAY)) })
             OutlinedTextField(lan, { lan = it }, label = { Text(stringResource(R.string.lan_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -870,8 +929,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Button(onClick = { vm.saveSettings(relay, lan, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
             vm.status?.let { Text(it) }
 
-            HorizontalDivider()
-            Text(stringResource(R.string.appearance), style = MaterialTheme.typography.titleSmall)
+            }
+            "look" -> {
             ChoiceRow(listOf("system" to stringResource(R.string.theme_system), "light" to stringResource(R.string.theme_light),
                 "dark" to stringResource(R.string.theme_dark), "black" to stringResource(R.string.theme_black)), vm.theme) { vm.chooseTheme(it) }
             Text(stringResource(R.string.app_icon))
@@ -883,7 +942,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             ChoiceRow(listOf("system" to stringResource(R.string.lang_system), "en" to stringResource(R.string.lang_en),
                 "zh" to stringResource(R.string.lang_zh)), vm.store.lang) { if (it != vm.store.lang) { vm.store.lang = it; recreate() } }
 
-            HorizontalDivider()
+            }
+            "chat" -> {
             Text(stringResource(R.string.ctx_title), style = MaterialTheme.typography.titleSmall)
             LaunchedEffect(Unit) { if (vm.store.hasKey) vm.loadCtxSettings() }
             Text(stringResource(R.string.ctx_all_profiles), style = MaterialTheme.typography.bodySmall)
@@ -900,18 +960,21 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             OutlinedButton(onClick = { ctxOpen = true; vm.loadCtxSettings() }) { Text(stringResource(R.string.ctx_edit)) }
             if (ctxOpen) ContextDialog(vm) { ctxOpen = false }
 
-            HorizontalDivider()
-            Text(stringResource(R.string.vdisplay), style = MaterialTheme.typography.titleSmall)
-            OutlinedButton(onClick = { vm.openScreens(Screen.Settings) }) { Text(stringResource(R.string.screens_manage)) }
-
-            HorizontalDivider()
-            Text(stringResource(R.string.updates), style = MaterialTheme.typography.titleSmall)
+            }
+            "upd" -> {
             Text(stringResource(R.string.version, vm.updates.currentName, vm.updates.currentCode))
             vm.update?.let { u -> Text(stringResource(R.string.update_available, u.versionName, u.versionCode), color = MaterialTheme.colorScheme.primary)
                 Button(onClick = { vm.installUpdate() }, enabled = vm.updateProgress == null) { Text(stringResource(R.string.install)) } }
             vm.updateProgress?.let { p -> LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth()); Text(stringResource(R.string.downloading, p)) }
             OutlinedButton(onClick = { vm.checkUpdates(manual = true) }) { Text(stringResource(R.string.check_updates)) }
             vm.updateStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
+            "about" -> {
+                Text("Hermes Android " + vm.updates.currentName + " (" + vm.updates.currentCode + ")", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.about_text), style = MaterialTheme.typography.bodyMedium)
+                Text("https://github.com/o12r/HermesAndroid", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+          }
         }
     }
 }
@@ -944,7 +1007,6 @@ fun ScreensScreen(vm: ChatViewModel) {
     LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(stringResource(R.string.screens)) },
-            navigationIcon = { IconButton(onClick = { vm.screen = vm.screensBack }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = { IconButton(onClick = { vm.loadScreens() }, enabled = !vm.screensBusy) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) } },
             windowInsets = WindowInsets(0))
         if (vm.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -1051,7 +1113,9 @@ fun ScreenDetail(vm: ChatViewModel, sc: PcScreen, back: () -> Unit) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
             err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            bmp?.let { Image(it, label, Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth) }
+            var zoom by remember { mutableStateOf(false) }
+            bmp?.let { Image(it, label, Modifier.fillMaxWidth().clickable { zoom = true }, contentScale = ContentScale.FillWidth)
+                if (zoom) ZoomImage(it, label) { zoom = false } }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 screenActions(vm, sc).forEach { (t, f) -> OutlinedButton(onClick = { f(); back() }, enabled = !vm.vdBusy) { Text(t) } } }
@@ -1061,3 +1125,23 @@ fun ScreenDetail(vm: ChatViewModel, sc: PcScreen, back: () -> Unit) {
         }
     }
 }
+
+/** Full-screen, static screenshot: pinch to zoom, drag to pan, tap ✕ to close. */
+@Composable
+fun ZoomImage(img: ImageBitmap, label: String, close: () -> Unit) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = close, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        var scale by remember { mutableStateOf(1f) }
+        var off by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+        val st = androidx.compose.foundation.gestures.rememberTransformableState { z, pan, _ ->
+            scale = (scale * z).coerceIn(1f, 8f); off = if (scale == 1f) androidx.compose.ui.geometry.Offset.Zero else off + pan }
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            Image(img, label, Modifier.fillMaxSize().androidx_transform(st).graphicsLayerZoom(scale, off), contentScale = ContentScale.Fit)
+            IconButton(onClick = close, Modifier.align(Alignment.TopEnd).systemBarsPadding()) { Icon(Icons.Default.Close, null, tint = Color.White) }
+        }
+    }
+}
+
+private fun Modifier.androidx_transform(st: androidx.compose.foundation.gestures.TransformableState) =
+    this.then(Modifier.transformable(st))
+private fun Modifier.graphicsLayerZoom(s: Float, o: androidx.compose.ui.geometry.Offset) =
+    this.then(Modifier.graphicsLayer(scaleX = s, scaleY = s, translationX = o.x, translationY = o.y))

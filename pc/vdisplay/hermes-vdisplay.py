@@ -29,6 +29,7 @@ Stdlib + ctypes only (Pillow only for `shot`). Windows 10/11.
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -263,6 +264,7 @@ def _stage_new(name, *a, **kw):
     try:
         _stage(name, *a, **kw)
     except RuntimeError:
+        _tlog("stage refused -> DisplaySwitch /extend")
         subprocess.run(["DisplaySwitch.exe", "/extend"], timeout=20)
         for _ in range(20):
             time.sleep(0.5)
@@ -475,6 +477,18 @@ def _host():
         time.sleep(1)
 
 
+_T0 = time.time()
+
+
+def _tlog(msg):
+    """Step timings for screen off/on (state/timing.log)."""
+    try:
+        with open(STATE / "timing.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} pid{os.getpid()} +{time.time() - _T0:6.2f}s {msg}\n")
+    except OSError:
+        pass
+
+
 def _norm(names):
     return {str(n).upper() for n in names}
 
@@ -484,6 +498,7 @@ def to_second_only(targets=None):
     monitor (SudoVDA), same size and position, so its windows stay put; the other screens stay on. A turned-off
     main screen hands the main role to its stand-in. Screens already off stay off (the set is rebuilt). The
     stand-ins exist only while their screen is off; any real input wakes every screen."""
+    _tlog("to_second_only start")
     cur = off_names() if svdas() else set()
     allp = [d for d in physical() if d["attached"]] if not cur else _jload(LAYOUT, {}).get("physical", [])
     want = {d["name"] for d in allp} if targets is None else (_norm(targets) & {d["name"].upper() for d in allp})
@@ -512,12 +527,14 @@ def _set_off(want):
         raise RuntimeError("screen-off needs the SudoVDA driver (reinstall: hermes-vdisplay install)")
     if svdas():
         to_extend()   # rebuild from the full physical layout
+        _tlog("rebuilt (to_extend)")
     phys = [d for d in physical() if d["attached"]]
     names = {d["name"] for d in phys} & set(want)
     wins = [{"hwnd": w["hwnd"], "pid": w["pid"], "title": w["title"], "pl": _get_placement(w["hwnd"])}
             for w in windows() if w["display"] in names]
     LAYOUT.write_text(json.dumps({"physical": phys, "off": sorted(names), "windows": wins}), encoding="utf-8")
     SCREEN_OFF.unlink(missing_ok=True)
+    _tlog("layout saved, spawning watcher")
     _spawn_watcher()   # it owns the monitors (SudoVDA drops them ~3 s after its pings stop)
     for _ in range(160):
         time.sleep(0.25)
@@ -527,7 +544,7 @@ def _set_off(want):
             continue
         if not r.get("ok"):
             raise RuntimeError(r.get("error") or "screen off failed")
-        _spawn_guard()
+        _tlog("watcher reported ok"); _spawn_guard(); _tlog("guard up")
         return
     _kill_watcher()
     raise RuntimeError("screen-off monitors did not come up")
@@ -535,6 +552,7 @@ def _set_off(want):
 
 def _screen_off_setup(h):
     """In the watcher: add the screen-off monitors, map them 1:1 onto the physical screens, turn those off."""
+    _tlog("watcher setup start")
     lay = json.loads(LAYOUT.read_text(encoding="utf-8"))
     allp = lay["physical"]
     offn = set(lay.get("off") or [p["name"] for p in allp])
@@ -544,22 +562,31 @@ def _screen_off_setup(h):
         if p["name"] not in offn:
             continue
         before = {d["name"] for d in svdas()}
+        taken = {n for _, n in pairs}
         if not _svda_add(h, i, p["w"], p["h"], USER_HZ):
             raise RuntimeError(f"SudoVDA add failed ({ctypes.get_last_error()})")
-        for _ in range(40):
-            time.sleep(0.25)
-            new = [d for d in svdas() if d["name"] not in before]
-            if new:
-                pairs.append((p, new[0]["name"])); break
-        else:
-            raise RuntimeError("screen-off monitor did not attach")
+        # The new monitor shows up at once but, on a single-screen ("PC screen only") topology, stays detached
+        # until it is staged (_stage_new switches to Extend). Waiting for "attached" here cost ~12 s per screen.
+        got = None
+        for k in range(100):
+            time.sleep(0.1)
+            sv = [d for d in displays() if d["adapter"].strip().lower() in SVDA_NAMES and not d["virtual"]
+                  and d["name"] not in before and d["name"] not in taken]
+            att = [d for d in sv if d["attached"]]
+            if att or (sv and k >= 5):
+                got = (att or sorted(sv, key=lambda d: int(re.sub(r"\D", "", d["name"]) or 0))[-1])["name"]; break
+        if not got:
+            raise RuntimeError("screen-off monitor did not appear")
+        pairs.append((p, got)); _tlog(f"stand-in {got} found")
     for p, name in pairs:
         w, hh, hz = _best_mode(name, p["w"], p["h"])
         _stage_new(name, p["x"], p["y"], w, hh, hz, primary=p["primary"])
     _park_agents(max(p["x"] + p["w"] for p in allp), min(p["y"] for p in allp))   # agent screens stay right
+    _tlog("staged stand-ins")
     for p in phys:
         _stage(p["name"])
     _apply()
+    _tlog("applied (physical detached)")
     time.sleep(1.0)
     # same coordinates as before, so the saved placements put each window on its physical screen's counterpart
     for w in lay.get("windows", []):
@@ -568,7 +595,9 @@ def _screen_off_setup(h):
                 _set_placement(w["hwnd"], w["pl"])
             except Exception:
                 pass
+    _tlog("windows placed")
     _to_user_screen()
+    _tlog("setup done")
     return [name for _, name in pairs]
 
 
@@ -706,6 +735,8 @@ def _watch():
         try:
             to_extend()
         finally:
+            # to_extend() deletes SCREEN_OFF: write the error again so the caller fails now instead of after 40 s
+            SCREEN_OFF.write_text(json.dumps({"ok": False, "error": str(e)}), encoding="utf-8")
             if svh:
                 k32.CloseHandle(svh)
         return

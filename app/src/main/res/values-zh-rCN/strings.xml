@@ -215,4 +215,9 @@
     <string name="vd_wake_all">点亮所有屏幕</string>
     <string name="vd_screen_off_this">关闭此屏幕</string>
     <string name="vd_screen_on_this">点亮此屏幕</string>
+    <string name="connection">连接</string>
+    <string name="chat_defaults">聊天与上下文</string>
+    <string name="about">关于</string>
+    <string name="appearance_summary">主题、图标、字号、语言</string>
+    <string name="about_text">PC 上 Hermes Agent 的手机客户端。开源。</string>
 </resources>
