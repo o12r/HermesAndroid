@@ -1159,9 +1159,8 @@ fun screenLabel(sc: PcScreen): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScreensScreen(vm: ChatViewModel) {
-    var open by remember { mutableStateOf<PcScreen?>(null) }
-    BackHandler(open != null) { open = null }
-    open?.let { sc -> ScreenDetail(vm, sc) { open = null }; return }
+    var open by remember { mutableStateOf<Set<String>>(emptySet()) }
+    fun toggle(sc: PcScreen) { open = if (sc.name in open) open - sc.name else open + sc.name }
     LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(stringResource(R.string.pc)) },
@@ -1195,7 +1194,8 @@ fun ScreensScreen(vm: ChatViewModel) {
                 HorizontalDivider()
             } }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
-            items(pc) { sc -> ScreenRow(screenLabel(sc), sc, sc.on, screenActions(vm, sc)) { open = sc } }
+            items(pc, key = { "pc:" + it.name }) { sc -> Column { ScreenRow(screenLabel(sc), sc, sc.on, emptyList()) { toggle(sc) }
+                if (sc.name in open) ScreenInline(vm, sc) { open = open - sc.name } } }
             item { Spacer(Modifier.height(8.dp)); Text(stringResource(R.string.screens_agent), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             if (agents.isEmpty()) item { Text(stringResource(R.string.screens_no_agent), style = MaterialTheme.typography.bodySmall) }
             agents.groupBy { it.profile ?: "default" }.toSortedMap().forEach { (prof, byProf) ->
@@ -1203,7 +1203,8 @@ fun ScreensScreen(vm: ChatViewModel) {
                 byProf.groupBy { it.project ?: it.cwd?.trimEnd('\\', '/')?.substringAfterLast('\\')?.substringAfterLast('/') ?: "—" }
                     .toSortedMap().forEach { (proj, l) ->
                         item { Text("📁 $proj", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 12.dp)) }
-                        items(l) { sc -> Box(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true, screenActions(vm, sc)) { open = sc } } }
+                        items(l, key = { "ag:" + it.name + (it.session ?: "") }) { sc -> Column(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true, emptyList()) { toggle(sc) }
+                            if (sc.name in open) ScreenInline(vm, sc) { open = open - sc.name } } }
                     }
             }
         }
@@ -1249,10 +1250,9 @@ fun ScreenRow(label: String, sc: PcScreen, enabled: Boolean, actions: List<Pair<
     }
 }
 
-/** One screen's screenshot, refreshable; agent screens can be closed from here. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Expands under the row: screenshot (tap to zoom), refresh, then the row's menu actions as buttons. */
 @Composable
-fun ScreenDetail(vm: ChatViewModel, sc: PcScreen, back: () -> Unit) {
+fun ScreenInline(vm: ChatViewModel, sc: PcScreen, close: () -> Unit) {
     var bmp by remember(sc.name) { mutableStateOf<ImageBitmap?>(null) }
     var err by remember(sc.name) { mutableStateOf<String?>(null) }
     var busy by remember(sc.name) { mutableStateOf(false) }
@@ -1263,25 +1263,20 @@ fun ScreenDetail(vm: ChatViewModel, sc: PcScreen, back: () -> Unit) {
         busy = false
     }
     val label = screenLabel(sc)
-    Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
-            actions = {
-                IconButton(onClick = { n++ }, enabled = !busy) { Icon(Icons.Default.Refresh, stringResource(R.string.screen_refresh)) }
-            }, windowInsets = WindowInsets(0))
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp)) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
-            err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            var zoom by remember { mutableStateOf(false) }
-            bmp?.let { Image(it, label, Modifier.fillMaxWidth().clickable { zoom = true }, contentScale = ContentScale.FillWidth)
-                if (zoom) ZoomImage(it, label) { zoom = false } }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                screenActions(vm, sc).forEach { (t, f) -> OutlinedButton(onClick = { f(); back() }, enabled = !vm.vdBusy) { Text(t) } } }
-            Text("${sc.name.removePrefix("\\\\.\\")} · ${sc.w}×${sc.h} @${sc.hz}Hz", style = MaterialTheme.typography.bodySmall)
-            sc.cwd?.let { Text("📁 $it", style = MaterialTheme.typography.bodySmall) }
-            sc.session?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        var zoom by remember { mutableStateOf(false) }
+        bmp?.let { Image(it, label, Modifier.fillMaxWidth().clickable { zoom = true }, contentScale = ContentScale.FillWidth)
+            if (zoom) ZoomImage(it, label) { zoom = false } }
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { n++ }, enabled = !busy) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text(stringResource(R.string.screen_refresh)) }
+            screenActions(vm, sc).forEach { (t, f) -> OutlinedButton(onClick = { f(); close() }, enabled = !vm.vdBusy) { Text(t) } }
         }
+        Text("${sc.name.removePrefix("\\\\.\\")} · ${sc.w}×${sc.h} @${sc.hz}Hz", style = MaterialTheme.typography.bodySmall)
+        sc.cwd?.let { Text("📁 $it", style = MaterialTheme.typography.bodySmall) }
+        sc.session?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
     }
 }
 

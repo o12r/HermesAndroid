@@ -392,12 +392,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
         cm.allNetworks.mapNotNull { n ->
             val caps = cm.getNetworkCapabilities(n) ?: return@mapNotNull null
-            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) return@mapNotNull null
+            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
             val lp = cm.getLinkProperties(n) ?: return@mapNotNull null
             val ip = lp.linkAddresses.map { it.address }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress ?: return@mapNotNull null
             val gw = lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }?.gateway?.hostAddress
             (if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) 0 else 1) to (ip to gw)
         }.minByOrNull { it.first }?.second
+    }.getOrNull() ?: hotspotNet()
+    /** This phone is the hotspot (the PC joined it): its own AP interface isn't a Network, so read it directly. */
+    private fun hotspotNet(): Pair<String, String?>? = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback && !it.name.startsWith("tun") && !it.name.startsWith("rmnet") }
+            .flatMap { it.inetAddresses.toList() }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress?.let { it to null }
     }.getOrNull()
     private fun sameSubnet(a: String?, b: String?) = a != null && b != null && a.substringBeforeLast('.') == b.substringBeforeLast('.')
 
