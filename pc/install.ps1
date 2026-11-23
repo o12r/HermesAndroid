@@ -97,15 +97,17 @@ function Find-Adb {
 # ---------------------------------------------------------------- uninstall
 if ($Uninstall) {
     Step "Uninstalling Hermes Android PC parts"
-    Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue; Ok "scheduled task removed"
+    Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue; Ok "keep-alive task removed"
     Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -ErrorAction SilentlyContinue
-    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*hermes-tray.ps1*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # the tray now runs elevated via its own task; remove it (install-tray-task.ps1 self-elevates)
+    $tt = Join-Path $Launch "install-tray-task.ps1"
+    if (Test-Path $tt) { Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$tt`"", "-Uninstall" -Wait -WindowStyle Hidden }
+    else { Unregister-ScheduledTask -TaskName "HermesAndroidTray" -Confirm:$false -ErrorAction SilentlyContinue }
     foreach ($l in $Lnks) { Remove-Item $l -ErrorAction SilentlyContinue }
     Ok "tray app removed"
     Stop-Relay; Ok "relay stopped"
     Remove-Item (Join-Path $Launch "phone-outbox") -Recurse -ErrorAction SilentlyContinue
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "install-vdd.ps1", "hermes-elevate.py", "install-elevate.ps1") {
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install-tray-task.ps1", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "install-vdd.ps1", "hermes-elevate.py", "install-elevate.ps1") {
         Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
     Remove-Item (Join-Path $Launch "sudovda") -Recurse -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
@@ -202,21 +204,23 @@ if (-not $PairOnly) {
     }
     Ok "skill 'hermes-android' installed in $((Profile-Dirs).Count) profile(s)"
 
-    # ------------------------------------------------------------ tray app (status icon, keeps the relay running)
+    # ------------------------------------------- tray app (admin: owns relay + gateway + Tailscale + vdisplay host)
     Step "Tray app"
-    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*hermes-tray.ps1*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
+    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install-tray-task.ps1") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
     # virtual display (agent screen) CLI + driver installer; the driver itself is installed on demand from the tray
     foreach ($f in "hermes-vdisplay.py", "live_sessions.py", "install-vdd.ps1") { Copy-Item (Join-Path $Here "vdisplay\$f") $Launch -Force }
     Copy-Item (Join-Path $Here "vdisplay\sudovda") $Launch -Recurse -Force   # on-demand agent + screen-off monitors
     # phone-approved elevation (task + whitelist are set up on demand with install-elevate.ps1)
     foreach ($f in "hermes-elevate.py", "install-elevate.ps1") { Copy-Item (Join-Path $Here "elevate\$f") $Launch -Force }
     Copy-Item (Join-Path $Here "install.ps1") $Launch -Force      # the tray's "Show pairing QR code" runs it with -PairOnly
-    Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -Value "wscript.exe //B //Nologo `"$Launch\hermes-tray.vbs`""
-    Start-Process wscript.exe -ArgumentList "//B", "//Nologo", "`"$Launch\hermes-tray.vbs`""
+    # The tray now runs as administrator via its own scheduled task; drop the old HKCU Run entry and the
+    # Hermes_PhoneRelay keep-alive task so the tray is the single owner of the relay (no double start).
+    Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "HermesAndroidTray" -ErrorAction SilentlyContinue
+    # register + start the elevated tray (self-elevates; the user has UAC elevate-without-prompt on)
+    Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $Launch 'install-tray-task.ps1')`"" -Wait -WindowStyle Hidden
     Add-TrayShortcuts
-    Ok "tray icon started (starts with Windows; toggle in its menu); shortcuts in Start menu and on the desktop"
+    Ok "tray icon started as administrator (logon task; toggle in its menu); shortcuts in Start menu and on the desktop"
 } else {
     $key = Get-Key; if (-not $key) { throw "No API_SERVER_KEY yet: run install.cmd without -PairOnly first." }
     $script:ApkUrl = "https://github.com/$Repo/releases/latest"

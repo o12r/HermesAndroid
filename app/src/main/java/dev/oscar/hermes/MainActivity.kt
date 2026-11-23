@@ -136,6 +136,11 @@ fun trueBlack(d: ColorScheme) = d.copy(
     surfaceVariant = Color(0xFF161616), inverseOnSurface = Color.Black,
 )
 
+/** Jump to Settings → context group (the chat page wires its context button to this). */
+fun ChatViewModel.openContextSettings() { openSettingsSection("chat") }
+/** Jump to Settings → default-models group (the chat page wires its model button to this). */
+fun ChatViewModel.openModelSettings() { openSettingsSection("model") }
+
 @Composable
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.reconnect(); vm.checkUpdates(manual = false) }
@@ -149,7 +154,9 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
         Box(Modifier.weight(1f)) { when (vm.screen) {
             Screen.Settings -> SettingsScreen(vm, recreate)
             Screen.Sessions -> SessionsScreen(vm)
-            Screen.Chat -> ChatScreen(vm)
+            Screen.Chat -> ChatScreen(vm,
+                onOpenContextSettings = { vm.openSettingsSection("chat") },
+                onOpenModelSettings = { vm.openSettingsSection("model") })
             Screen.Screens -> ScreensScreen(vm)
         } }
         // Bottom navigation: sessions / screens / settings. The chat is full-screen (its tabs lead back).
@@ -158,7 +165,7 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
                 NavigationBarItem(vm.screen == Screen.Sessions, { vm.screen = Screen.Sessions; vm.refreshSessions() },
                     icon = { Icon(Icons.Default.Forum, null) }, label = { Text(stringResource(R.string.sessions)) })
                 NavigationBarItem(vm.screen == Screen.Screens, { if (vm.screen != Screen.Screens) vm.openScreens(Screen.Sessions) },
-                    icon = { Icon(Icons.Default.Monitor, null) }, label = { Text(stringResource(R.string.screens)) })
+                    icon = { Icon(Icons.Default.Monitor, null) }, label = { Text(stringResource(R.string.pc)) })
                 NavigationBarItem(vm.screen == Screen.Settings, { vm.settingsBack = Screen.Sessions; vm.screen = Screen.Settings },
                     icon = { BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, null) } },
                     label = { Text(stringResource(R.string.settings)) })
@@ -336,7 +343,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                 var menu by remember { mutableStateOf(false) }
                 Row(Modifier.fillMaxWidth().height(34.dp)
                     .background(if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface)
-                    .clickable { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } },
+                    .combinedClickable(onLongClick = { if (isCur) menu = true }) { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } },
                     verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(4.dp).fillMaxHeight().background(cs.primary))
                     Icon(if (profOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 8.dp, end = 6.dp).size(18.dp))
@@ -362,7 +369,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                     val picked = vm.fabProject?.id == p.id
                     Row(Modifier.fillMaxWidth().height(32.dp)
                         .background(if (active || picked) cs.primaryContainer else cs.surfaceContainerLow)
-                        .clickable { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 20.dp),
+                        .combinedClickable(onLongClick = { menu = true }) { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 20.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
                         Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
@@ -386,11 +393,12 @@ fun SessionsScreen(vm: ChatViewModel) {
                     var menu by remember { mutableStateOf(false) }
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
                     Row(Modifier.fillMaxWidth().height(36.dp)
-                        .combinedClickable(onLongClick = { menu = true }) { if (p.id != "__all") vm.lastProject = p; vm.open(s) }
+                        .combinedClickable(onLongClick = { menu = true }, onDoubleClick = { renaming = s }) { if (p.id != "__all") vm.lastProject = p; vm.open(s) }
                         .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
                             style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
+                        val ctx = vm.sessionCtx[s.id]
+                        Text(time + " · " + s.count + if (ctx != null) " · " + fmtTok(ctx.first) + "/" + fmtTok(ctx.second) else "", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
                         Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
@@ -463,21 +471,34 @@ fun SessionsScreen(vm: ChatViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(vm: ChatViewModel) {
+fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpenModelSettings: () -> Unit = {}) {
     // The chat.draft is the current chat's draft, so typed text survives switching chats / going back.
     val chat = vm.cur
     val list = rememberLazyListState()
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let { u -> vm.addAttachment(u, true) } }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let { u -> vm.addAttachment(u, false) } }
-    val last = vm.messages.lastOrNull()
     // Follow new output only while the user is at the bottom; scrolling up to read stops it, scrolling back resumes.
     var follow by remember(chat) { mutableStateOf(true) }
+    var renamingTitle by remember { mutableStateOf(false) }
     LaunchedEffect(list, chat) { snapshotFlow { list.isScrollInProgress }.collect { if (!it) follow = !list.canScrollForward } }
-    LaunchedEffect(vm.messages.size, last?.text?.length) {
-        if (vm.messages.isNotEmpty() && (follow || last?.role == "user")) { follow = true; list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) } }
+    // Throttled auto-scroll: never per token; a final jump once the turn ends, and always after a user message.
+    LaunchedEffect(chat) {
+        var lastScroll = 0L
+        snapshotFlow {
+            val m = vm.messages.lastOrNull()
+            Triple(vm.messages.size, m?.text?.length ?: 0, m?.steps?.size ?: 0)
+        }.collect { (size, _, _) ->
+            if (size == 0) return@collect
+            if (vm.messages.lastOrNull()?.role == "user") follow = true
+            if (!follow) return@collect
+            val now = android.os.SystemClock.uptimeMillis()
+            if (!vm.streaming || now - lastScroll >= 120) { lastScroll = now; list.scrollToItem(size - 1, Int.MAX_VALUE / 2) }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Column {
-                Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.combinedClickable(onDoubleClick = { if (vm.currentId != null) renamingTitle = true }) {})
                 val proj = vm.projects.find { p -> vm.currentId != null && vm.currentId in p.sessionIds }
                     ?.let { p -> if (p.isHome) stringResource(R.string.home) else p.name }
                 Text(listOfNotNull(chat.profile, proj).joinToString(" › "), style = MaterialTheme.typography.labelSmall,
@@ -486,13 +507,20 @@ fun ChatScreen(vm: ChatViewModel) {
             actions = {
                 IconButton(onClick = { vm.settingsBack = Screen.Chat; vm.screen = Screen.Settings }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
             }, windowInsets = WindowInsets(0))
+        if (renamingTitle) {
+            var t by remember { mutableStateOf(vm.currentTitle ?: "") }
+            AlertDialog(onDismissRequest = { renamingTitle = false }, title = { Text(stringResource(R.string.rename)) },
+                text = { OutlinedTextField(t, { t = it }, singleLine = true) },
+                confirmButton = { TextButton(onClick = { vm.currentId?.let { vm.rename(Session(it, null, null, null, 0, null), t) }; renamingTitle = false }) { Text(stringResource(R.string.save)) } },
+                dismissButton = { TextButton(onClick = { renamingTitle = false }) { Text(stringResource(R.string.cancel)) } })
+        }
         ChatTabs(vm)
         val jumpScope = rememberCoroutineScope()
         Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
-            itemsIndexed(vm.messages) { i, m ->
+            itemsIndexed(vm.messages, key = { _, m -> m.uid }) { i, m ->
                 if (i > 0) HorizontalDivider(thickness = 0.5.dp, color = androidx.compose.ui.graphics.Color(0xFF9E9E9E).copy(alpha = 0.45f))
-                Bubble(m, vm) }
+                Bubble(m, vm, live = vm.streaming && i == vm.messages.lastIndex) }
         }
         if (!follow && list.canScrollForward && vm.messages.isNotEmpty())
             SmallFloatingActionButton(onClick = { follow = true
@@ -503,7 +531,7 @@ fun ChatScreen(vm: ChatViewModel) {
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
         SlashSuggestions(vm, chat.draft) { chat.draft = it }
-        RuntimeChips(vm)
+        RuntimeChips(vm, onOpenContextSettings, onOpenModelSettings)
         if (chat.queue.isNotEmpty()) Column(Modifier.padding(horizontal = 8.dp)) {
             chat.queue.toList().forEachIndexed { i, q -> InputChip(selected = false, onClick = { chat.queue.removeAt(i) },
                 label = { Text(stringResource(R.string.queued, q), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -565,43 +593,8 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 }
 
-/** Context / compression settings, one set for every profile. Shows what the PC reports; Save waits for its answer. */
 @Composable
-fun ContextDialog(vm: ChatViewModel, close: () -> Unit) {
-    val cur = vm.ctxSettings
-    val fields = listOf("compression_model" to R.string.ctx_comp_model, "compression_provider" to R.string.ctx_comp_provider,
-        "context_length" to R.string.ctx_length, "threshold" to R.string.ctx_threshold,
-        "target_ratio" to R.string.ctx_target, "protect_last_n" to R.string.ctx_keep_last)
-    val edit = remember(cur) { mutableStateMapOf<String, String>().apply {
-        fields.forEach { (k, _) -> put(k, cur?.opt(k)?.takeIf { it != JSONObject.NULL }?.toString().orEmpty()) } } }
-    var saving by remember { mutableStateOf(false) }
-    LaunchedEffect(vm.ctxBusy) { if (saving && !vm.ctxBusy) { saving = false; if (vm.ctxError == null) close() } }
-    AlertDialog(onDismissRequest = close, title = { Text(stringResource(R.string.ctx_title)) },
-        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            val c = vm.cur
-            if (c.ctxMax > 0) Text(fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax), style = MaterialTheme.typography.labelMedium)
-            Text(stringResource(R.string.ctx_all_profiles), style = MaterialTheme.typography.bodySmall)
-            if (vm.ctxBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            vm.ctxError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (cur != null) fields.forEach { (k, label) ->
-                OutlinedTextField(edit[k].orEmpty(), { edit[k] = it }, label = { Text(stringResource(label)) }, singleLine = true,
-                    enabled = !vm.ctxBusy, modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = if (k.startsWith("compression_")) KeyboardOptions.Default
-                        else KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
-            }
-        } },
-        confirmButton = { TextButton(enabled = cur != null && !vm.ctxBusy, onClick = {
-            val o = JSONObject()
-            fields.forEach { (k, _) -> val v = edit[k].orEmpty().trim()
-                val old = cur?.opt(k)?.takeIf { it != JSONObject.NULL }?.toString().orEmpty()
-                if (v != old) o.put(k, if (v.isEmpty()) JSONObject.NULL else v) }
-            if (o.length() == 0) close() else { saving = true; vm.loadCtxSettings(o) }
-        }) { Text(stringResource(R.string.save)) } },
-        dismissButton = { TextButton(onClick = close) { Text(stringResource(R.string.cancel)) } })
-}
-
-@Composable
-fun RuntimeChips(vm: ChatViewModel) {
+fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenModelSettings: () -> Unit) {
     var effortOpen by remember { mutableStateOf(false) }
     val def = stringResource(R.string.default_)
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -614,7 +607,13 @@ fun RuntimeChips(vm: ChatViewModel) {
             DropdownMenu(vm.modelMenuOpen, { vm.modelMenuOpen = false }, Modifier.heightIn(max = 480.dp)) {
                 val cur = vm.modelOptions?.currentModel.orEmpty()
                 DropdownMenuItem(text = { Text(stringResource(R.string.server_default) + if (cur.isNotBlank()) " ($cur)" else "") },
-                    onClick = { vm.chooseModel(""); vm.modelMenuOpen = false }, trailingIcon = { if (vm.model.isBlank()) Icon(Icons.Default.Check, null) })
+                    onClick = { vm.chooseModel(""); vm.modelMenuOpen = false },
+                    trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (vm.model.isBlank()) Icon(Icons.Default.Check, null)
+                        IconButton(onClick = { vm.modelMenuOpen = false; onOpenModelSettings() }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Settings, stringResource(R.string.model_settings), Modifier.size(18.dp))
+                        }
+                    } })
                 val groups = vm.modelOptions?.choices.orEmpty().groupBy { it.providerName }
                 if (vm.modelOptions == null) DropdownMenuItem(text = { Text(stringResource(R.string.loading_models)) }, onClick = {}, enabled = false)
                 val expanded = remember(vm.modelMenuOpen) { mutableStateMapOf<String, Boolean>() }
@@ -649,14 +648,13 @@ fun RuntimeChips(vm: ChatViewModel) {
             }
         }
         val c = vm.cur
-        var ctxOpen by remember { mutableStateOf(false) }
         Spacer(Modifier.weight(1f))
-        val pct = if (c.ctxMax > 0) (c.ctxUsed * 100 / c.ctxMax).toInt() else -1
-        AssistChip(onClick = { ctxOpen = true; vm.loadCtxSettings() },
-            label = { Text(if (pct >= 0) stringResource(R.string.ctx_pct, pct) else stringResource(R.string.ctx_title), maxLines = 1,
-                color = if (pct >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
+        val usage = if (c.ctxMax > 0) fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax)
+            else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) else stringResource(R.string.ctx_title)
+        AssistChip(onClick = onOpenContextSettings,
+            label = { Text(usage, maxLines = 1,
+                color = if (c.ctxMax > 0 && c.ctxUsed * 100 / c.ctxMax >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
             leadingIcon = { Icon(Icons.Default.DataUsage, null, Modifier.size(16.dp)) })
-        if (ctxOpen) ContextDialog(vm) { ctxOpen = false }
     }
 }
 
@@ -712,7 +710,7 @@ fun SlashSuggestions(vm: ChatViewModel, input: String, set: (String) -> Unit) {
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun Bubble(m: UiMsg, vm: ChatViewModel) {
+fun Bubble(m: UiMsg, vm: ChatViewModel, live: Boolean = false) {
     if (m.role == "system") {
         Text(m.text, Modifier.fillMaxWidth().padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
@@ -728,23 +726,31 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
         Surface(shape = androidx.compose.ui.graphics.RectangleShape, color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background,
             modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 2.dp), horizontalAlignment = Alignment.Start) {
-                if (m.steps.isNotEmpty()) StepsView(m.steps, live = vm.cur.streaming && m === vm.cur.messages.lastOrNull()) else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
-                if (user) Text(m.text) else Markdown(if (m.text.isEmpty()) "…" else m.text)
+                if (user) Text(m.text) else AssistantBody(m, live)
                 if (m.failed) FailedActions(m, vm) else MessageActions(m, vm)
             }
         }
     }
 }
 
+/** An assistant reply: every text segment in the order it happened, then the collapsible thinking/tool details at the bottom. */
+@Composable
+fun AssistantBody(m: UiMsg, live: Boolean) {
+    val textSteps = m.steps.filter { it.kind == "text" }
+    val details = m.steps.filter { it.kind != "text" }
+    if (textSteps.isNotEmpty()) textSteps.forEach { Markdown(it.detail) }
+    else Markdown(if (m.text.isEmpty()) "…" else m.text)
+    if (details.isNotEmpty()) StepsView(details, live = live)
+    else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
+}
+
 /** Hermes's thinking and tool calls behind a reply: collapsed by default, each tool's output collapsible too. */
 @Composable
 fun StepsView(steps: List<Step>, live: Boolean = false) {
-    // Open by itself while the model is thinking (the text streams in), closes again once thinking ends;
-    // a tap overrides that until the next thinking phase.
-    val thinkingNow = live && steps.lastOrNull()?.let { it.kind == "thinking" && it.output == null } == true
     var userOpen by remember { mutableStateOf<Boolean?>(null) }
-    LaunchedEffect(thinkingNow) { userOpen = null }
-    val open = userOpen ?: thinkingNow
+    // Collapse once the reply completes; while streaming, leave the user's explicit choice alone.
+    LaunchedEffect(live) { if (!live) userOpen = false }
+    val open = userOpen ?: false
     val tools = steps.count { it.kind == "tool" }; val thinking = steps.any { it.kind == "thinking" }
     val summary = listOfNotNull(if (thinking) stringResource(R.string.steps_thinking) else null,
         if (tools > 0) stringResource(R.string.steps_tools, tools) else null).joinToString(" · ")
@@ -758,7 +764,7 @@ fun StepsView(steps: List<Step>, live: Boolean = false) {
             if (st.kind == "thinking") Text("💭 " + st.detail.take(4000), style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             else {
-                var outOpen by remember { mutableStateOf(false) }
+                var outOpen by remember(st.toolId ?: st.name) { mutableStateOf(false) }
                 Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                     Column(Modifier.fillMaxWidth().padding(8.dp)) {
                         Text("🔧 " + st.name, style = MaterialTheme.typography.labelMedium)
@@ -893,9 +899,10 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
     var lan by remember { mutableStateOf(vm.store.lanUrl) }
     // Grouped cards; each opens its own page. Without a key, go straight to Connection.
     var sub by remember { mutableStateOf(if (vm.store.hasKey) "" else "conn") }
+    LaunchedEffect(vm.settingsTarget) { vm.settingsTarget?.let { sub = it; vm.settingsTarget = null } }
     BackHandler(sub != "" && vm.store.hasKey) { sub = "" }
-    val titles = mapOf("conn" to R.string.connection, "look" to R.string.appearance, "chat" to R.string.chat_defaults,
-        "screens" to R.string.vdisplay, "upd" to R.string.updates, "about" to R.string.about)
+    val titles = mapOf("conn" to R.string.connection, "look" to R.string.appearance, "chat" to R.string.ctx_title,
+        "model" to R.string.default_models, "screens" to R.string.vdisplay, "upd" to R.string.updates, "about" to R.string.about)
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(stringResource(titles[sub] ?: R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
             if (sub != "" && vm.store.hasKey) IconButton(onClick = { sub = "" }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
@@ -915,9 +922,10 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                         } }
                 Group("conn", Icons.Default.Link, (vm.store.activeRelay ?: vm.store.relayUrl) + " · " + vm.profile)
                 Group("look", Icons.Default.Palette, stringResource(R.string.appearance_summary))
-                LaunchedEffect(Unit) { if (vm.store.hasKey) vm.loadCtxSettings() }
+                LaunchedEffect(Unit) { if (vm.store.hasKey) { vm.loadCtxSettings(); vm.loadModelSettings() } }
                 Group("chat", Icons.Default.DataUsage, vm.ctxSettings?.let { c -> listOfNotNull(c.optString("compression_model").takeIf { it.isNotBlank() && it != "null" },
                     c.opt("context_length")?.takeIf { it != JSONObject.NULL }?.toString()).joinToString(" · ") } ?: stringResource(R.string.ctx_all_profiles))
+                Group("model", Icons.Default.Memory, vm.modelSettings?.optJSONObject("main")?.opt("model")?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() } ?: stringResource(R.string.server_default))
                 Group("screens", Icons.Default.Monitor, stringResource(R.string.screens_manage))
                 Group("upd", Icons.Default.SystemUpdate, stringResource(R.string.version, vm.updates.currentName, vm.updates.currentCode), badge = vm.update != null)
                 Group("about", Icons.Default.Info, "Hermes Android")
@@ -941,34 +949,25 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 "dark" to stringResource(R.string.theme_dark), "black" to stringResource(R.string.theme_black)), vm.theme) { vm.chooseTheme(it) }
             Text(stringResource(R.string.app_icon))
             ChoiceRow(listOf("dark" to stringResource(R.string.icon_dark), "light" to stringResource(R.string.icon_light)), vm.appIcon) { vm.chooseIcon(it) }
-            Text(stringResource(R.string.font_size, (vm.fontScale * 100).toInt()), style = MaterialTheme.typography.titleSmall)
-            Slider(vm.fontScale, { vm.chooseFontScale((it * 20).toInt() / 20f) }, valueRange = 0.8f..1.5f, steps = 13)
+            var previewPct by remember { mutableStateOf((vm.fontScale * 100).toInt()) }
+            Text(stringResource(R.string.font_size, previewPct), style = MaterialTheme.typography.titleSmall)
+            Slider(
+                value = (previewPct - 80).toFloat(),
+                onValueChange = { previewPct = (it.toInt() + 80).coerceIn(80, 150) },
+                onValueChangeFinished = { vm.chooseFontScale(previewPct / 100f) },
+                valueRange = 0f..70f, steps = 69)
             Text(stringResource(R.string.font_preview), style = MaterialTheme.typography.bodyMedium)
             Text(stringResource(R.string.language), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.lang_system), "en" to stringResource(R.string.lang_en),
                 "zh" to stringResource(R.string.lang_zh)), vm.store.lang) { if (it != vm.store.lang) { vm.store.lang = it; recreate() } }
 
             }
-            "chat" -> {
-            Text(stringResource(R.string.ctx_title), style = MaterialTheme.typography.titleSmall)
-            LaunchedEffect(Unit) { if (vm.store.hasKey) vm.loadCtxSettings() }
-            Text(stringResource(R.string.ctx_all_profiles), style = MaterialTheme.typography.bodySmall)
-            vm.ctxSettings?.let { c ->
-                listOf("compression_model" to R.string.ctx_comp_model, "compression_provider" to R.string.ctx_comp_provider,
-                    "context_length" to R.string.ctx_length, "threshold" to R.string.ctx_threshold,
-                    "target_ratio" to R.string.ctx_target, "protect_last_n" to R.string.ctx_keep_last).forEach { (k, l) ->
-                    Row { Text(stringResource(l), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                        Text(c.opt(k)?.takeIf { it != JSONObject.NULL }?.toString() ?: "—", style = MaterialTheme.typography.bodyMedium) }
-                }
-            }
-            vm.ctxError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            var ctxOpen by remember { mutableStateOf(false) }
-            OutlinedButton(onClick = { ctxOpen = true; vm.loadCtxSettings() }) { Text(stringResource(R.string.ctx_edit)) }
-            if (ctxOpen) ContextDialog(vm) { ctxOpen = false }
-
-            }
+            "chat" -> ContextSettingsGroup(vm)
+            "model" -> ModelSettingsGroup(vm)
             "upd" -> {
             Text(stringResource(R.string.version, vm.updates.currentName, vm.updates.currentCode))
+            Text(stringResource(R.string.update_source), style = MaterialTheme.typography.titleSmall)
+            ChoiceRow(listOf("auto" to stringResource(R.string.update_source_auto), "github" to stringResource(R.string.source_github), "pc" to stringResource(R.string.source_pc)), vm.updateSource) { vm.chooseUpdateSource(it) }
             vm.update?.let { u -> Text(stringResource(R.string.update_available, u.versionName, u.versionCode), color = MaterialTheme.colorScheme.primary)
                 Button(onClick = { vm.installUpdate() }, enabled = vm.updateProgress == null) { Text(stringResource(R.string.install)) } }
             vm.updateProgress?.let { p -> LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth()); Text(stringResource(R.string.downloading, p)) }
@@ -1012,9 +1011,10 @@ fun ScreensScreen(vm: ChatViewModel) {
     open?.let { sc -> ScreenDetail(vm, sc) { open = null }; return }
     LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text(stringResource(R.string.screens)) },
+        TopAppBar(title = { Text(stringResource(R.string.pc)) },
             actions = { IconButton(onClick = { vm.loadScreens() }, enabled = !vm.screensBusy) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) } },
             windowInsets = WindowInsets(0))
+        PcStatsBar(vm)
         if (vm.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
         val pc = vm.pcScreens.filter { it.kind != "agent" }
         val agents = vm.pcScreens.filter { it.kind == "agent" }

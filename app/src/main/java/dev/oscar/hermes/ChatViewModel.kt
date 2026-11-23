@@ -20,7 +20,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
@@ -51,6 +53,8 @@ data class PcScreen(val name: String, val kind: String, val role: String, val in
     val w: Int, val h: Int, val hz: Int, val session: String?, val profile: String?, val cwd: String?,
     val title: String? = null, val project: String? = null)
 data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
+/** One PC resource sample from the relay's GET /pc/stats (percentages, gpu null when unavailable). */
+data class PcStat(val cpu: Double?, val mem: Double?, val gpu: Double?, val ts: Long)
 data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
 
 /** State of one conversation. Kept per chat so several can run at once and events never land in the wrong one. */
@@ -165,6 +169,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Where Settings' back button goes (Settings can be opened from the session list or from a chat). */
     var settingsBack = Screen.Sessions
+    /** Settings group to open when Settings shows (e.g. "chat" = context, "model" = model defaults); read & cleared by SettingsScreen. */
+    var settingsTarget by mutableStateOf<String?>(null)
+    /** Open Settings from a chat, targeting a group. */
+    fun openSettingsSection(target: String?) { settingsBack = Screen.Chat; settingsTarget = target; screen = Screen.Settings }
 
     /** Queue [text] in the current chat: sent when the running turn ends. */
     fun queueMsg(text: String) { val t = text.trim(); if (t.isNotEmpty()) cur.queue.add(t) }
@@ -194,6 +202,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val res get() = L10n.wrap(getApplication(), store.lang)
     fun s(id: Int, vararg a: Any): String = res.getString(id, *a)
     var theme by mutableStateOf(store.theme)
+    /** Update source preference ("auto" | "github" | "pc"); auto = PC first, then GitHub. */
+    var updateSource by mutableStateOf(store.updateSource)
+    fun chooseUpdateSource(v: String) { store.updateSource = v; updateSource = store.updateSource }
     val updates = UpdateManager(app, store)
     var update by mutableStateOf<UpdateInfo?>(null)
     var updateStatus by mutableStateOf<String?>(null)
@@ -309,7 +320,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (!manual && !forceUpdate && System.currentTimeMillis() - store.lastUpdateCheck < 6 * 3600_000L) return@launch
         if (manual) updateStatus = s(R.string.checking)
-        val u = runCatching { updates.check() }.getOrElse { if (manual) updateStatus = s(R.string.update_failed, it.message ?: "?"); return@launch }
+        val u = runCatching { updates.check(updateSource) }.getOrElse { if (manual) updateStatus = s(R.string.update_failed, it.message ?: "?"); return@launch }
         store.lastUpdateCheck = System.currentTimeMillis()
         update = u
         if (manual) updateStatus = if (u == null) s(R.string.up_to_date) else null
@@ -579,6 +590,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             currentId?.let { id -> sessions.find { it.id == id }?.title?.let { currentTitle = it } }
         } catch (e: Exception) { fail(e) }
         loading = false
+        loadSessionCtx()
     }
 
     private suspend fun loadProjects() {
@@ -786,6 +798,62 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) { ctxError = e.message ?: e.javaClass.simpleName } finally { ctxBusy = false }
     }
+
+    /** Model defaults shared by every profile (main / delegation / auxiliary.<task>); shows only what the PC reports. */
+    var modelSettings by mutableStateOf<JSONObject?>(null)
+    var modelBusy by mutableStateOf(false)
+    var modelError by mutableStateOf<String?>(null)
+    fun loadModelSettings(models: JSONObject? = null) = viewModelScope.launch {
+        modelBusy = true; modelError = null
+        try {
+            val o = withContext(Dispatchers.IO) {
+                val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+                val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/models").header("Authorization", "Bearer $key")
+                if (models != null) b.post(models.toString().toRequestBody("application/json".toMediaType()))
+                relayHttp.newCall(b.build()).execute().use { r ->
+                    val j = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+                    if (!r.isSuccessful) throw ApiException(j.optString("error").ifBlank { "HTTP ${r.code}" })
+                    j
+                }
+            }
+            modelSettings = o.optJSONObject("settings") ?: JSONObject()
+        } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { modelError = e.message ?: e.javaClass.simpleName } finally { modelBusy = false }
+    }
+
+    /** Per-session context window (used to max tokens) from session.usage; only sessions with a known max are listed. */
+    var sessionCtx by mutableStateOf<Map<String, Pair<Long, Long>>>(emptyMap())
+    private fun loadSessionCtx() = viewModelScope.launch {
+        val ids = sessions.map { it.id }
+        if (ids.isEmpty()) { sessionCtx = emptyMap(); return@launch }
+        val g = runCatching { gateway() }.getOrNull() ?: return@launch
+        val out = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()
+        val sem = Semaphore(6)
+        val jobs = ids.map { id -> launch {
+            sem.withPermit {
+                val r = runCatching { g.call("session.usage", JSONObject().put("session_id", id)) }.getOrNull() ?: return@withPermit
+                val max = r.optLong("context_max", 0)
+                if (max > 0) out[id] = r.optLong("context_used", 0).coerceAtLeast(0) to max
+            }
+        } }
+        jobs.forEach { it.join() }
+        sessionCtx = out.toMap()
+    }
+
+    /** PC resource samples (CPU/mem/GPU %), polled by the PC page while it is visible; keeps the last 300 points. */
+    var pcStats by mutableStateOf<List<PcStat>>(emptyList())
+    suspend fun fetchPcStats(): PcStat? = withContext(Dispatchers.IO) {
+        val key = store.apiKey ?: return@withContext null
+        runCatching {
+            relayHttp.newCall(okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/pc/stats")
+                .header("Authorization", "Bearer $key").build()).execute().use { r ->
+                    if (!r.isSuccessful) return@use null
+                    val j = JSONObject(r.body!!.string())
+                    PcStat(j.optDoubleOrNull("cpu"), j.optDoubleOrNull("mem"), j.optDoubleOrNull("gpu"), j.optLong("ts", 0))
+                }
+        }.getOrNull()
+    }
+    fun addPcStat(s: PcStat) { pcStats = (pcStats + s).takeLast(300) }
 
     private suspend fun fsCall(op: String, path: String): JSONObject = withContext(Dispatchers.IO) {
         val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
@@ -1074,7 +1142,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun dropEmpty(c: Chat = cur) {
         val messages = c.messages
-        if (messages.lastOrNull()?.let { it.role == "assistant" && it.text.isEmpty() } == true) messages.removeAt(messages.lastIndex)
+        if (messages.lastOrNull()?.let { it.role == "assistant" && it.text.isEmpty() && it.steps.isEmpty() } == true) messages.removeAt(messages.lastIndex)
     }
 
     private fun updateLast(c: Chat, f: (UiMsg) -> UiMsg) {
@@ -1100,8 +1168,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "message.start" -> { c.streaming = true; c.status = null
                 Notify.clear(app, c.id, "reply")       // a new turn (from the phone or the PC): the last reply was seen
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
-            "message.delta" -> { c.status = null; updateLast(c) { it.copy(text = it.text + p.str("text"),
-                steps = it.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }) } }
+            "message.delta" -> { c.status = null; val t = p.str("text")
+                updateLast(c) { m ->
+                    val closed = m.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }
+                    val steps = if (t.isEmpty()) closed
+                        else if (closed.lastOrNull()?.kind == "text") closed.dropLast(1) + closed.last().copy(detail = closed.last().detail + t)
+                        else closed + Step("text", "", t)
+                    m.copy(text = m.text + t, steps = steps) } }
             "thinking.delta", "reasoning.delta" -> { c.status = s(R.string.thinking_status)
                 val t = p.str("text"); if (t.isNotEmpty()) updateLast(c) { m ->
                     val last = m.steps.lastOrNull()
@@ -1115,7 +1188,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 updateLast(c) { m -> m.copy(steps = m.steps.map { s -> if (s.kind == "tool" && (s.toolId == tid || (tid.isEmpty() && s.output == null && s.name == n))) s.copy(output = Steps.outputText(s.name, raw)) else s }) } }
             "message.complete" -> {
                 val text = p.str("text").ifBlank { p.str("content") }
-                if (text.isNotBlank()) updateLast(c) { it.copy(text = text) }
+                if (text.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
+                    steps = if (m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
                 p.optJSONObject("usage")?.let { u ->
                     val i0 = c.totIn; val o0 = c.totOut
                     applyUsage(c, u)?.let { (i, o) ->
@@ -1277,6 +1351,10 @@ val SLASH_COMMANDS = listOf(
 
 /** optString that treats JSON null as empty (org.json returns the literal "null"). */
 private fun JSONObject.str(k: String): String = if (isNull(k)) "" else optString(k)
+
+/** optDouble that returns null for a missing / null / non-numeric field (optDouble yields NaN otherwise). */
+private fun JSONObject.optDoubleOrNull(k: String): Double? =
+    if (!has(k) || isNull(k)) null else optDouble(k).takeIf { it.isFinite() }
 
 
 /** Hermes stores gateway/system notices (background-process results, compaction notes, ...) as "user"

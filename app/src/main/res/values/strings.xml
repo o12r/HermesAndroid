@@ -29,6 +29,7 @@
     <string name="message_hint">Message Hermes…</string>
     <string name="stop">Stop</string>
     <string name="send">Send</string>
+    <string name="model_settings">Model settings</string>
     <string name="server_default">Server default</string>
     <string name="loading_models">Loading models…</string>
     <string name="thinking">Thinking: %1$s</string>
@@ -220,4 +221,17 @@
     <string name="about">About</string>
     <string name="appearance_summary">Theme, icon, font size, language</string>
     <string name="about_text">Phone client for Hermes Agent on your PC. Open source.</string>
+    <string name="pc">PC</string>
+    <string name="pc_stats">PC resources</string>
+    <string name="pc_mem">Memory</string>
+    <string name="pc_gpu">GPU</string>
+    <string name="pc_na">N/A</string>
+    <string name="pc_stats_expand">Show resource graphs</string>
+    <string name="default_models">Default models</string>
+    <string name="model_main">Main model</string>
+    <string name="model_delegation">Sub-agent (delegation) model</string>
+    <string name="model_auxiliary">Auxiliary models</string>
+    <string name="models_all_profiles">One set for every profile. Saved on the PC; shown here once the PC confirms.</string>
+    <string name="update_source">Update source</string>
+    <string name="update_source_auto">Auto (PC, then GitHub)</string>
 </resources>

@@ -113,26 +113,34 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
 
     suspend fun messages(id: String): List<Msg> {
         val a = call(req("/api/sessions/$id/messages").build()).optJSONArray("messages") ?: JSONArray()
-        // Fold thinking, tool calls and tool results into the steps of the next assistant reply.
+        // Fold one turn into a single assistant Msg whose steps keep the real order: thinking, text, tool calls
+        // (with their outputs). Every assistant text segment between tool calls is kept, not just the last.
         val out = mutableListOf<Msg>()
-        val pending = mutableListOf<Step>()
+        var pending = mutableListOf<Step>()
+        var lastId: Int? = null
+        fun flush() {
+            if (pending.isEmpty()) { lastId = null; return }
+            val text = pending.filter { it.kind == "text" }.joinToString("") { it.detail }
+            out.add(Msg("assistant", text, lastId, pending.toList()))
+            pending = mutableListOf(); lastId = null
+        }
         for (i in 0 until a.length()) {
             val r = a.optJSONObject(i) ?: continue
             val id = r.optInt("id", 0).takeIf { it > 0 }
             when (r.optString("role")) {
                 "user" -> {
-                    if (pending.isNotEmpty()) { out.add(Msg("assistant", "", null, pending.toList())); pending.clear() }
+                    flush()
                     contentText(r.opt("content")).takeIf { it.isNotBlank() }?.let { out.add(Msg("user", it, id)) }
                 }
                 "assistant" -> {
+                    lastId = id ?: lastId
                     Steps.thinkingOf(r).takeIf { it.isNotBlank() }?.let { pending.add(Step("thinking", "", it)) }
+                    contentText(r.opt("content")).takeIf { it.isNotBlank() }?.let { pending.add(Step("text", "", it)) }
                     val calls = r.opt("tool_calls").let { if (it is String) runCatching { JSONArray(it) }.getOrNull() else it as? JSONArray }
                     if (calls != null) for (j in 0 until calls.length()) calls.optJSONObject(j)?.let { c ->
                         val f = c.optJSONObject("function"); val name = f?.optString("name").orEmpty().ifBlank { c.optString("name") }
                         pending.add(Step("tool", name, Steps.argsText(name, f?.opt("arguments")), null, c.optString("id")))
                     }
-                    val text = contentText(r.opt("content"))
-                    if (text.isNotBlank()) { out.add(Msg("assistant", text, id, pending.toList())); pending.clear() }
                 }
                 "tool" -> {
                     val tid = r.optString("tool_call_id"); val name = r.optString("tool_name")
@@ -141,7 +149,7 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
                 }
             }
         }
-        if (pending.isNotEmpty()) out.add(Msg("assistant", "", null, pending.toList()))
+        flush()
         return out
     }
 

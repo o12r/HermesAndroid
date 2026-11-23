@@ -37,6 +37,10 @@ class SecureStore(ctx: Context) {
     var lastUpdateCheck: Long
         get() = prefs.getLong("lastUpdateCheck", 0)
         set(v) = prefs.edit().putLong("lastUpdateCheck", v).apply()
+    /** Update source: "auto" (PC first, fall back to GitHub) | "github" | "pc". */
+    var updateSource: String
+        get() = prefs.getString("updateSource", "auto")!!.takeIf { it in UPDATE_SOURCES } ?: "auto"
+        set(v) = prefs.edit().putString("updateSource", if (v in UPDATE_SOURCES) v else "auto").apply()
     /** Relay URL pushed by the hotfix config (overrides the default, not a user-entered value). */
     var hotfixRelay: String?
         get() = prefs.getString("hotfixRelay", null)
@@ -117,6 +121,7 @@ class SecureStore(ctx: Context) {
         const val ALIAS = "hermes_api_key"
         const val DEFAULT_RELAY = "http://100.92.121.115:8643"
         val EFFORTS = listOf("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
+        val UPDATE_SOURCES = listOf("auto", "github", "pc")
         /** Fallback until the PC's profile list has been fetched once. */
         val PROFILES = listOf("default")
     }

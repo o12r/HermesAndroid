@@ -7,7 +7,8 @@ process can mint (`hermes gateway attach`). This relay:
   * mints a fresh ticket for the requested profile and pipes frames both ways, unmodified.
 Run with the Hermes venv python. Never logs keys or tickets.
 """
-import asyncio, hmac, json, logging, os, re, subprocess, sys, tempfile, time
+import asyncio, ctypes, hmac, json, logging, os, re, subprocess, sys, tempfile, threading, time
+from ctypes import wintypes
 from pathlib import Path
 from aiohttp import web, ClientSession, WSMsgType
 
@@ -436,6 +437,302 @@ async def config_context(req: web.Request):
     return web.json_response(await asyncio.get_running_loop().run_in_executor(None, _ctx_state))
 
 
+# ---------------------------------------------------------------- model settings (all profiles)
+# main -> model.default / model.provider; delegation -> delegation.model / delegation.provider;
+# auxiliary.<task> -> auxiliary.<task>.model/provider, tasks = whatever the config.yaml auxiliary section holds.
+MODEL_PATHS = {
+    "main": {"model": ("model", "default"), "provider": ("model", "provider")},
+    "delegation": {"model": ("delegation", "model"), "provider": ("delegation", "provider")},
+}
+
+
+def _model_read(home):
+    try:
+        data = _yaml().load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    out = {"main": {}, "delegation": {}, "auxiliary": {}}
+    for slot, paths in MODEL_PATHS.items():
+        for field, path in paths.items():
+            v = data
+            for part in path:
+                v = v.get(part) if hasattr(v, "get") else None
+            out[slot][field] = v if isinstance(v, str) else None
+    aux = data.get("auxiliary") if hasattr(data, "get") else None
+    if hasattr(aux, "get"):
+        for task, sub in aux.items():
+            if hasattr(sub, "get"):
+                out["auxiliary"][task] = {
+                    "model": sub.get("model") if isinstance(sub.get("model"), str) else None,
+                    "provider": sub.get("provider") if isinstance(sub.get("provider"), str) else None,
+                }
+            else:
+                out["auxiliary"][task] = {"model": None, "provider": None}
+    return out
+
+
+def _model_state():
+    per = {name: _model_read(h) for name, h in _profile_homes().items()}
+    base = per.get("default") or {}
+    return {"settings": base, "profiles": list(per), "differs": [n for n, v in per.items() if v != base]}
+
+
+def _model_write(body):
+    y = _yaml()
+    for name, home in _profile_homes().items():
+        f = home / "config.yaml"
+        data = y.load(f.read_text(encoding="utf-8")) or {}
+        for slot, paths in MODEL_PATHS.items():
+            spec = (body or {}).get(slot)
+            if not hasattr(spec, "get"):
+                continue
+            for field, path in paths.items():
+                if field not in spec:
+                    continue
+                v = spec[field]
+                node = data
+                for part in path[:-1]:
+                    if not hasattr(node.get(part), "get"):
+                        node[part] = {}
+                    node = node[part]
+                if v in (None, ""):
+                    node.pop(path[-1], None)
+                else:
+                    node[path[-1]] = v
+        aux = (body or {}).get("auxiliary")
+        if hasattr(aux, "get"):
+            node = data.get("auxiliary")
+            if not hasattr(node, "get"):
+                node = {}
+                data["auxiliary"] = node
+            for task, spec in aux.items():
+                if not hasattr(spec, "get"):
+                    continue
+                sub = node.get(task)
+                if not hasattr(sub, "get"):
+                    sub = {}
+                    node[task] = sub
+                for field in ("model", "provider"):
+                    if field not in spec:
+                        continue
+                    v = spec[field]
+                    if v in (None, ""):
+                        sub.pop(field, None)
+                    else:
+                        sub[field] = v
+        tmp = f.with_name(f.name + ".phone.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            y.dump(data, fh)
+        os.replace(tmp, f)
+        log.info("phone set models for profile %s", name)
+
+
+def _validate_models(body):
+    for slot in ("main", "delegation"):
+        spec = body.get(slot)
+        if spec is None:
+            continue
+        if not isinstance(spec, dict):
+            return f"bad {slot}"
+        for field in ("model", "provider"):
+            if field in spec and spec[field] is not None and not isinstance(spec[field], str):
+                return f"bad value for {slot}.{field}"
+    aux = body.get("auxiliary")
+    if aux is not None:
+        if not isinstance(aux, dict):
+            return "bad auxiliary"
+        for task, spec in aux.items():
+            if not isinstance(spec, dict):
+                return f"bad auxiliary.{task}"
+            for field in ("model", "provider"):
+                if field in spec and spec[field] is not None and not isinstance(spec[field], str):
+                    return f"bad value for auxiliary.{task}.{field}"
+    return None
+
+
+async def config_models(req: web.Request):
+    """GET /config/models -> current models; POST writes them into every profile and answers with the re-read state."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    if req.method == "POST":
+        try:
+            body = await req.json()
+        except ValueError:
+            return web.json_response({"error": "bad request"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "bad request"}, status=400)
+        err = _validate_models(body)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, _model_write, body)
+        except Exception as e:
+            log.warning("models write failed: %s", e)
+            return web.json_response({"error": f"write failed: {e}"}, status=500)
+    return web.json_response(await asyncio.get_running_loop().run_in_executor(None, _model_state))
+
+
+# ---------------------------------------------------------------- PC stats (CPU / memory / GPU, sampled in a thread)
+class _FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+
+class _MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", wintypes.DWORD),
+        ("dwMemoryLoad", wintypes.DWORD),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
+    _fields_ = [("CStatus", wintypes.DWORD), ("doubleValue", ctypes.c_double)]
+
+
+class _PDH_FMT_COUNTERVALUE_ITEM(ctypes.Structure):
+    _fields_ = [("szName", wintypes.DWORD), ("FmtValue", _PDH_FMT_COUNTERVALUE)]
+
+
+def _ft_val(v):
+    return (int(v.dwHighDateTime) << 32) | int(v.dwLowDateTime)
+
+
+def _read_system_times():
+    idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
+    ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+    return _ft_val(idle), _ft_val(kernel), _ft_val(user)
+
+
+def _gpu_nvidia():
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                           capture_output=True, timeout=5, creationflags=NO_WINDOW)
+        if r.returncode != 0:
+            return None
+        vals = []
+        for line in r.stdout.decode("utf-8", "replace").splitlines():
+            line = line.strip()
+            if re.fullmatch(r"\d+(\.\d+)?", line):
+                vals.append(float(line))
+        if vals:
+            return round(sum(vals) / len(vals), 1)
+    except Exception:
+        pass
+    return None
+
+
+def _gpu_pdh():
+    pdh = ctypes.windll.pdh
+    PDH_FMT_DOUBLE = 0x00000200
+    PDH_MORE_DATA = 0x800007D2
+    query = ctypes.c_void_p()
+    counter = ctypes.c_void_p()
+    pdh.PdhOpenQueryW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    pdh.PdhOpenQueryW.restype = ctypes.c_long
+    pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    pdh.PdhAddEnglishCounterW.restype = ctypes.c_long
+    pdh.PdhAddCounterW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    pdh.PdhAddCounterW.restype = ctypes.c_long
+    pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+    pdh.PdhCollectQueryData.restype = ctypes.c_long
+    pdh.PdhGetFormattedCounterArrayW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong), ctypes.c_void_p]
+    pdh.PdhGetFormattedCounterArrayW.restype = ctypes.c_long
+    pdh.PdhCloseQuery.argtypes = [ctypes.c_void_p]
+    pdh.PdhCloseQuery.restype = ctypes.c_long
+    if pdh.PdhOpenQueryW(None, 0, ctypes.byref(query)) != 0:
+        return None
+    try:
+        path = "\\GPU Engine(*)\\Utilization Percentage"
+        r = pdh.PdhAddEnglishCounterW(query, path, 0, ctypes.byref(counter))
+        if r != 0:
+            r = pdh.PdhAddCounterW(query, path, 0, ctypes.byref(counter))
+        if r != 0:
+            return None
+        pdh.PdhCollectQueryData(query)
+        import time as _t
+        _t.sleep(0.5)
+        pdh.PdhCollectQueryData(query)
+        size = ctypes.c_ulong(0)
+        count = ctypes.c_ulong(0)
+        r = pdh.PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, ctypes.byref(size), ctypes.byref(count), None)
+        if (r & 0xFFFFFFFF) != PDH_MORE_DATA:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        r = pdh.PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, ctypes.byref(size), ctypes.byref(count), buf)
+        if r != 0:
+            return None
+        total = 0.0
+        step = ctypes.sizeof(_PDH_FMT_COUNTERVALUE_ITEM)
+        for i in range(count.value):
+            item = _PDH_FMT_COUNTERVALUE_ITEM.from_buffer(buf, i * step)
+            if item.FmtValue.CStatus == 0:
+                total += item.FmtValue.doubleValue
+        return round(total, 1) if count.value > 0 else None
+    finally:
+        pdh.PdhCloseQuery(query)
+
+
+def _gpu():
+    v = _gpu_nvidia()
+    if v is not None:
+        return v
+    try:
+        return _gpu_pdh()
+    except Exception:
+        return None
+
+
+STATS = {"cpu": None, "mem": None, "gpu": None, "ts": 0}
+_stats_prev = {"busy": 0, "total": 0, "have": False}
+
+
+def _sample_once():
+    idle, kernel, user = _read_system_times()
+    busy = (kernel + user) - idle
+    total = kernel + user
+    cpu = None
+    if _stats_prev["have"] and total > _stats_prev["total"]:
+        d_busy = busy - _stats_prev["busy"]
+        d_total = total - _stats_prev["total"]
+        if d_total > 0:
+            cpu = round(min(max(d_busy * 100.0 / d_total, 0.0), 100.0), 1)
+    _stats_prev.update(busy=busy, total=total, have=True)
+    mem = None
+    m = _MEMORYSTATUSEX()
+    m.dwLength = ctypes.sizeof(m)
+    if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+        mem = round(float(m.dwMemoryLoad), 1)
+    STATS.update(cpu=cpu, mem=mem, gpu=_gpu(), ts=int(time.time() * 1000))
+
+
+def _stats_loop():
+    try:
+        idle, kernel, user = _read_system_times()
+        _stats_prev.update(busy=(kernel + user) - idle, total=kernel + user, have=True)
+    except Exception:
+        pass
+    while True:
+        try:
+            _sample_once()
+        except Exception:
+            pass
+        time.sleep(1)
+
+
+async def pc_stats(req: web.Request):
+    """GET /pc/stats -> {cpu, mem, gpu, ts} from the 1 s sampler cache (Bearer required)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    return web.json_response(dict(STATS))
+
+
+
 async def _watchdog(app):
     """After hibernate/resume the Tailscale socket can go dead while the process lives on.
     Probe our own /health every 60 s; after 3 straight failures exit, so the scheduled
@@ -506,6 +803,7 @@ async def ws_handler(req: web.Request):
 
 
 def main():
+    threading.Thread(target=_stats_loop, daemon=True).start()
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/ws", ws_handler)
@@ -519,6 +817,8 @@ def main():
     app.router.add_get("/outbox", outbox_list)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
     app.router.add_route("*", "/config/context", config_context)
+    app.router.add_route("*", "/config/models", config_models)
+    app.router.add_get("/pc/stats", pc_stats)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -542,6 +842,8 @@ def main():
             app.router.add_get("/outbox", outbox_list)
             app.router.add_route("*", "/outbox/{name}", outbox_item)
             app.router.add_route("*", "/config/context", config_context)
+            app.router.add_route("*", "/config/models", config_models)
+            app.router.add_get("/pc/stats", pc_stats)
             app.on_startup.append(_watchdog)
 
 

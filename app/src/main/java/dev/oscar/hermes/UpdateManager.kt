@@ -59,19 +59,29 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
         http.newCall(r).execute().use { if (it.isSuccessful) JSONObject(it.body!!.string()) else null }
     }.getOrNull()
 
-    /** Newest available build from any source, or null if none is newer than this one. */
-    suspend fun check(): UpdateInfo? = withContext(Dispatchers.IO) {
-        val pc = relayReq("/latest.json")?.let { getJson(it) }?.let {
-            UpdateInfo(it.getInt("version_code"), it.optString("version_name"), it.optString("notes"),
-                store.relayBase().trimEnd('/') + "/app/$APP_ID/apk", "pc")
+    /** Newest available build from the chosen [source] ("auto" | "github" | "pc"), or null if none is newer than this one. */
+    suspend fun check(source: String = "auto"): UpdateInfo? = withContext(Dispatchers.IO) {
+        val pc = relay()
+        when (source) {
+            "pc" -> pc?.takeIf { it.versionCode > currentCode }
+            "github" -> github()?.takeIf { it.versionCode > currentCode }
+            else -> {   // auto: PC first, fall back to GitHub when the PC has nothing newer
+                val gh = if (pc != null && pc.versionCode > currentCode) null else github()
+                listOfNotNull(pc, gh).filter { it.versionCode > currentCode }.maxByOrNull { it.versionCode }
+            }
         }
-        val gh = if (pc != null && pc.versionCode > currentCode) null else github()
-        listOfNotNull(pc, gh).filter { it.versionCode > currentCode }.maxByOrNull { it.versionCode }
+    }
+
+    /** The PC relay's newest build (null if unreachable). */
+    private fun relay(): UpdateInfo? = relayReq("/latest.json")?.let { getJson(it) }?.let {
+        UpdateInfo(it.getInt("version_code"), it.optString("version_name"), it.optString("notes"),
+            store.relayBase().trimEnd('/') + "/app/$APP_ID/apk", "pc")
     }
 
     private fun github(): UpdateInfo? {
+        // GitHub's API rejects requests without a User-Agent (403), so the check silently found nothing before.
         val o = getJson(Request.Builder().url("https://api.github.com/repos/$GITHUB_REPO/releases/latest")
-            .header("Accept", "application/vnd.github+json").build()) ?: return null
+            .header("Accept", "application/vnd.github+json").header("User-Agent", "HermesAndroid").build()) ?: return null
         val assets = o.optJSONArray("assets") ?: return null
         for (i in 0 until assets.length()) {
             val a = assets.getJSONObject(i); val name = a.optString("name")

@@ -29,6 +29,7 @@
     <string name="message_hint">给 Hermes 发消息…</string>
     <string name="stop">停止</string>
     <string name="send">发送</string>
+    <string name="model_settings">模型设置</string>
     <string name="server_default">服务器默认</string>
     <string name="loading_models">正在加载模型…</string>
     <string name="thinking">思考：%1$s</string>
@@ -220,4 +221,17 @@
     <string name="about">关于</string>
     <string name="appearance_summary">主题、图标、字号、语言</string>
     <string name="about_text">PC 上 Hermes Agent 的手机客户端。开源。</string>
+    <string name="pc">电脑</string>
+    <string name="pc_stats">电脑资源</string>
+    <string name="pc_mem">内存</string>
+    <string name="pc_gpu">GPU</string>
+    <string name="pc_na">N/A</string>
+    <string name="pc_stats_expand">展开资源图表</string>
+    <string name="default_models">默认模型</string>
+    <string name="model_main">主模型</string>
+    <string name="model_delegation">子代理（delegation）模型</string>
+    <string name="model_auxiliary">辅助（auxiliary）模型</string>
+    <string name="models_all_profiles">所有档案共用一套。保存到 PC，PC 确认后才在这里显示。</string>
+    <string name="update_source">更新来源</string>
+    <string name="update_source_auto">自动（电脑优先，失败回退 GitHub）</string>
 </resources>

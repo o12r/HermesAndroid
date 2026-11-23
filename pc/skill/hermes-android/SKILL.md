@@ -18,8 +18,8 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 |---|---|
 | Relay | `%LOCALAPPDATA%\hermes\launchers\hermes-phone-relay.py` (run with the Hermes venv `pythonw.exe -I`) |
 | Relay log | `%LOCALAPPDATA%\hermes\launchers\phone-relay.log` (never contains keys or tickets) |
-| Tray app | `launchers\hermes-tray.ps1` (started by `hermes-tray.vbs`, HKCU Run `HermesAndroidTray`): green/yellow/red icon for relay / gateway / Tailscale, restarts the relay ~30 s after it dies, Windows notification on failure, menu items for restart, log, pairing QR and autostart |
-| Keep-alive (fallback) | Scheduled task `Hermes_PhoneRelay` → `ensure-phone-relay.vbs` → `ensure-phone-relay.ps1` (at logon, on wake, every 5 min) |
+| Tray app | `launchers\hermes-tray.ps1`, run **as administrator** by the scheduled task `HermesAndroidTray` (logon trigger, highest privilege; `install-tray-task.ps1` registers it, self-elevates silently since the user has UAC elevate-without-prompt). Green/yellow/red icon for relay / gateway / Tailscale. The tray owns the relay, gateway (`hermes gateway ensure`), Tailscale and vdisplay host as children, starts/monitors/restarts them, and notifies on failure. On exit it stops its own children, and stops the gateway too only if no other Hermes process (desktop `Hermes.exe`, a `hermes` CLI session) is left running |
+| Keep-alive (removed) | the installer unregisters the old `Hermes_PhoneRelay` task and the HKCU `HermesAndroidTray` Run key — the tray is the single owner of the relay, so there is no double start |
 | Key | `API_SERVER_KEY=` in `%LOCALAPPDATA%\hermes\.env`, the same value in every profile's `.env` |
 | App updates | `%LOCALAPPDATA%\hermes\launchers\app-updates\hermes-android\` (`latest.json`, `app.apk`, `hotfix.json`) |
 | Installer | `pc\install.cmd` in the repo (`-Uninstall` removes everything it installed; keys are kept) |
@@ -31,9 +31,11 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 - `GET /app/<app-id>/{latest.json,apk,hotfix.json}`: in-app updates. The APK supports `Range`, so the app resumes broken downloads.
 - `POST /fs/stat|mkdir {"path": "<absolute>"}`: the app checks a new project's folder, and creates it after the user confirms.
 - Everything except `/health` needs `Authorization: Bearer <API_SERVER_KEY>`. A wrong key returns 401.
+- `GET|POST /config/models`: default models shared by every profile (see "Model defaults" below).
+- `GET /pc/stats`: live CPU / memory / GPU percentages (see "PC stats" below).
 
 ## Diagnose (in this order)
-1. **Is the relay up?** `curl http://127.0.0.1:8643/health`. If not: `Start-ScheduledTask Hermes_PhoneRelay`, wait 10 s, and check again. Still down: read the end of `phone-relay.log`.
+1. **Is the relay up?** `curl http://127.0.0.1:8643/health`. If not: `Start-ScheduledTask HermesAndroidTray` (the admin tray owns and restarts the relay), wait 10 s, and check again. Still down: read the end of `phone-relay.log`.
 2. **Is the gateway up?** `hermes gateway status`. If the relay returns 503 or the WebSocket closes at once, run `hermes gateway ensure`.
 3. **Can the phone reach the PC?** Check `tailscale status` (both devices online), or that both are on the same Wi-Fi with the LAN address set in the app. Test from the PC on the Tailscale address: `curl http://<tailscale-ip>:8643/health`.
 4. **Auth:** `curl -H "Authorization: Bearer $KEY" "http://127.0.0.1:8643/api/sessions?profile=default&limit=1"` should return 200. A 401 means the app's key differs from the default `.env` key. Re-pair with `pc\install.cmd -PairOnly`.
@@ -89,6 +91,16 @@ Rules for the agent:
 - Turn it `off` when the task is done, unless the user asked to keep it.
 - `screen off` blanks the user's main screen: only use it when the user asked for it. The user's windows go to the user screen
   (never the agent screen); `screen on` or any real input puts them back. Agent on/off is a separate switch.
+
+## Model defaults + PC stats from the phone
+- Relay `GET|POST /config/models`: default models shared by every profile. `main` → `model.default` / `model.provider`,
+  `delegation` → `delegation.model` / `delegation.provider`, `auxiliary.<task>` → `auxiliary.<task>.model` / `provider`
+  (the tasks are whatever the config.yaml `auxiliary` section holds). Written into every profile's config.yaml with
+  ruamel round-trip; a `null` model/provider removes the key (server default). The reply is the re-read state
+  `{"settings": {"main","delegation","auxiliary"}, "profiles": [...], "differs": [...]}`; the app shows only `settings`.
+- Relay `GET /pc/stats` (Bearer) → `{"cpu": %, "mem": %, "gpu": %|null, "ts": ms}`, sampled every second in a background
+  thread (CPU via `GetSystemTimes`, memory via `GlobalMemoryStatusEx`; GPU via `nvidia-smi`, else the PDH
+  "GPU Engine(*)\Utilization Percentage" sum, else `null`).
 
 ## Elevation approved from the phone (no UAC prompt on the PC)
 
