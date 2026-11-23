@@ -1,5 +1,6 @@
 package dev.oscar.hermes
 
+import org.json.JSONObject
 import kotlinx.coroutines.launch
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.ImageBitmap
@@ -29,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -299,15 +302,13 @@ fun SessionsScreen(vm: ChatViewModel) {
         topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name), maxLines = 1, softWrap = false) }, actions = {
             ProfileMenu(vm)
             IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
-            IconButton(onClick = { vm.openInbox() }) { Icon(Icons.Default.Inbox, stringResource(R.string.inbox)) }
+            IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
             var more by remember { mutableStateOf(false) }
             Box {
                 IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, null) }
                 DropdownMenu(more, { more = false }) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.screens)) }, leadingIcon = { Icon(Icons.Default.Monitor, null) },
                         onClick = { more = false; vm.openScreens(Screen.Sessions) })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.refresh)) }, leadingIcon = { Icon(Icons.Default.Refresh, null) },
-                        onClick = { more = false; vm.refreshSessions() })
                 }
             }
             IconButton(onClick = { vm.screen = Screen.Settings }) {
@@ -402,21 +403,6 @@ fun SessionsScreen(vm: ChatViewModel) {
             confirmButton = { Button(onClick = { vm.missingFolder = null; vm.createProject(name, path, mkdir = true) }) { Text(stringResource(R.string.create_folder)) } },
             dismissButton = { TextButton(onClick = { vm.missingFolder = null }) { Text(stringResource(R.string.cancel)) } })
     }
-    if (vm.inboxOpen) AlertDialog(onDismissRequest = { vm.inboxOpen = false }, title = { Text(stringResource(R.string.inbox)) },
-        text = { Column {
-            Text(stringResource(R.string.inbox_help), style = MaterialTheme.typography.bodySmall)
-            if (vm.inboxBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 6.dp))
-            if (vm.inboxFiles.isEmpty() && !vm.inboxBusy) Text(stringResource(R.string.inbox_empty), Modifier.padding(vertical = 8.dp))
-            LazyColumn(Modifier.heightIn(max = 360.dp)) {
-                items(vm.inboxFiles, key = { it.name }) { f ->
-                    ListItem(headlineContent = { Text(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(Inbox.sizeText(f.size)) },
-                        trailingContent = { TextButton(onClick = { vm.saveInbox(f.name, f.session) }, enabled = !vm.inboxBusy) { Text(stringResource(R.string.inbox_save)) } })
-                }
-            }
-        } },
-        confirmButton = { TextButton(onClick = { vm.refreshInbox() }, enabled = !vm.inboxBusy) { Text(stringResource(R.string.refresh)) } },
-        dismissButton = { TextButton(onClick = { vm.inboxOpen = false }) { Text(stringResource(R.string.inbox_close)) } })
     deletingProject?.let { p ->
         AlertDialog(onDismissRequest = { deletingProject = null }, title = { Text(stringResource(R.string.delete_project_q, p.name)) },
             text = { Text(stringResource(R.string.delete_project_note)) },
@@ -454,15 +440,14 @@ fun ChatScreen(vm: ChatViewModel) {
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Column {
                 Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                vm.projects.find { p -> vm.currentId != null && vm.currentId in p.sessionIds }?.let { p ->
-                    Text("📁 " + (if (p.isHome) stringResource(R.string.home) else p.name), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary, maxLines = 1) }
+                val proj = vm.projects.find { p -> vm.currentId != null && vm.currentId in p.sessionIds }
+                    ?.let { p -> if (p.isHome) stringResource(R.string.home) else p.name }
+                Text(listOfNotNull(chat.profile, proj).joinToString(" › "), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             } },
-            navigationIcon = { IconButton(onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = {
                 IconButton(onClick = { vm.settingsBack = Screen.Chat; vm.screen = Screen.Settings }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
-                ProfileMenu(vm) }, windowInsets = WindowInsets(0))
+            }, windowInsets = WindowInsets(0))
         ChatTabs(vm)
         val jumpScope = rememberCoroutineScope()
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -490,16 +475,7 @@ fun ChatScreen(vm: ChatViewModel) {
             vm.attachments.forEach { a -> InputChip(selected = false, onClick = { vm.attachments.remove(a) }, label = { Text(a.name, maxLines = 1) },
                 trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) }, modifier = Modifier.padding(end = 4.dp)) }
         }
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-            var attachMenu by remember { mutableStateOf(false) }
-            if (vm.hotfix.attachments) Box {
-                IconButton(onClick = { attachMenu = true }, enabled = !vm.streaming) { Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
-                DropdownMenu(attachMenu, { attachMenu = false }) {
-                    DropdownMenuItem(text = { Text(stringResource(R.string.image)) }, leadingIcon = { Icon(Icons.Default.Image, null) },
-                        onClick = { attachMenu = false; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
-                    DropdownMenuItem(text = { Text(stringResource(R.string.text_file)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
-                        onClick = { attachMenu = false; pickFile.launch("*/*") })
-                } }
+        Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.Bottom) {
             // Plain Compose text field: goes through Android's InputConnection, so Gboard / WeChat IME composition works.
             var focused by remember { mutableStateOf(false) }
             var full by remember { mutableStateOf(false) }
@@ -508,8 +484,6 @@ fun ChatScreen(vm: ChatViewModel) {
                     .onFocusChanged { focused = it.isFocused }.animateContentSize(),
                 placeholder = { Text(stringResource(if (vm.streaming) R.string.steer_hint else R.string.message_hint)) },
                 minLines = if (focused) 5 else 1, maxLines = if (focused) Int.MAX_VALUE else 6,
-                trailingIcon = { if (focused || chat.draft.length > 80) IconButton(onClick = { full = true }) {
-                    Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) } },
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
             if (full) androidx.compose.ui.window.Dialog(onDismissRequest = { full = false },
                 properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
@@ -526,16 +500,66 @@ fun ChatScreen(vm: ChatViewModel) {
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 } }
             }
-            if (vm.streaming) IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
-            // Queue: send after the running turn ends (Send next to it steers the running turn instead).
-            if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }) {
-                Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
-            // While Hermes works, Send steers the running turn instead of waiting.
-            if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" },
-                enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
-                Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
+            // Buttons stacked outside the field, on its right: expand, send/steer, stop, queue, attach.
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                val small = Modifier.size(40.dp)
+                if (focused || chat.draft.length > 80) IconButton(onClick = { full = true }, small) {
+                    Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }
+                // While Hermes works, Send steers the running turn instead of waiting.
+                if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
+                    enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
+                    Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
+                if (vm.streaming) IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
+                // Queue: send after the running turn ends.
+                if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }, small) {
+                    Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
+                var attachMenu by remember { mutableStateOf(false) }
+                if (vm.hotfix.attachments) Box {
+                    IconButton(onClick = { attachMenu = true }, small, enabled = !vm.streaming) { Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
+                    DropdownMenu(attachMenu, { attachMenu = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.image)) }, leadingIcon = { Icon(Icons.Default.Image, null) },
+                            onClick = { attachMenu = false; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.text_file)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
+                            onClick = { attachMenu = false; pickFile.launch("*/*") })
+                    } }
+            }
         }
     }
+}
+
+/** Context / compression settings, one set for every profile. Shows what the PC reports; Save waits for its answer. */
+@Composable
+fun ContextDialog(vm: ChatViewModel, close: () -> Unit) {
+    val cur = vm.ctxSettings
+    val fields = listOf("compression_model" to R.string.ctx_comp_model, "compression_provider" to R.string.ctx_comp_provider,
+        "context_length" to R.string.ctx_length, "threshold" to R.string.ctx_threshold,
+        "target_ratio" to R.string.ctx_target, "protect_last_n" to R.string.ctx_keep_last)
+    val edit = remember(cur) { mutableStateMapOf<String, String>().apply {
+        fields.forEach { (k, _) -> put(k, cur?.opt(k)?.takeIf { it != JSONObject.NULL }?.toString().orEmpty()) } } }
+    var saving by remember { mutableStateOf(false) }
+    LaunchedEffect(vm.ctxBusy) { if (saving && !vm.ctxBusy) { saving = false; if (vm.ctxError == null) close() } }
+    AlertDialog(onDismissRequest = close, title = { Text(stringResource(R.string.ctx_title)) },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            val c = vm.cur
+            if (c.ctxMax > 0) Text(fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax), style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.ctx_all_profiles), style = MaterialTheme.typography.bodySmall)
+            if (vm.ctxBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            vm.ctxError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (cur != null) fields.forEach { (k, label) ->
+                OutlinedTextField(edit[k].orEmpty(), { edit[k] = it }, label = { Text(stringResource(label)) }, singleLine = true,
+                    enabled = !vm.ctxBusy, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = if (k.startsWith("compression_")) KeyboardOptions.Default
+                        else KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+            }
+        } },
+        confirmButton = { TextButton(enabled = cur != null && !vm.ctxBusy, onClick = {
+            val o = JSONObject()
+            fields.forEach { (k, _) -> val v = edit[k].orEmpty().trim()
+                val old = cur?.opt(k)?.takeIf { it != JSONObject.NULL }?.toString().orEmpty()
+                if (v != old) o.put(k, if (v.isEmpty()) JSONObject.NULL else v) }
+            if (o.length() == 0) close() else { saving = true; vm.loadCtxSettings(o) }
+        }) { Text(stringResource(R.string.save)) } },
+        dismissButton = { TextButton(onClick = close) { Text(stringResource(R.string.cancel)) } })
 }
 
 @Composable
@@ -587,18 +611,22 @@ fun RuntimeChips(vm: ChatViewModel) {
             }
         }
         val c = vm.cur
-        if (c.ctxMax > 0) Text(fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax) + " (" + (c.ctxUsed * 100 / c.ctxMax) + "%)",
-            Modifier.align(Alignment.CenterVertically).weight(1f), style = MaterialTheme.typography.labelSmall,
-            color = if (c.ctxUsed * 100 / c.ctxMax >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+        var ctxOpen by remember { mutableStateOf(false) }
+        Spacer(Modifier.weight(1f))
+        val pct = if (c.ctxMax > 0) (c.ctxUsed * 100 / c.ctxMax).toInt() else -1
+        AssistChip(onClick = { ctxOpen = true; vm.loadCtxSettings() },
+            label = { Text(if (pct >= 0) stringResource(R.string.ctx_pct, pct) else stringResource(R.string.ctx_title), maxLines = 1,
+                color = if (pct >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
+            leadingIcon = { Icon(Icons.Default.DataUsage, null, Modifier.size(16.dp)) })
+        if (ctxOpen) ContextDialog(vm) { ctxOpen = false }
     }
 }
 
 /** Open chats as tabs: ⏳ = Hermes working, ✎ = unsent draft, × closes (the PC session is kept). */
 @Composable
 fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
-    // In a chat, one tab (itself) adds nothing; on the session list any open chat is worth a tab.
-    if (vm.tabs.size < (if (onList) 1 else 2)) return
+    // Tabs replace the back button in a chat, so they show even for a single chat; ＋ goes to the session list.
+    if (onList && vm.tabs.isEmpty()) return
     val state = rememberLazyListState()
     val idx = vm.tabs.indexOfFirst { it === vm.cur }
     LaunchedEffect(idx) { if (idx >= 0) state.animateScrollToItem(idx) }
@@ -618,6 +646,10 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 200.dp)) },
                 trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.closeTab(c) }) })
+        }
+        if (!onList) item(key = "plus") {
+            InputChip(selected = false, onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() },
+                label = { Icon(Icons.Default.Add, stringResource(R.string.sessions)) })
         }
     }
 }
@@ -649,7 +681,7 @@ fun Bubble(m: UiMsg, vm: ChatViewModel) {
         return
     }
     if (m.role == "file") {
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file) { vm.saveInbox(m.text, m.session) } }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file, vm.fileProgress[m.text]) { vm.saveInbox(m.text, m.session) } }
         return
     }
     val user = m.role == "user"
@@ -765,8 +797,40 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
     }
 }
 
+/** Reply body: markdown prose plus XML/JSON/code blocks shown monospace, scrollable sideways, copyable. */
 @Composable
 fun Markdown(md: String) {
+    val segs = remember(md) { Formats.split(md) }
+    if (segs.size == 1 && segs[0] is Seg.Md) { MarkdownText((segs[0] as Seg.Md).text); return }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (sg in segs) when (sg) {
+            is Seg.Md -> MarkdownText(sg.text)
+            is Seg.Code -> CodeBlock(sg.lang, sg.text)
+        }
+    }
+}
+
+@Composable
+fun CodeBlock(lang: String, code: String) {
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(lang.ifBlank { "text" }.uppercase(), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.copy), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { clip.setText(androidx.compose.ui.text.AnnotatedString(code)) }.padding(4.dp))
+            }
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(code, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 12.sp, softWrap = false,
+                    modifier = Modifier.horizontalScroll(rememberScrollState()))
+            }
+        }
+    }
+}
+
+@Composable
+fun MarkdownText(md: String) {
     val scale = androidx.compose.ui.platform.LocalDensity.current.fontScale / LocalContext.current.resources.configuration.fontScale
     val color = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val ctx = LocalContext.current
@@ -818,6 +882,23 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Text(stringResource(R.string.language), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.lang_system), "en" to stringResource(R.string.lang_en),
                 "zh" to stringResource(R.string.lang_zh)), vm.store.lang) { if (it != vm.store.lang) { vm.store.lang = it; recreate() } }
+
+            HorizontalDivider()
+            Text(stringResource(R.string.ctx_title), style = MaterialTheme.typography.titleSmall)
+            LaunchedEffect(Unit) { if (vm.store.hasKey) vm.loadCtxSettings() }
+            Text(stringResource(R.string.ctx_all_profiles), style = MaterialTheme.typography.bodySmall)
+            vm.ctxSettings?.let { c ->
+                listOf("compression_model" to R.string.ctx_comp_model, "compression_provider" to R.string.ctx_comp_provider,
+                    "context_length" to R.string.ctx_length, "threshold" to R.string.ctx_threshold,
+                    "target_ratio" to R.string.ctx_target, "protect_last_n" to R.string.ctx_keep_last).forEach { (k, l) ->
+                    Row { Text(stringResource(l), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Text(c.opt(k)?.takeIf { it != JSONObject.NULL }?.toString() ?: "—", style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
+            vm.ctxError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            var ctxOpen by remember { mutableStateOf(false) }
+            OutlinedButton(onClick = { ctxOpen = true; vm.loadCtxSettings() }) { Text(stringResource(R.string.ctx_edit)) }
+            if (ctxOpen) ContextDialog(vm) { ctxOpen = false }
 
             HorizontalDivider()
             Text(stringResource(R.string.vdisplay), style = MaterialTheme.typography.titleSmall)
@@ -883,11 +964,8 @@ fun ScreensScreen(vm: ChatViewModel) {
                     else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall)
                 }
                 Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.vd_screen_off), Modifier.weight(1f))
-                    Switch(vm.vdScreenOff, { if (!vm.vdBusy) vm.vdisplay(if (it) "screen-off" else "screen-on") },
-                        enabled = !vm.vdBusy && (vm.vdScreenOff || vm.vdScreenOffAvailable))
-                }
+                if (vm.vdScreenOff) OutlinedButton(onClick = { vm.vdisplay("screen-on") }, enabled = !vm.vdBusy) {
+                    Text(stringResource(R.string.vd_wake_all)) }
                 Text(stringResource(if (vm.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
                     style = MaterialTheme.typography.bodySmall)
             }
@@ -896,7 +974,7 @@ fun ScreensScreen(vm: ChatViewModel) {
                 HorizontalDivider()
             } }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
-            items(pc) { sc -> ScreenRow(screenLabel(sc), sc, sc.on) { open = sc } }
+            items(pc) { sc -> ScreenRow(screenLabel(sc), sc, sc.on, screenActions(vm, sc)) { open = sc } }
             item { Spacer(Modifier.height(8.dp)); Text(stringResource(R.string.screens_agent), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             if (agents.isEmpty()) item { Text(stringResource(R.string.screens_no_agent), style = MaterialTheme.typography.bodySmall) }
             agents.groupBy { it.profile ?: "default" }.toSortedMap().forEach { (prof, byProf) ->
@@ -904,7 +982,7 @@ fun ScreensScreen(vm: ChatViewModel) {
                 byProf.groupBy { it.project ?: it.cwd?.trimEnd('\\', '/')?.substringAfterLast('\\')?.substringAfterLast('/') ?: "—" }
                     .toSortedMap().forEach { (proj, l) ->
                         item { Text("📁 $proj", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 12.dp)) }
-                        items(l) { sc -> Box(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true) { open = sc } } }
+                        items(l) { sc -> Box(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true, screenActions(vm, sc)) { open = sc } } }
                     }
             }
         }
@@ -912,16 +990,40 @@ fun ScreensScreen(vm: ChatViewModel) {
 }
 
 @Composable
-fun ScreenRow(label: String, sc: PcScreen, enabled: Boolean, onClick: () -> Unit) {
+fun screenActions(vm: ChatViewModel, sc: PcScreen): List<Pair<String, () -> Unit>> = when {
+    sc.kind == "physical" && sc.on -> listOf(stringResource(R.string.vd_screen_off_this) to { vm.vdisplay("screen-off", sc.name) })
+    sc.kind == "physical" -> listOf(stringResource(R.string.vd_screen_on_this) to { vm.vdisplay("screen-on", sc.name) })
+    sc.kind == "agent" && sc.session != null -> listOf(stringResource(R.string.vd_close) to { vm.closeAgentScreen(sc.session) })
+    else -> emptyList()
+}
+
+/** Physical = primary, screen-off stand-in = secondary, agent = tertiary. */
+@Composable
+fun screenColor(sc: PcScreen) = when (sc.kind) {
+    "agent" -> MaterialTheme.colorScheme.tertiary
+    "screen-off" -> MaterialTheme.colorScheme.secondary
+    else -> MaterialTheme.colorScheme.primary
+}
+
+@Composable
+fun ScreenRow(label: String, sc: PcScreen, enabled: Boolean, actions: List<Pair<String, () -> Unit>> = emptyList(), onClick: () -> Unit) {
     Card(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Monitor, null)
+        Row(Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(4.dp).height(36.dp).background(screenColor(sc)))
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Default.Monitor, null, tint = screenColor(sc))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (sc.on) "${sc.w}×${sc.h} @${sc.hz}Hz" else stringResource(R.string.screen_is_off),
                     style = MaterialTheme.typography.bodySmall)
             }
+            if (actions.isNotEmpty()) Box {
+                var menu by remember { mutableStateOf(false) }
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
+                DropdownMenu(menu, { menu = false }) {
+                    actions.forEach { (t, f) -> DropdownMenuItem(text = { Text(t) }, onClick = { menu = false; f() }) } }
+            } else Spacer(Modifier.width(12.dp))
         }
     }
 }
@@ -945,14 +1047,14 @@ fun ScreenDetail(vm: ChatViewModel, sc: PcScreen, back: () -> Unit) {
             navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             actions = {
                 IconButton(onClick = { n++ }, enabled = !busy) { Icon(Icons.Default.Refresh, stringResource(R.string.screen_refresh)) }
-                if (sc.kind == "agent" && sc.session != null)
-                    TextButton(onClick = { vm.closeAgentScreen(sc.session); back() }) { Text(stringResource(R.string.vd_close)) }
             }, windowInsets = WindowInsets(0))
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
             err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             bmp?.let { Image(it, label, Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth) }
             Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                screenActions(vm, sc).forEach { (t, f) -> OutlinedButton(onClick = { f(); back() }, enabled = !vm.vdBusy) { Text(t) } } }
             Text("${sc.name.removePrefix("\\\\.\\")} · ${sc.w}×${sc.h} @${sc.hz}Hz", style = MaterialTheme.typography.bodySmall)
             sc.cwd?.let { Text("📁 $it", style = MaterialTheme.typography.bodySmall) }
             sc.session?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }

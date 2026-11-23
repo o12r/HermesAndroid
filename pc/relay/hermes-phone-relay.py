@@ -186,6 +186,9 @@ async def vdisplay_op(req: web.Request):
     env = dict(os.environ)
     if re.fullmatch(r"[\w.:-]{1,160}", sid):          # each phone chat drives its own session's agent screen
         env["HERMES_VDISPLAY_SESSION"] = sid
+    disp = str((body or {}).get("display") or "")
+    if args[0] == "screen" and re.fullmatch(r"\\\\\.\\DISPLAY\d{1,3}", disp):   # per-screen screen off/on
+        args = args + [disp]
     py = Path(sys.executable).with_name("python.exe")
     proc = await asyncio.create_subprocess_exec(str(py if py.exists() else sys.executable), "-I", str(VDISPLAY), *args, env=env,
                                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
@@ -329,6 +332,110 @@ async def outbox_item(req: web.Request):
     return web.FileResponse(f, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
+# ---------------------------------------------------------------- context / compression settings (all profiles)
+CTX_KEYS = {   # phone field -> (config.yaml path, type)
+    "compression_model": (("auxiliary", "compression", "model"), str),
+    "compression_provider": (("auxiliary", "compression", "provider"), str),
+    "context_length": (("model", "context_length"), int),
+    "threshold": (("compression", "threshold"), float),
+    "target_ratio": (("compression", "target_ratio"), float),
+    "protect_last_n": (("compression", "protect_last_n"), int),
+}
+
+
+def _profile_homes():
+    homes = {"default": HERMES_HOME}
+    pd = HERMES_HOME / "profiles"
+    if pd.is_dir():
+        for d in sorted(pd.iterdir()):
+            if (d / "config.yaml").is_file() and profile_ok(d.name):
+                homes[d.name] = d
+    return homes
+
+
+def _yaml():
+    from ruamel.yaml import YAML
+    y = YAML(); y.preserve_quotes = True; y.width = 4096
+    return y
+
+
+def _ctx_read(home):
+    try:
+        data = _yaml().load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    out = {}
+    for k, (path, _t) in CTX_KEYS.items():
+        v = data
+        for part in path:
+            v = v.get(part) if hasattr(v, "get") else None
+        out[k] = v if isinstance(v, (int, float, str)) and not isinstance(v, bool) else None
+    return out
+
+
+def _ctx_state():
+    per = {name: _ctx_read(h) for name, h in _profile_homes().items()}
+    base = per.get("default") or {}
+    return {"settings": base, "profiles": list(per), "differs": [n for n, v in per.items() if v != base]}
+
+
+def _ctx_write(values):
+    """Write the given settings into every profile's config.yaml (round-trip: comments and order kept)."""
+    y = _yaml()
+    for name, home in _profile_homes().items():
+        f = home / "config.yaml"
+        data = y.load(f.read_text(encoding="utf-8")) or {}
+        for k, v in values.items():
+            path, _t = CTX_KEYS[k]
+            node = data
+            for part in path[:-1]:
+                if not hasattr(node.get(part), "get"):
+                    node[part] = {}
+                node = node[part]
+            if v is None:
+                node.pop(path[-1], None)
+            else:
+                node[path[-1]] = v
+        tmp = f.with_name(f.name + ".phone.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            y.dump(data, fh)
+        os.replace(tmp, f)
+        log.info("phone set context settings for profile %s: %s", name, sorted(values))
+
+
+async def config_context(req: web.Request):
+    """GET /config/context -> current settings; POST {field: value|null} writes them into every profile and
+    answers with what the PC now has (the phone shows only that)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    if req.method == "POST":
+        try:
+            body = await req.json()
+        except ValueError:
+            return web.json_response({"error": "bad request"}, status=400)
+        vals = {}
+        for k, v in (body or {}).items():
+            if k not in CTX_KEYS:
+                continue
+            t = CTX_KEYS[k][1]
+            if v is None or v == "":
+                vals[k] = None; continue
+            try:
+                v = t(v)
+            except (TypeError, ValueError):
+                return web.json_response({"error": f"bad value for {k}"}, status=400)
+            if (k in ("threshold", "target_ratio") and not 0 < v <= 1) or \
+                    (k == "context_length" and not 1024 <= v <= 10_000_000) or (k == "protect_last_n" and not 0 <= v <= 500):
+                return web.json_response({"error": f"{k} out of range"}, status=400)
+            vals[k] = v
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, _ctx_write, vals)
+        except Exception as e:
+            log.warning("context settings write failed: %s", e)
+            return web.json_response({"error": f"write failed: {e}"}, status=500)
+    return web.json_response(await asyncio.get_running_loop().run_in_executor(None, _ctx_state))
+
+
 async def _watchdog(app):
     """After hibernate/resume the Tailscale socket can go dead while the process lives on.
     Probe our own /health every 60 s; after 3 straight failures exit, so the scheduled
@@ -411,6 +518,7 @@ def main():
     app.router.add_post("/elevate/{op}/{id}", elevate_decide)
     app.router.add_get("/outbox", outbox_list)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
+    app.router.add_route("*", "/config/context", config_context)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -433,6 +541,7 @@ def main():
             app.router.add_post("/elevate/{op}/{id}", elevate_decide)
             app.router.add_get("/outbox", outbox_list)
             app.router.add_route("*", "/outbox/{name}", outbox_item)
+            app.router.add_route("*", "/config/context", config_context)
             app.on_startup.append(_watchdog)
 
 

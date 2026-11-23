@@ -10,6 +10,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -223,18 +224,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun chooseTheme(t: String) { theme = t; store.theme = t }
 
-    /** Files the agent sent to the phone (Inbox dialog). */
-    var inboxOpen by mutableStateOf(false)
-    var inboxFiles by mutableStateOf<List<Inbox.Item>>(emptyList())
-    var inboxBusy by mutableStateOf(false)
-    fun openInbox() { inboxOpen = true; refreshInbox() }
-    fun refreshInbox() = viewModelScope.launch {
-        inboxBusy = true
-        try { inboxFiles = withContext(Dispatchers.IO) { Inbox.list(store) } } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
-    }
-    /** Save a PC file into Downloads and show it in its chat (a pending card in that chat becomes the saved file). */
+    /** Files the agent sent to the phone: download progress (0-100) per file name, shown on its chat bubble. */
+    val fileProgress = mutableStateMapOf<String, Int>()
     suspend fun saveInboxNow(name: String, session: String?): android.net.Uri {
-        val uri = withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) }
+        fileProgress[name] = 0
+        val uri = try { withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) { p ->
+                viewModelScope.launch(Dispatchers.Main) { if (name in fileProgress) fileProgress[name] = p } } } }
+            finally { fileProgress.remove(name) }
         val u = uri.toString()
         var found = false
         for (c in (chats + cur).distinct()) {
@@ -249,15 +245,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveInbox(name: String, session: String?) = viewModelScope.launch {
-        inboxBusy = true
-        try {
-            saveInboxNow(name, session)
-            inboxFiles = inboxFiles.filterNot { it.name == name }
-            android.widget.Toast.makeText(getApplication(), s(R.string.inbox_saved, name), android.widget.Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) { fail(e) } finally { inboxBusy = false }
+        if (name in fileProgress) return@launch
+        try { saveInboxNow(name, session) } catch (e: Exception) { fail(e) }
     }
 
-    /** A non-image file from the PC: a card in its session, saved only when the user taps Save. */
     private fun showPendingFile(item: Inbox.Item) {
         val sid = item.session.ifBlank { null } ?: cur.id
         (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
@@ -421,7 +412,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun attach(g: GatewayWs, c: Chat): Boolean {
         val snap = c.id?.let { g.call("session.resume", JSONObject().put("session_id", it).put("omit_messages", true)) }
             ?: g.call("session.create", JSONObject().put("source", "gui").apply {
-                    c.newCwd?.let { put("cwd", it).put("cwd_explicit", true) } }).also { r ->
+                    c.newCwd?.let { put("cwd", it).put("cwd_explicit", true) }
+                    // The pick made before the first message is the new session's own model (per-session override,
+                    // like the desktop composer). prompt.submit's model_override only lasts one turn.
+                    c.model.substringAfter('|', "").ifBlank { null }?.let { m -> put("model", m)
+                        c.model.substringBefore('|', "").ifBlank { null }?.let { put("provider", it) } }
+                    c.effort.ifBlank { null }?.let { put("reasoning_effort", it) } }).also { r ->
                 c.newCwd = null; c.createdHere = true
                 c.id = r.optString("stored_session_id").ifBlank { r.getString("session_id") }
                 c.id?.let { store.setSessionModel(it, c.model); store.setSessionEffort(it, c.effort) }
@@ -550,20 +546,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             ?: return
         c.createdHere = false
         adoptServerModel(c, info)
-    }
-
-    private fun modelOverride(): JSONObject? {
-        // Same model/effort as the PC session already runs: send nothing, so the session (and its prompt cache) is untouched.
-        // Once a PC session exists, switches go through config.set (chooseModel/chooseEffort), never with a prompt.
-        if (!cur.createdHere || cur.serverModel != null && model == cur.serverModel && effort == (cur.serverEffort ?: "")) return null
-        val m = model.substringAfter('|', "").ifBlank { null }
-        val p = model.substringBefore('|', "").ifBlank { null }
-        if (m == null && effort.isBlank()) return null
-        val mm = m ?: modelOptions?.currentModel?.ifBlank { null } ?: return null
-        return JSONObject().put("model", mm).apply {
-            (p ?: modelOptions?.currentProvider?.ifBlank { null })?.let { put("provider", it) }
-            if (effort.isNotBlank()) put("reasoning", effort)
-        }
     }
 
     private fun note(text: String) { messages.add(UiMsg("system", text)) }
@@ -752,7 +734,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         loadScreens()
     }
 
-    fun vdisplay(op: String) = viewModelScope.launch {
+    fun vdisplay(op: String, display: String? = null) = viewModelScope.launch {
         vdBusy = true
         try {
             val o = withContext(Dispatchers.IO) {
@@ -760,7 +742,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val url = store.relayBase().trimEnd('/') + "/vdisplay/" + op
                 okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
                     .newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key")
-                        .post(JSONObject().put("session", cur.id ?: "").toString().toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
+                        .post(JSONObject().put("session", cur.id ?: "").apply { display?.let { put("display", it) } }.toString().toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
                         if (r.code == 404) return@withContext null
                         runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
                     }
@@ -780,6 +762,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             o?.optString("error")?.takeIf { it.isNotBlank() }?.let { status = it }
         } catch (e: Exception) { status = e.message } finally { vdBusy = false }
+        if (op.startsWith("screen-") && screen == Screen.Screens) loadScreens()
+    }
+
+    /** Context / compression settings shared by every profile; the phone shows only what the PC reports back. */
+    var ctxSettings by mutableStateOf<JSONObject?>(null)
+    var ctxBusy by mutableStateOf(false)
+    var ctxError by mutableStateOf<String?>(null)
+    fun loadCtxSettings(values: JSONObject? = null) = viewModelScope.launch {
+        ctxBusy = true; ctxError = null
+        try {
+            val o = withContext(Dispatchers.IO) {
+                val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+                val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/context").header("Authorization", "Bearer $key")
+                if (values != null) b.post(values.toString().toRequestBody("application/json".toMediaType()))
+                relayHttp.newCall(b.build()).execute().use { r ->
+                    val j = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+                    if (!r.isSuccessful) throw ApiException(j.optString("error").ifBlank { "HTTP ${r.code}" })
+                    j
+                }
+            }
+            ctxSettings = o.optJSONObject("settings") ?: JSONObject()
+        } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { ctxError = e.message ?: e.javaClass.simpleName } finally { ctxBusy = false }
     }
 
     private suspend fun fsCall(op: String, path: String): JSONObject = withContext(Dispatchers.IO) {
@@ -1062,7 +1067,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             val files = atts.filter { !it.isImage }.joinToString("") { "File `${it.name}`:\n```\n${it.payload}\n```\n\n" }
             val p = JSONObject().put("session_id", sid).put("text", files + text).put("submission_id", UUID.randomUUID().toString())
-            modelOverride()?.let { p.put("model_override", it) }
             g.call("prompt.submit", p)
             c.createdHere = false
         } catch (e: Exception) { c.streaming = false; dropEmpty(c); throw e }

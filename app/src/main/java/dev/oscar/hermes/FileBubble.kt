@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -50,7 +51,7 @@ fun isImageName(name: String): Boolean = name.substringAfterLast('.', "").lowerc
  * Without it (still on the PC): a card with a Save button.
  */
 @Composable
-fun FileBubble(name: String, uriStr: String?, onSave: () -> Unit) {
+fun FileBubble(name: String, uriStr: String?, progress: Int? = null, onSave: () -> Unit) {
     val ctx = LocalContext.current
     val uri = uriStr?.let { Uri.parse(it) }
     val ext = name.substringAfterLast('.', "").lowercase()
@@ -84,9 +85,11 @@ fun FileBubble(name: String, uriStr: String?, onSave: () -> Unit) {
                 if (thumb == null) Icon(Icons.Default.InsertDriveFile, null, Modifier.size(20.dp))
                 Text(name, Modifier.weight(1f).padding(start = if (thumb == null) 6.dp else 0.dp),
                     style = MaterialTheme.typography.labelMedium, maxLines = 2)
-                if (uri == null) TextButton(onClick = onSave) { Text(stringResource(R.string.inbox_save)) }
+                if (uri == null) TextButton(onClick = onSave, enabled = progress == null) {
+                    Text(if (progress != null) "$progress%" else stringResource(R.string.inbox_save)) }
                 else TextButton(onClick = openFile) { Text(stringResource(R.string.file_open)) }
             }
+            if (progress != null) LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp))
         }
     }
 }

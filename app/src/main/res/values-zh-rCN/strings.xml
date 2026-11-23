@@ -165,12 +165,7 @@
     <string name="app_icon">应用图标</string>
     <string name="icon_dark">黑底白字</string>
     <string name="icon_light">白底黑字</string>
-    <string name="inbox">收件箱</string>
-    <string name="inbox_help">Hermes 从电脑发给你的文件。保存后放进手机的下载文件夹。</string>
-    <string name="inbox_empty">还没有文件。让 Hermes 发一个给你吧。</string>
     <string name="inbox_save">保存</string>
-    <string name="inbox_close">关闭</string>
-    <string name="inbox_saved">已保存到下载：%1$s</string>
     <string name="file_open">打开</string>
     <string name="file_open_with">用哪个应用打开？</string>
     <string name="switch_failed">切换失败</string>
@@ -206,4 +201,18 @@
     <string name="screens_manage">管理屏幕</string>
     <string name="jump_newest">跳到最新</string>
     <string name="screen_refresh">刷新截图</string>
+    <string name="sessions">会话</string>
+    <string name="ctx_title">上下文</string>
+    <string name="ctx_pct">上下文 %1$d%%</string>
+    <string name="ctx_comp_model">压缩模型</string>
+    <string name="ctx_comp_provider">压缩模型提供方</string>
+    <string name="ctx_length">上下文长度（tokens）</string>
+    <string name="ctx_threshold">压缩阈值（0–1）</string>
+    <string name="ctx_target">压缩目标（0–1）</string>
+    <string name="ctx_keep_last">保留最近对话条数</string>
+    <string name="ctx_all_profiles">所有档案共用一套。保存到 PC，PC 确认后才在这里显示。</string>
+    <string name="ctx_edit">修改上下文设置</string>
+    <string name="vd_wake_all">点亮所有屏幕</string>
+    <string name="vd_screen_off_this">关闭此屏幕</string>
+    <string name="vd_screen_on_this">点亮此屏幕</string>
 </resources>

@@ -138,9 +138,13 @@ def svdas():
 
 
 def vuser():
-    """Primary screen-off monitor (takes the user's main-screen windows), or None when the screen is on."""
+    """Main screen while some screens are off: the primary among the lit physical screens and the screen-off
+    monitors (a turned-off main screen hands its role to its stand-in), or None when no screen is off."""
     s = svdas()
-    return next((d for d in s if d["primary"]), s[0] if s else None)
+    if not s:
+        return None
+    lit = s + [d for d in physical() if d["attached"]]
+    return next((d for d in lit if d["primary"]), s[0])
 
 
 def physical():
@@ -297,9 +301,18 @@ def agent_on():
     return bool(v and v["attached"])
 
 
+def off_names():
+    """Names of the physical screens that are off right now (each has its own screen-off stand-in)."""
+    if not svdas():
+        return set() if any(d["attached"] for d in physical()) else {d["name"] for d in physical()}
+    lay = _jload(LAYOUT, {})
+    att = {d["name"] for d in physical() if d["attached"]}
+    return set(lay.get("off") or [d["name"] for d in lay.get("physical", [])]) - att
+
+
 def screen_off():
-    """Physical screens are off and the user works on the user screen (or nothing is on at all)."""
-    return not any(d["attached"] for d in physical())
+    """At least one physical screen is off (its windows live on its screen-off stand-in)."""
+    return bool(off_names())
 
 
 def mode_now():
@@ -462,19 +475,48 @@ def _host():
         time.sleep(1)
 
 
-def to_second_only():
-    """Screen off: physical screens go dark. The wake watcher creates one screen-off monitor (SudoVDA) per physical
-    screen, same size and position, so every window stays on its counterpart; they exist only while the screen is
-    off. Independent of the agent screen, which is never used for the user's windows."""
-    if screen_off():
+def _norm(names):
+    return {str(n).upper() for n in names}
+
+
+def to_second_only(targets=None):
+    """Screen off for the given physical screens (all when None): each goes dark and gets its own screen-off
+    monitor (SudoVDA), same size and position, so its windows stay put; the other screens stay on. A turned-off
+    main screen hands the main role to its stand-in. Screens already off stay off (the set is rebuilt). The
+    stand-ins exist only while their screen is off; any real input wakes every screen."""
+    cur = off_names() if svdas() else set()
+    allp = [d for d in physical() if d["attached"]] if not cur else _jload(LAYOUT, {}).get("physical", [])
+    want = {d["name"] for d in allp} if targets is None else (_norm(targets) & {d["name"].upper() for d in allp})
+    want = {d["name"] for d in allp if d["name"].upper() in want} | cur
+    if not want:
+        raise RuntimeError("no such physical screen")
+    if want == cur:
         return
+    _set_off(want)
+
+
+def screen_on(targets=None):
+    """Turn the given screens (all when None) back on; the others stay off."""
+    cur = off_names() if svdas() else set()
+    rest = set() if targets is None else {n for n in cur if n.upper() not in _norm(targets)}
+    if rest == cur:
+        return
+    if rest:
+        _set_off(rest)
+    else:
+        to_extend()
+
+
+def _set_off(want):
     if not svda_installed():
         raise RuntimeError("screen-off needs the SudoVDA driver (reinstall: hermes-vdisplay install)")
+    if svdas():
+        to_extend()   # rebuild from the full physical layout
     phys = [d for d in physical() if d["attached"]]
-    names = {d["name"] for d in phys}
+    names = {d["name"] for d in phys} & set(want)
     wins = [{"hwnd": w["hwnd"], "pid": w["pid"], "title": w["title"], "pl": _get_placement(w["hwnd"])}
             for w in windows() if w["display"] in names]
-    LAYOUT.write_text(json.dumps({"physical": phys, "windows": wins}), encoding="utf-8")
+    LAYOUT.write_text(json.dumps({"physical": phys, "off": sorted(names), "windows": wins}), encoding="utf-8")
     SCREEN_OFF.unlink(missing_ok=True)
     _spawn_watcher()   # it owns the monitors (SudoVDA drops them ~3 s after its pings stop)
     for _ in range(160):
@@ -494,9 +536,13 @@ def to_second_only():
 def _screen_off_setup(h):
     """In the watcher: add the screen-off monitors, map them 1:1 onto the physical screens, turn those off."""
     lay = json.loads(LAYOUT.read_text(encoding="utf-8"))
-    phys = lay["physical"]
+    allp = lay["physical"]
+    offn = set(lay.get("off") or [p["name"] for p in allp])
+    phys = [p for p in allp if p["name"] in offn]
     pairs = []
-    for i, p in enumerate(phys):
+    for i, p in enumerate(allp):
+        if p["name"] not in offn:
+            continue
         before = {d["name"] for d in svdas()}
         if not _svda_add(h, i, p["w"], p["h"], USER_HZ):
             raise RuntimeError(f"SudoVDA add failed ({ctypes.get_last_error()})")
@@ -510,7 +556,7 @@ def _screen_off_setup(h):
     for p, name in pairs:
         w, hh, hz = _best_mode(name, p["w"], p["h"])
         _stage_new(name, p["x"], p["y"], w, hh, hz, primary=p["primary"])
-    _park_agents(max(p["x"] + p["w"] for p in phys), min(p["y"] for p in phys))   # agent screens stay right
+    _park_agents(max(p["x"] + p["w"] for p in allp), min(p["y"] for p in allp))   # agent screens stay right
     for p in phys:
         _stage(p["name"])
     _apply()
@@ -810,7 +856,7 @@ def find(sel):
 
 
 def _target_bounds(where):
-    if where != "virtual" and screen_off():
+    if where != "virtual" and svdas():
         d = vuser()
         if d:
             return d["x"], d["y"], d["w"], d["h"]
@@ -1136,13 +1182,14 @@ def screens():
     Agent: owning session, its profile and working folder. Screen-off: the physical screen it stands in for."""
     def order(ps):
         return sorted(ps, key=lambda d: (not d["primary"], d["x"], d["y"]))
-    phys = order([d for d in physical() if d["attached"]])
-    lay = order(_jload(LAYOUT, {}).get("physical", [])) if screen_off() else []
+    off = off_names()
+    lay = order(_jload(LAYOUT, {}).get("physical", [])) if off else []
+    phys = lay or order([d for d in physical() if d["attached"]])
     out, idx = [], {}
-    for i, d in enumerate(phys or lay):
+    for i, d in enumerate(phys):
         role = "main" if i == 0 else "secondary"
         idx[(d["x"], d["y"])] = (role, i)
-        out.append({"name": d["name"], "kind": "physical", "role": role, "index": i, "on": bool(phys),
+        out.append({"name": d["name"], "kind": "physical", "role": role, "index": i, "on": d["name"] not in off,
                     "w": d["w"], "h": d["h"], "hz": d["hz"]})
     for d in svdas():
         role, i = idx.get((d["x"], d["y"]), ("main" if d["primary"] else "secondary", 0))
@@ -1215,9 +1262,10 @@ def main(a):
         turn_off()
     elif c in ("screen-off", "screen-on") or c == "screen":
         off = c == "screen-off" or (c == "screen" and r[:1] == ["off"])
-        (to_second_only if off else to_extend)()
+        names = [x for x in (r[1:] if c == "screen" else r) if x.startswith("\\\\.\\")] or None
+        (to_second_only if off else screen_on)(names)
     elif c == "mode":
-        {"extend": to_extend, "second-only": to_second_only}[r[0]]()
+        (to_extend if r[0] == "extend" else to_second_only)() if r[0] in ("extend", "second-only") else None
     elif c in ("extend", "second-only"):
         (to_extend if c == "extend" else to_second_only)()
     elif c == "windows":
@@ -1242,7 +1290,8 @@ def main(a):
         print(shot(r[0] if r else None)); return 0
     else:
         print(f"unknown command {c!r}\n\n{__doc__}", file=sys.stderr); return 2
-    print(json.dumps({"ok": True, "mode": mode_now(), "agent": agent_on(), "screen_off": screen_off()}))
+    print(json.dumps({"ok": True, "mode": mode_now(), "agent": agent_on(), "screen_off": screen_off(),
+                      "off": sorted(off_names())}))
     return 0
 
 
