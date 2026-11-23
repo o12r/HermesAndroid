@@ -475,19 +475,19 @@ fun SessionsScreen(vm: ChatViewModel) {
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
                     val isSel = isCur && s.id in sel
-                    Row(Modifier.fillMaxWidth().heightIn(min = if (ctxRow != null) 46.dp else 36.dp)
+                    Row(Modifier.fillMaxWidth().heightIn(min = 36.dp)
                         .then(if (isSel) Modifier.background(cs.primaryContainer) else Modifier)
                         .combinedClickable(onLongClick = { if (selMode) { if (isCur) toggleSel(s.id) } else menu = true },
                             onDoubleClick = { if (!selMode) { vm.enterProfile(prof); renaming = s } }) {
                             if (selMode) { if (isCur) toggleSel(s.id) }
                             else { if (!isCur) vm.enterProfile(prof); if (p.id != "__all") vm.lastProject = p; vm.open(s) } }
                         .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id),
-                                style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (ctxRow != null) Text(fmtTok(ctxRow.first) + "/" + fmtTok(ctxRow.second) + " · " + (ctxRow.first * 100 / ctxRow.second) + "%",
-                                style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                            if (ctxRow != null) Text(fmtTok(ctxRow.first) + "/" + fmtTok(ctxRow.second),
+                                Modifier.padding(end = 6.dp), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), maxLines = 1, softWrap = false,
                                 color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
+                            Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
                         if (selMode) Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) { if (isSel) Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }

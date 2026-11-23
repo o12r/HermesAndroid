@@ -1046,17 +1046,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val ids = sessions.map { it.id }
         if (ids.isEmpty()) { sessionCtx = emptyMap(); return@launch }
         val g = runCatching { gateway() }.getOrNull() ?: return@launch
+        val prof = profile
         val out = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()
-        val sem = Semaphore(6)
-        val jobs = ids.map { id -> launch {
+        out.putAll(sessionCtx.filterKeys { it in ids })
+        val sem = Semaphore(4)
+        val jobs = ids.mapIndexed { idx, id -> launch {
             sem.withPermit {
-                val r = runCatching { g.call("session.usage", JSONObject().put("session_id", id)) }.getOrNull() ?: return@withPermit
-                val max = r.optLong("context_max", 0)
-                if (max > 0) out[id] = r.optLong("context_used", 0).coerceAtLeast(0) to max
+                // session.usage only knows live sessions; for stored ones resume (no messages) returns the same usage.
+                fun pick(r: JSONObject?): Boolean {
+                    val u = r?.optJSONObject("usage") ?: r ?: return false
+                    val max = u.optLong("context_max", 0)
+                    if (max <= 0) return false
+                    out[id] = u.optLong("context_used", 0).coerceAtLeast(0) to max; return true
+                }
+                val ok = pick(runCatching { g.call("session.usage", JSONObject().put("session_id", id)) }.getOrNull())
+                if (!ok && idx < 30) pick(runCatching { g.call("session.resume", JSONObject().put("session_id", id).put("omit_messages", true)) }
+                    .onFailure { android.util.Log.w("HermesRpc", "ctx $id: $it") }.getOrNull())
+                if (prof == profile) sessionCtx = out.toMap()
             }
         } }
         jobs.forEach { it.join() }
-        sessionCtx = out.toMap()
     }
 
     /** PC resource samples (CPU/mem/GPU %), polled by the PC page while it is visible; keeps the last 300 points. */

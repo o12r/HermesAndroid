@@ -4,11 +4,19 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
+
+/** Blocking [execute] that aborts the socket as soon as the calling coroutine is cancelled (cancel button). */
+private suspend fun okhttp3.Call.executeCancellable(): okhttp3.Response {
+    val h = coroutineContext[kotlinx.coroutines.Job]?.invokeOnCompletion { if (it != null) cancel() }
+    try { return execute() } finally { h?.dispose() }
+}
 
 /**
  * Multi-connection download into [dest]. The file is split into [parts] byte ranges fetched in parallel (HTTP Range);
@@ -43,7 +51,7 @@ object Downloader {
                     while (r[0] + r[2] <= r[1]) {
                         try {
                             val from = r[0] + r[2]
-                            http.newCall(req().newBuilder().header("Range", "bytes=$from-${r[1]}").build()).execute().use { resp ->
+                            http.newCall(req().newBuilder().header("Range", "bytes=$from-${r[1]}").build()).executeCancellable().use { resp ->
                                 if (resp.code != 206) throw ApiException("Download failed (HTTP ${resp.code})")
                                 RandomAccessFile(dest, "rw").use { f ->
                                     f.seek(from)
@@ -57,7 +65,7 @@ object Downloader {
                             }
                             save(); attempt = 0
                         } catch (e: java.io.IOException) {
-                            save()
+                            save(); coroutineContext.ensureActive()
                             if (++attempt > 8) throw ApiException("Download interrupted: ${e.message}")
                             delay(minOf(30_000L, 1500L shl (attempt - 1)))
                         }
@@ -80,7 +88,7 @@ object Downloader {
         var attempt = 0
         while (true) {
             try {
-                http.newCall(req()).execute().use { resp ->
+                http.newCall(req()).executeCancellable().use { resp ->
                     if (!resp.isSuccessful) throw ApiException("Download failed (HTTP ${resp.code})")
                     val body = resp.body!!; val len = body.contentLength()
                     dest.outputStream().use { out ->
@@ -90,6 +98,7 @@ object Downloader {
                 }
                 return
             } catch (e: java.io.IOException) {
+                coroutineContext.ensureActive()
                 if (++attempt > 8) throw ApiException("Download interrupted: ${e.message}")
                 delay(minOf(30_000L, 1500L shl (attempt - 1)))
             }
