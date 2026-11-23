@@ -316,24 +316,29 @@ fun SessionsScreen(vm: ChatViewModel) {
     var creating by remember { mutableStateOf(false) }
     var deletingProject by remember { mutableStateOf<Project?>(null) }
     var showArchived by remember { mutableStateOf(false) }
-    var profileOpen by rememberSaveable { mutableStateOf(true) }
     // Collapsed state per project; the active project (or Home) starts open.
     val open = remember { mutableStateMapOf<String, Boolean>() }
     val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
     val busy by remember { derivedStateOf { vm.busyIds() } }
     // Group sessions; anything the tree doesn't know about goes to Home.
-    val groups = remember(vm.sessions, vm.projects, showArchived) {
-        val byId = vm.sessions.associateBy { it.id }
+    fun buildGroups(sessions: List<Session>, projects: List<Project>, activeProject: String?): List<Pair<Project, List<Session>>> {
+        val byId = sessions.associateBy { it.id }
         val seen = mutableSetOf<String>()
-        val list = vm.projects.filter { showArchived || !it.archived }.map { p -> p to p.sessionIds.mapNotNull { byId[it] }.also { l -> seen += l.map { it.id } } }
-        val rest = vm.sessions.filter { it.id !in seen && vm.projects.none { p -> it.id in p.sessionIds } }
+        val list = projects.filter { showArchived || !it.archived }.map { p -> p to p.sessionIds.mapNotNull { byId[it] }.also { l -> seen += l.map { it.id } } }
+        val rest = sessions.filter { it.id !in seen && projects.none { p -> it.id in p.sessionIds } }
         val home = list.find { it.first.isHome }
         // Projects not loaded yet: one open, header-less list instead of a collapsed "Home".
-        val homeP = home?.first ?: Project(if (vm.projects.isEmpty()) "__all" else "__home", "Home", null, true, false, false, emptyList())
+        val homeP = home?.first ?: Project(if (projects.isEmpty()) "__all" else "__home", "Home", null, true, false, false, emptyList())
         val homeList = (home?.second.orEmpty() + rest).distinctBy { it.id }.sortedByDescending { it.lastActive ?: 0.0 }
-        list.filter { !it.first.isHome }.map { (p, l) -> p to l.sortedByDescending { it.lastActive ?: 0.0 } }
-            .sortedWith(compareByDescending<Pair<Project, List<Session>>> { it.first.id == vm.activeProject }.thenByDescending { it.second.firstOrNull()?.lastActive ?: 0.0 }) +
+        return list.filter { !it.first.isHome }.map { (p, l) -> p to l.sortedByDescending { it.lastActive ?: 0.0 } }
+            .sortedWith(compareByDescending<Pair<Project, List<Session>>> { it.first.id == activeProject }.thenByDescending { it.second.firstOrNull()?.lastActive ?: 0.0 }) +
             listOf(homeP to homeList)
+    }
+    val allGroups = remember(vm.sessions, vm.projects, vm.activeProject, vm.otherData, vm.profile, showArchived) {
+        vm.orderedProfiles.associate { (pr, _) ->
+            pr to (if (pr == vm.profile) buildGroups(vm.sessions, vm.projects, vm.activeProject)
+                   else vm.otherData[pr]?.let { buildGroups(it.first, it.second, it.third) } ?: emptyList())
+        }
     }
     Scaffold(
         topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name), maxLines = 1, softWrap = false) }, actions = {
@@ -350,30 +355,31 @@ fun SessionsScreen(vm: ChatViewModel) {
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
           vm.orderedProfiles.forEach { (prof, desc) ->
             val isCur = prof == vm.profile
-            val profOpen = isCur && profileOpen
+            val profOpen = prof in vm.expandedProfiles
+            val groups = allGroups[prof].orEmpty()
+            val projsOf = if (isCur) vm.projects else vm.otherData[prof]?.second.orEmpty()
+            val activeOf = if (isCur) vm.activeProject else vm.otherData[prof]?.third
             item(key = "prof:$prof", contentType = "prof") {
                 var menu by remember { mutableStateOf(false) }
                 Row(Modifier.fillMaxWidth().height(if (isCur) 42.dp else 34.dp)
                     .background(if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface)
-                    .combinedClickable(onLongClick = { menu = true }) { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } }
+                    .combinedClickable(onLongClick = { menu = true }) { if (isCur) vm.toggleProfileExpanded(prof) else { vm.enterProfile(prof) } }
                     .padding(end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(4.dp).fillMaxHeight().background(cs.primary))
                     Icon(if (profOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 8.dp, end = 6.dp).size(18.dp))
                     Column {
                         Text(prof, style = MaterialTheme.typography.titleSmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = cs.primary)
-                        if (isCur) Text(stringResource(R.string.projects_count, vm.projects.count { !it.isHome && !it.archived }),
+                        if (profOpen) Text(stringResource(R.string.projects_count, projsOf.count { !it.isHome && !it.archived }),
                             style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                     }
                     Spacer(Modifier.weight(1f))
                     Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                         DropdownMenu(menu, { menu = false }) {
-                            if (isCur) {
-                                DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
-                                    onClick = { menu = false; creating = true })
-                                DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
-                                    onClick = { menu = false; vm.newChatIn(null) })
-                            }
+                            DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
+                                onClick = { menu = false; vm.enterProfile(prof); creating = true })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
+                                onClick = { menu = false; vm.enterProfile(prof); vm.newChatIn(null) })
                             DropdownMenuItem(text = { Text(stringResource(R.string.move_up)) }, leadingIcon = { Icon(Icons.Default.ArrowUpward, null) },
                                 onClick = { menu = false; vm.moveProfile(prof, -1) })
                             DropdownMenuItem(text = { Text(stringResource(R.string.move_down)) }, leadingIcon = { Icon(Icons.Default.ArrowDownward, null) },
@@ -383,14 +389,15 @@ fun SessionsScreen(vm: ChatViewModel) {
                 HorizontalDivider()
             }
             if (profOpen) groups.forEach { (p, list) ->
-                val isOpen = p.id == "__all" || (open[p.id] ?: (p.id == vm.activeProject || (vm.activeProject == null && p.isHome)))
-                if (p.id != "__all") item(key = "h:" + p.id, contentType = "proj") {
+                val okey = prof + ":" + p.id
+                val isOpen = p.id == "__all" || (open[okey] ?: (p.id == activeOf || (activeOf == null && p.isHome)))
+                if (p.id != "__all") item(key = "h:" + okey, contentType = "proj") {
                     var menu by remember { mutableStateOf(false) }
-                    val active = p.id == vm.activeProject
-                    val picked = vm.fabProject?.id == p.id
+                    val active = p.id == activeOf
+                    val picked = isCur && vm.fabProject?.id == p.id
                     Row(Modifier.fillMaxWidth().height(32.dp)
                         .background(if (active || picked) cs.primaryContainer else cs.surfaceContainerLow)
-                        .combinedClickable(onLongClick = { menu = true }) { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 20.dp, end = 4.dp),
+                        .combinedClickable(onLongClick = { menu = true }) { if (!isCur) vm.enterProfile(prof); open[okey] = !isOpen; vm.lastProject = p }.padding(start = 20.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
                         Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
@@ -403,22 +410,22 @@ fun SessionsScreen(vm: ChatViewModel) {
                             DropdownMenu(menu, { menu = false }) {
                                 p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
-                                    onClick = { menu = false; vm.newChatIn(p) })
+                                    onClick = { menu = false; vm.enterProfile(prof); vm.newChatIn(p) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(if (active) R.string.unset_default else R.string.set_default)) },
-                                    leadingIcon = { Icon(Icons.Default.Star, null) }, onClick = { menu = false; vm.setActiveProject(if (active) null else p) })
+                                    leadingIcon = { Icon(Icons.Default.Star, null) }, onClick = { menu = false; vm.enterProfile(prof); vm.setActiveProject(if (active) null else p) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(if (p.archived) R.string.unarchive else R.string.archive)) },
-                                    leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { menu = false; vm.archiveProject(p, restore = p.archived) })
+                                    leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { menu = false; vm.enterProfile(prof); vm.archiveProject(p, restore = p.archived) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(R.string.delete_project)) },
-                                    leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; deletingProject = p })
+                                    leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; vm.enterProfile(prof); deletingProject = p })
                             } }
                     }
                 }
-                if (isOpen) items(list, key = { p.id + ":" + it.id }, contentType = { "sess" }) { s ->
+                if (isOpen) items(list, key = { okey + ":" + it.id }, contentType = { "sess" }) { s ->
                     var menu by remember { mutableStateOf(false) }
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
                     Row(Modifier.fillMaxWidth().heightIn(min = if (ctxRow != null) 46.dp else 36.dp)
-                        .combinedClickable(onLongClick = { menu = true }, onDoubleClick = { renaming = s }) { if (p.id != "__all") vm.lastProject = p; vm.open(s) }
+                        .combinedClickable(onLongClick = { menu = true }, onDoubleClick = { renaming = s }) { if (!isCur) vm.enterProfile(prof); if (p.id != "__all") vm.lastProject = p; vm.open(s) }
                         .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id),
@@ -430,15 +437,15 @@ fun SessionsScreen(vm: ChatViewModel) {
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
                         Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
-                                DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
-                                DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
-                                DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = s })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; vm.enterProfile(prof); moving = s })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; vm.enterProfile(prof); renaming = s })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; vm.enterProfile(prof); deleting = s })
                             } }
                     }
                 }
             }
             if (profOpen) item(key = "archived-toggle") {
-                if (vm.projects.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(4.dp)) {
+                if (projsOf.any { it.archived }) TextButton(onClick = { showArchived = !showArchived }, Modifier.padding(4.dp)) {
                     Text(stringResource(if (showArchived) R.string.hide_archived else R.string.show_archived)) }
             }
           }

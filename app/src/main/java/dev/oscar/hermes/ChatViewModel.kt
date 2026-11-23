@@ -700,6 +700,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             sessions = api().sessions(); offline = false; error = null
             runCatching { loadProjects() }.onFailure { android.util.Log.w("HermesRpc", "loadProjects: $it") }
             currentId?.let { id -> sessions.find { it.id == id }?.title?.let { currentTitle = it } }
+            expandedProfiles.filter { it != profile }.forEach { loadOther(it) }
         } catch (e: Exception) { fail(e) }
         loading = false
         loadSessionCtx()
@@ -713,21 +714,55 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadProjects() {
-        val g = gateway()
+        val (list, active) = fetchProjects(gateway())
+        activeProject = active; projects = list
+    }
+
+    /** Sessions + projects of every other expanded profile (cached; refreshed with the session list). */
+    var otherData by mutableStateOf<Map<String, Triple<List<Session>, List<Project>, String?>>>(emptyMap())
+    /** Profiles whose project tree is expanded on the session page (several can be open at once). */
+    var expandedProfiles by mutableStateOf(setOf(store.profile))
+
+    fun toggleProfileExpanded(p: String) {
+        expandedProfiles = if (p in expandedProfiles) expandedProfiles - p else expandedProfiles + p
+        if (p in expandedProfiles && p != profile) loadOther(p)
+    }
+
+    fun loadOther(p: String) = viewModelScope.launch {
+        runCatching {
+            val ss = apiFor(p).sessions(); val (pr, act) = fetchProjects(gatewayFor(p))
+            otherData = otherData + (p to Triple(ss, pr, act))
+        }.onFailure { android.util.Log.w("HermesRpc", "loadOther $p: $it") }
+    }
+
+    /** Make [p] the current profile without leaving the session page; its cached lists show at once. */
+    fun enterProfile(p: String) {
+        if (p == profile) return
+        otherData = otherData + (profile to Triple(sessions, projects, activeProject))
+        val d = otherData[p]
+        serverCommands = emptyList(); profile = p; store.profile = p
+        cur = Chat(p, null, null).initModel(); sessions = d?.first ?: emptyList(); projects = d?.second ?: emptyList(); activeProject = d?.third
+        expandedProfiles = expandedProfiles + p
+        refreshSessions(); loadMeta()
+    }
+
+    private suspend fun fetchProjects(g: GatewayWs): Pair<List<Project>, String?> {
+        var active: String? = null
         val archivedIds = runCatching { g.call("projects.list", JSONObject()) }.getOrNull()?.let { r ->
-            activeProject = r.str("active_id").ifBlank { null }
+            active = r.str("active_id").ifBlank { null }
             val a = r.optJSONArray("projects") ?: JSONArray()
             (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { it.optBoolean("archived") }.map { it.optString("id") }.toSet()
         } ?: emptySet()
         val tree = g.call("projects.tree", JSONObject().put("preview_limit", 1).put("session_limit", 1000))
         val nodes = tree.optJSONArray("projects") ?: JSONArray()
-        projects = (0 until nodes.length()).mapNotNull { nodes.optJSONObject(it) }.map { n ->
+        val list = (0 until nodes.length()).mapNotNull { nodes.optJSONObject(it) }.map { n ->
             val ids = n.optJSONArray("sessionIds")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
             val home = n.optBoolean("isNoProject")
             val homeCwd = if (home) n.optJSONArray("previewSessions")?.optJSONObject(0)?.str("cwd")?.ifBlank { null } else null
             Project(n.optString("id"), n.optString("label"), n.str("path").ifBlank { null }, home, n.optBoolean("isAuto"),
                 n.optString("id") in archivedIds, ids, homeCwd)
         }
+        return list to active
     }
 
     /** New chat whose working folder is the project's folder (so it lands in that project). */

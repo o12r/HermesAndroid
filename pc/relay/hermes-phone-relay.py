@@ -37,7 +37,26 @@ def profile_ok(p: str) -> bool:
                               and (HERMES_HOME / "profiles" / p).is_dir())
 
 
+_ATTACH_SEM = None   # created lazily inside the running loop: at most 3 `gateway attach` subprocesses at once
+MAX_WS = 64          # simultaneous phone sockets; more get 503 instead of exhausting the PC
+_WS_COUNT = 0
+SEND_TIMEOUT = 30    # a phone that stops reading is dropped instead of stalling the pump (and memory) forever
+
+
 async def attach(profile: str) -> dict:
+    global _ATTACH_SEM
+    if _ATTACH_SEM is None:
+        _ATTACH_SEM = asyncio.Semaphore(3)
+    async with _ATTACH_SEM:
+        try:
+            return await _attach(profile)
+        except Exception as e:
+            log.info("attach %s failed (%s); retrying once", profile, e)
+            await asyncio.sleep(1.5)
+            return await _attach(profile)
+
+
+async def _attach(profile: str) -> dict:
     args = [HERMES] + ([] if profile == "default" else ["-p", profile]) + ["gateway", "attach", "--start", "--json"]  # --start: works without the desktop app open
     proc = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     try:
@@ -108,12 +127,16 @@ async def http_proxy(req: web.Request):
     headers = {k: v for k, v in req.headers.items() if k.lower() in _FWD_HEADERS}
     headers["x-hermes-gateway-ticket"] = ticket
     body = await req.read()
-    async with ClientSession() as s:
-        async with s.request(req.method, origin + req.path_qs, headers=headers, data=body or None,
-                             timeout=__import__("aiohttp").ClientTimeout(total=120)) as r:
-            data = await r.read()
-            return web.Response(status=r.status, body=data,
-                                content_type=(r.content_type or "application/json"))
+    try:
+        async with ClientSession() as s:
+            async with s.request(req.method, origin + req.path_qs, headers=headers, data=body or None,
+                                 timeout=__import__("aiohttp").ClientTimeout(total=120)) as r:
+                data = await r.read()
+                return web.Response(status=r.status, body=data,
+                                    content_type=(r.content_type or "application/json"))
+    except Exception as e:
+        log.warning("proxy %s failed: %s", req.path, e)
+        return web.json_response({"error": f"gateway unavailable: {e}"}, status=502)
 
 
 UPDATES = HERMES_HOME / "launchers" / "app-updates"
@@ -793,41 +816,58 @@ async def ws_handler(req: web.Request):
     profile = req.query.get("profile", "default")
     if not profile_ok(profile):
         return web.json_response({"error": "unknown profile"}, status=404)
+    global _WS_COUNT
+    if _WS_COUNT >= MAX_WS:
+        return web.json_response({"error": "too many connections"}, status=503, headers={"Retry-After": "5"})
+    _WS_COUNT += 1
     try:
-        a = await attach(profile)
-    except Exception as e:
-        log.warning("attach failed for %s: %s", profile, e)
-        return web.json_response({"error": f"gateway unavailable: {e}"}, status=503)
-
-    phone = web.WebSocketResponse(heartbeat=25, max_msg_size=0)
-    await phone.prepare(req)
-    log.info("phone connected profile=%s from %s", profile, req.remote)
-    async with ClientSession() as s:
         try:
-            up = await s.ws_connect(a["url"], protocols=a["protocols"], max_msg_size=0, heartbeat=25)
+            a = await attach(profile)
         except Exception as e:
-            log.warning("upstream connect failed: %s", e)
-            await phone.close(code=1011, message=b"upstream connect failed")
-            return phone
+            log.warning("attach failed for %s: %s", profile, e)
+            return web.json_response({"error": f"gateway unavailable: {e}"}, status=503, headers={"Retry-After": "3"})
 
-        async def pump(src, dst, name):
-            async for m in src:
-                if m.type == WSMsgType.TEXT:
-                    await dst.send_str(m.data)
-                elif m.type == WSMsgType.BINARY:
-                    await dst.send_bytes(m.data)
-                elif m.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
-                    break
-            log.info("%s closed", name)
+        phone = web.WebSocketResponse(heartbeat=25, max_msg_size=0)
+        await phone.prepare(req)
+        log.info("phone connected profile=%s from %s (open=%d)", profile, req.remote, _WS_COUNT)
+        try:
+            async with ClientSession() as s:
+                try:
+                    up = await s.ws_connect(a["url"], protocols=a["protocols"], max_msg_size=0, heartbeat=25)
+                except Exception as e:
+                    log.warning("upstream connect failed: %s", e)
+                    await phone.close(code=1011, message=b"upstream connect failed")
+                    return phone
 
-        tasks = [asyncio.create_task(pump(phone, up, "phone")), asyncio.create_task(pump(up, phone, "gateway"))]
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for t in tasks:
-            t.cancel()
-        await up.close()
-    await phone.close()
-    log.info("phone disconnected profile=%s", profile)
-    return phone
+                async def pump(src, dst, name):
+                    try:
+                        async for m in src:
+                            if m.type == WSMsgType.TEXT:
+                                await asyncio.wait_for(dst.send_str(m.data), SEND_TIMEOUT)
+                            elif m.type == WSMsgType.BINARY:
+                                await asyncio.wait_for(dst.send_bytes(m.data), SEND_TIMEOUT)
+                            elif m.type in (WSMsgType.ERROR, WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                                break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:  # one dead peer must never take the process or other sockets down
+                        log.info("%s pump ended: %r", name, e)
+                    log.info("%s closed", name)
+
+                tasks = [asyncio.create_task(pump(phone, up, "phone")), asyncio.create_task(pump(up, phone, "gateway"))]
+                try:
+                    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for t in tasks:
+                        t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    await asyncio.shield(up.close())
+        finally:
+            await phone.close()
+            log.info("phone disconnected profile=%s", profile)
+        return phone
+    finally:
+        _WS_COUNT -= 1
 
 
 def main():
