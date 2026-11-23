@@ -62,6 +62,10 @@ class Chat(val profile: String, id: String?, title: String?) {
     var id by mutableStateOf(id)                 // stored session id (null until a new chat is created)
     var title by mutableStateOf(title)
     val messages = mutableStateListOf<UiMsg>()
+    // Reading position, restored when the chat is shown again; follow=true means pinned to the newest output.
+    var scrollIdx = 0
+    var scrollOff = 0
+    var follow = true
     var streaming by mutableStateOf(false)
     var status by mutableStateOf<String?>(null)
     var approval by mutableStateOf<Approval?>(null)
@@ -1264,7 +1268,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun steer(t: String) {
         val c = cur
         val sid = c.liveId ?: return
-        c.messages.add(c.messages.size.coerceAtLeast(1) - 1, UiMsg("user", t))
+        // Mid-turn note: appears where it was sent (after what the agent has said so far); later output continues in a new reply below it.
+        c.messages.add(UiMsg("user", t))
+        c.messages.add(UiMsg("assistant", ""))
         viewModelScope.launch {
             var generation by object { operator fun getValue(a: Any?, b: Any?) = c.generation; operator fun setValue(a: Any?, b: Any?, v: Int) { c.generation = v } }
             try {

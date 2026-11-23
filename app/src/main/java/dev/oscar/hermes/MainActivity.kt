@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.scrollBy
+import kotlinx.coroutines.flow.drop
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.animation.animateContentSize
@@ -476,13 +477,19 @@ fun SessionsScreen(vm: ChatViewModel) {
 fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpenModelSettings: () -> Unit = {}) {
     // The chat.draft is the current chat's draft, so typed text survives switching chats / going back.
     val chat = vm.cur
-    val list = rememberLazyListState()
+    val list = remember(chat) { androidx.compose.foundation.lazy.LazyListState(if (chat.follow) 0 else chat.scrollIdx, if (chat.follow) 0 else chat.scrollOff) }
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let { u -> vm.addAttachment(u, true) } }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let { u -> vm.addAttachment(u, false) } }
     // Follow new output only while the user is at the bottom; scrolling up to read stops it, scrolling back resumes.
-    var follow by remember(chat) { mutableStateOf(true) }
+    var follow by remember(chat) { mutableStateOf(chat.follow) }
     var renamingTitle by remember { mutableStateOf(false) }
-    LaunchedEffect(list, chat) { snapshotFlow { list.isScrollInProgress }.collect { if (!it) follow = !list.canScrollForward } }
+    LaunchedEffect(list, chat) { snapshotFlow { list.isScrollInProgress }.drop(1).collect { if (!it) follow = !list.canScrollForward } }
+    // Remember where this chat was left (position + whether it was pinned to the bottom).
+    LaunchedEffect(list, chat) {
+        snapshotFlow { Triple(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset, follow) }.collect { (i, o, f) ->
+            if (vm.messages.isNotEmpty()) { chat.scrollIdx = i; chat.scrollOff = o; chat.follow = f }
+        }
+    }
     // Throttled auto-scroll: never per token; a final jump once the turn ends, and always after a user message.
     LaunchedEffect(chat) {
         var lastScroll = 0L
@@ -493,6 +500,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
             if (size == 0) return@collect
             if (vm.messages.lastOrNull()?.role == "user") follow = true
             if (!follow) return@collect
+            if (!vm.streaming) { list.scrollToItem(size - 1); list.scrollBy(1_000_000f); kotlinx.coroutines.delay(60) }
             val now = android.os.SystemClock.uptimeMillis()
             if (!vm.streaming || now - lastScroll >= 120) { lastScroll = now; list.scrollToItem(size - 1); list.scrollBy(1_000_000f) }
         }
