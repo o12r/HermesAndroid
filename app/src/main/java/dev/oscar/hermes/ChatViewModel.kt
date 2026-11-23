@@ -43,7 +43,9 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Session the file belongs to (file messages only). */
     val session: String? = null,
     /** Tokens this reply used (input/output), from the PC's session totals; null if unknown. */
-    val tokIn: Long? = null, val tokOut: Long? = null)
+    val tokIn: Long? = null, val tokOut: Long? = null,
+    /** Speeds measured on the phone for this reply: prompt tokens / time-to-first-token, output tokens / generation time (tok/s). */
+    val prefillTps: Float? = null, val genTps: Float? = null)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
@@ -87,6 +89,8 @@ class Chat(val profile: String, id: String?, title: String?) {
     var ctxMax by mutableStateOf(0L)
     /** Session token totals at the last reply, to work out what each reply used. */
     var totIn: Long? = null
+    var turnStartAt = 0L
+    var firstTokenAt = 0L
     var totOut: Long? = null
     var loaded = false
     /** Unsent text in the input box; survives leaving and re-opening the chat. */
@@ -480,7 +484,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         u.optLong("context_used", -1).takeIf { it >= 0 }?.let { c.ctxUsed = it }
         u.optLong("context_max", 0).takeIf { it > 0 }?.let { c.ctxMax = it }
         if (!u.has("input") && !u.has("output")) return null
-        val t = u.optLong("input") to u.optLong("output")
+        // "input" counts only uncached tokens (often just a few); "prompt" = input + cache reads/writes = what was really sent.
+        val t = (u.optLong("prompt", 0).takeIf { it > 0 } ?: u.optLong("input")) to u.optLong("output")
         if (c.totIn == null) { c.totIn = t.first; c.totOut = t.second }
         return t
     }
@@ -1181,9 +1186,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (type == "session.info") adoptServerModel(c, p)
             }
             "message.start" -> { c.streaming = true; c.status = null
+                c.turnStartAt = android.os.SystemClock.elapsedRealtime(); c.firstTokenAt = 0L
                 Notify.clear(app, c.id, "reply")       // a new turn (from the phone or the PC): the last reply was seen
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
             "message.delta" -> { c.status = null; val t = p.str("text")
+                if (c.firstTokenAt == 0L && t.isNotEmpty()) c.firstTokenAt = android.os.SystemClock.elapsedRealtime()
                 updateLast(c) { m ->
                     val closed = m.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }
                     val steps = if (t.isEmpty()) closed
@@ -1191,6 +1198,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         else closed + Step("text", "", t)
                     m.copy(text = m.text + t, steps = steps) } }
             "thinking.delta", "reasoning.delta" -> { c.status = s(R.string.thinking_status)
+                if (c.firstTokenAt == 0L && p.str("text").isNotEmpty()) c.firstTokenAt = android.os.SystemClock.elapsedRealtime()
                 val t = p.str("text"); if (t.isNotEmpty()) updateLast(c) { m ->
                     val last = m.steps.lastOrNull()
                     m.copy(steps = if (last?.kind == "thinking" && last.output == null) m.steps.dropLast(1) + last.copy(detail = last.detail + t) else m.steps + Step("thinking", "", t)) } }
@@ -1208,7 +1216,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 p.optJSONObject("usage")?.let { u ->
                     val i0 = c.totIn; val o0 = c.totOut
                     applyUsage(c, u)?.let { (i, o) ->
-                        if (i0 != null && o0 != null && (i > i0 || o > o0)) updateLast(c) { it.copy(tokIn = i - i0, tokOut = o - o0) }
+                        if (i0 != null && o0 != null && (i > i0 || o > o0)) {
+                            val end = android.os.SystemClock.elapsedRealtime()
+                            val ttft = if (c.firstTokenAt > 0 && c.turnStartAt > 0) (c.firstTokenAt - c.turnStartAt) / 1000f else 0f
+                            val gen = if (c.firstTokenAt > 0) (end - c.firstTokenAt) / 1000f else 0f
+                            val pre = if (ttft >= 0.05f && i - i0 > 0) (i - i0) / ttft else null
+                            val gt = if (gen >= 0.2f && o - o0 > 0) (o - o0) / gen else null
+                            updateLast(c) { it.copy(tokIn = i - i0, tokOut = o - o0, prefillTps = pre, genTps = gt) }
+                        }
                         c.totIn = i; c.totOut = o } }
                 if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)

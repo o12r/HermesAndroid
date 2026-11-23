@@ -77,7 +77,10 @@ class MainActivity : ComponentActivity() {
 
     // In-app language override: every resource lookup in this activity uses the chosen locale.
     override fun attachBaseContext(newBase: Context) {
-        super.attachBaseContext(L10n.wrap(newBase, SecureStore(newBase).lang))
+        val langCtx = L10n.wrap(newBase, SecureStore(newBase).lang)
+        val cfg = android.content.res.Configuration(langCtx.resources.configuration)
+        cfg.fontScale = cfg.fontScale * SecureStore(newBase).fontScale
+        super.attachBaseContext(langCtx.createConfigurationContext(cfg))
     }
 
     override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handlePair(intent); handleOpen(intent) }
@@ -122,11 +125,7 @@ class MainActivity : ComponentActivity() {
                 "black" -> trueBlack(dynamicDarkColorScheme(ctx))
                 else -> if (sysDark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
             }
-            val d = androidx.compose.ui.platform.LocalDensity.current
-            CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides
-                    androidx.compose.ui.unit.Density(d.density, d.fontScale * vm.fontScale)) {
-                MaterialTheme(colorScheme = scheme) { Surface(Modifier.fillMaxSize()) { App(vm) { recreate() } } }
-            }
+            MaterialTheme(colorScheme = scheme) { Surface(Modifier.fillMaxSize()) { App(vm) { recreate() } } }
         }
     }
 }
@@ -346,7 +345,8 @@ fun SessionsScreen(vm: ChatViewModel) {
                 var menu by remember { mutableStateOf(false) }
                 Row(Modifier.fillMaxWidth().height(if (isCur) 42.dp else 34.dp)
                     .background(if (isCur) cs.primaryContainer.copy(alpha = 0.45f) else cs.surface)
-                    .combinedClickable(onLongClick = { menu = true }) { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } },
+                    .combinedClickable(onLongClick = { menu = true }) { if (isCur) profileOpen = !profileOpen else { profileOpen = true; vm.setProfileTo(prof) } }
+                    .padding(end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(4.dp).fillMaxHeight().background(cs.primary))
                     Icon(if (profOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 8.dp, end = 6.dp).size(18.dp))
@@ -380,7 +380,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                     val picked = vm.fabProject?.id == p.id
                     Row(Modifier.fillMaxWidth().height(32.dp)
                         .background(if (active || picked) cs.primaryContainer else cs.surfaceContainerLow)
-                        .combinedClickable(onLongClick = { menu = true }) { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 20.dp),
+                        .combinedClickable(onLongClick = { menu = true }) { open[p.id] = !isOpen; vm.lastProject = p }.padding(start = 20.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
                         Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
@@ -389,7 +389,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(list.size.toString(), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                         }
-                        Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
+                        Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
                                 DropdownMenuItem(text = { Text(stringResource(R.string.new_chat_here)) }, leadingIcon = { Icon(Icons.Default.Add, null) },
@@ -407,7 +407,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                     var menu by remember { mutableStateOf(false) }
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
-                    Row(Modifier.fillMaxWidth().height(if (ctxRow != null) 46.dp else 36.dp)
+                    Row(Modifier.fillMaxWidth().heightIn(min = if (ctxRow != null) 46.dp else 36.dp)
                         .combinedClickable(onLongClick = { menu = true }, onDoubleClick = { renaming = s }) { if (p.id != "__all") vm.lastProject = p; vm.open(s) }
                         .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -418,7 +418,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
                         }
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
-                        Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
+                        Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = s })
@@ -624,12 +624,12 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
     var effortOpen by remember { mutableStateOf(false) }
     val def = stringResource(R.string.default_)
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box {
+        Box(Modifier.weight(1f, fill = false)) {
             val label = if (vm.model.isBlank()) stringResource(R.string.model_default, vm.modelOptions?.currentModel?.ifBlank { null } ?: "…")
                 else vm.model.substringAfter('|')
             FilterChip(selected = vm.model.isNotBlank(), enabled = !vm.switching, onClick = { vm.modelMenuOpen = true; if (vm.modelOptions == null) vm.loadMeta() },
-                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                leadingIcon = { Icon(Icons.Default.Memory, null, Modifier.size(16.dp)) }, modifier = Modifier.widthIn(max = 150.dp))
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) },
+                leadingIcon = { Icon(Icons.Default.Memory, null, Modifier.size(16.dp)) }, modifier = Modifier.widthIn(max = 260.dp))
             DropdownMenu(vm.modelMenuOpen, { vm.modelMenuOpen = false }, Modifier.heightIn(max = 480.dp)) {
                 val cur = vm.modelOptions?.currentModel.orEmpty()
                 DropdownMenuItem(text = { Text(stringResource(R.string.server_default) + if (cur.isNotBlank()) " ($cur)" else "") },
@@ -666,7 +666,7 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
         }
         Box {
             FilterChip(selected = vm.effort.isNotBlank(), enabled = !vm.switching, onClick = { effortOpen = true },
-                label = { Text(stringResource(R.string.thinking, vm.effort.ifBlank { def })) },
+                label = { Text(stringResource(R.string.thinking, vm.effort.ifBlank { def }), style = MaterialTheme.typography.labelSmall) },
                 leadingIcon = { Icon(Icons.Default.Psychology, null, Modifier.size(16.dp)) })
             DropdownMenu(effortOpen, { effortOpen = false }) {
                 SecureStore.EFFORTS.forEach { e -> DropdownMenuItem(text = { Text(e.ifBlank { def }) },
@@ -674,14 +674,13 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
             }
         }
         val c = vm.cur
-        Spacer(Modifier.weight(1f))
         val cfgMax = vm.ctxSettings?.opt("context_length")?.toString()?.toDoubleOrNull()?.toLong() ?: 0L
         LaunchedEffect(c.id == null) { if (c.id == null && vm.ctxSettings == null && vm.store.hasKey) vm.loadCtxSettings() }
         val usage = if (c.ctxMax <= 0 && c.ctxUsed <= 0 && c.id == null) (if (cfgMax > 0) "0/" + fmtTok(cfgMax) else "—")
             else if (c.ctxMax > 0) fmtTok(c.ctxUsed) + "/" + fmtTok(c.ctxMax)
             else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) else stringResource(R.string.ctx_title)
         AssistChip(onClick = onOpenContextSettings,
-            label = { Text(usage, maxLines = 1, softWrap = false,
+            label = { Text(usage, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
                 color = if (c.ctxMax > 0 && c.ctxUsed * 100 / c.ctxMax >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
             leadingIcon = { Icon(Icons.Default.DataUsage, null, Modifier.size(16.dp)) })
     }
@@ -850,8 +849,10 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
     val copied = stringResource(R.string.copied)
     Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         val mod = Modifier.size(32.dp)
-        if (m.tokIn != null || m.tokOut != null) Text("↑" + fmtTok(m.tokIn ?: 0) + " ↓" + fmtTok(m.tokOut ?: 0),
-            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
+        if (m.tokIn != null || m.tokOut != null) Text(
+            listOfNotNull(m.prefillTps?.let { "prefill " + fmtSpeed(it) }, m.genTps?.let { "gen " + fmtSpeed(it) },
+                fmtTok((m.tokIn ?: 0) + (m.tokOut ?: 0)) + " tokens").joinToString(" · "),
+            maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
         IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(m.text))
             android.widget.Toast.makeText(ctx, copied, android.widget.Toast.LENGTH_SHORT).show() }, mod) {
             Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), Modifier.size(16.dp)) }
@@ -904,7 +905,7 @@ fun CodeBlock(lang: String, code: String) {
 
 @Composable
 fun MarkdownText(md: String) {
-    val scale = androidx.compose.ui.platform.LocalDensity.current.fontScale / LocalContext.current.resources.configuration.fontScale
+    val scale = 1f
     val color = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val ctx = LocalContext.current
     val markwon = remember { Markwon.builder(ctx).usePlugin(SoftBreakAddsNewLinePlugin.create()).usePlugin(TablePlugin.create(ctx))
@@ -984,7 +985,7 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 24.dp).systemGestureExclusion(),
                 value = (previewPct - 80).toFloat(),
                 onValueChange = { previewPct = (it.toInt() + 80).coerceIn(80, 150) },
-                onValueChangeFinished = { vm.chooseFontScale(previewPct / 100f) },
+                onValueChangeFinished = { if (previewPct / 100f != vm.fontScale) { vm.chooseFontScale(previewPct / 100f); recreate() } },
                 valueRange = 0f..70f)
             Text(stringResource(R.string.font_preview), style = MaterialTheme.typography.bodyMedium)
             Text(stringResource(R.string.language), style = MaterialTheme.typography.titleSmall)
@@ -1013,6 +1014,9 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
         }
     }
 }
+
+/** Tokens per second: 45.3 -> "45 t/s", 1234 -> "1.2k t/s". */
+fun fmtSpeed(v: Float): String = (if (v >= 1000f) String.format(java.util.Locale.US, "%.1fk", v / 1000f).replace(".0k", "k") else v.toInt().toString()) + " t/s"
 
 /** 1234 -> 1.2k, 1234567 -> 1.2M. */
 fun fmtTok(n: Long): String = when {
