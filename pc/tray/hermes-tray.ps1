@@ -51,22 +51,57 @@ function Get-Key {
     if ($l) { $l.Substring(15).Trim() } else { $null }
 }
 
-function New-DotIcon([System.Drawing.Color]$c) {
-    $bmp = New-Object System.Drawing.Bitmap 32, 32
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = "AntiAlias"
-    $g.FillEllipse((New-Object System.Drawing.SolidBrush $c), 3, 3, 26, 26)
-    $f = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+# App icon = the phone app's launcher icon (black tile, white H) drawn as a PC monitor (stand + base) so the two differ.
+function New-BaseBitmap([int]$n) {
+    $bmp = New-Object System.Drawing.Bitmap $n, $n
+    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"; $g.TextRenderingHint = "AntiAliasGridFit"
+    $u = $n / 32.0
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath; $r = 7 * $u; $d = 2 * $r
+    $path.AddArc(0, 0, $d, $d, 180, 90); $path.AddArc($n - $d, 0, $d, $d, 270, 90)
+    $path.AddArc($n - $d, $n - $d, $d, $d, 0, 90); $path.AddArc(0, $n - $d, $d, $d, 90, 90); $path.CloseFigure()
+    $g.FillPath([System.Drawing.Brushes]::Black, $path)
+    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(150, 255, 255, 255)), (1.4 * $u)
+    $g.DrawRectangle($pen, 4 * $u, 5 * $u, 24 * $u, 16 * $u)                 # monitor
+    $g.DrawLine($pen, 16 * $u, 21 * $u, 16 * $u, 25 * $u); $g.DrawLine($pen, 10 * $u, 26 * $u, 22 * $u, 26 * $u)   # stand, base
+    $f = New-Object System.Drawing.Font("Segoe UI", (11 * $u), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
     $sf = New-Object System.Drawing.StringFormat; $sf.Alignment = "Center"; $sf.LineAlignment = "Center"
-    $g.DrawString("H", $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF 0, 1, 32, 32), $sf)
+    $g.DrawString("H", $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF 0, (4.5 * $u), $n, (17 * $u)), $sf)
+    $g.Dispose(); $bmp
+}
+# Tray icon: the app icon plus a status dot (bottom-right) in the state colour, with a dark rim so it reads on any taskbar.
+function New-StatusIcon([System.Drawing.Color]$c) {
+    $bmp = New-BaseBitmap 32
+    $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"
+    $g.FillEllipse([System.Drawing.Brushes]::Black, 15, 15, 17, 17)
+    $g.FillEllipse((New-Object System.Drawing.SolidBrush $c), 17, 17, 13, 13)
     $g.Dispose()
     [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
 }
 $Icons = @{
-    ok   = New-DotIcon ([System.Drawing.Color]::FromArgb(46, 160, 67))
-    warn = New-DotIcon ([System.Drawing.Color]::FromArgb(210, 150, 0))
-    bad  = New-DotIcon ([System.Drawing.Color]::FromArgb(200, 40, 40))
+    ok   = New-StatusIcon ([System.Drawing.Color]::FromArgb(46, 190, 80))
+    warn = New-StatusIcon ([System.Drawing.Color]::FromArgb(240, 180, 0))
+    bad  = New-StatusIcon ([System.Drawing.Color]::FromArgb(230, 50, 50))
 }
+# Multi-size .ico for the shortcuts (PNG-in-ICO); point the existing Start-menu/desktop shortcuts at it.
+function Write-AppIco([string]$path) {
+    $sizes = 16, 32, 48, 256; $png = @()
+    foreach ($n in $sizes) { $b = New-BaseBitmap $n; $ms = New-Object System.IO.MemoryStream; $b.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); $png += ,$ms.ToArray(); $b.Dispose() }
+    $o = New-Object System.IO.MemoryStream; $w = New-Object System.IO.BinaryWriter $o
+    $w.Write([uint16]0); $w.Write([uint16]1); $w.Write([uint16]$sizes.Count)
+    $off = 6 + 16 * $sizes.Count
+    for ($i = 0; $i -lt $sizes.Count; $i++) {
+        $n = $sizes[$i]; $w.Write([byte]($n % 256)); $w.Write([byte]($n % 256)); $w.Write([byte]0); $w.Write([byte]0)
+        $w.Write([uint16]1); $w.Write([uint16]32); $w.Write([uint32]$png[$i].Length); $w.Write([uint32]$off); $off += $png[$i].Length }
+    foreach ($b in $png) { $w.Write($b) }
+    [IO.File]::WriteAllBytes($path, $o.ToArray())
+}
+try {
+    $Ico = Join-Path $Launch "hermes-tray.ico"; Write-AppIco $Ico
+    $sh = New-Object -ComObject WScript.Shell
+    foreach ($l in (Join-Path ([Environment]::GetFolderPath("Programs")) "Hermes Android.lnk"), (Join-Path ([Environment]::GetFolderPath("Desktop")) "Hermes Android.lnk")) {
+        if (Test-Path $l) { $s = $sh.CreateShortcut($l); if ($s.IconLocation -ne "$Ico,0") { $s.IconLocation = "$Ico,0"; $s.Save() } }
+    }
+} catch {}
 
 function Check-Relay {
     try { if ((Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 3).status -eq "ok") { return "ok" } } catch {}
@@ -166,6 +201,29 @@ function Exit-Tray {
     [System.Windows.Forms.Application]::Exit()
 }
 
+# ---- taskbar auto-hide repair: adding/removing the virtual monitor can leave Explorer believing auto-hide is off
+# (the setting in StuckRects3 still says on, the taskbar stays visible). Re-assert it when the two disagree twice in a row.
+Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public class HermesAppBar {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int l, t, r, b; }
+  [StructLayout(LayoutKind.Sequential)] public struct APPBARDATA { public int cb; public IntPtr hwnd; public uint msg; public uint edge; public RECT rc; public IntPtr lp; }
+  [DllImport("shell32.dll")] static extern UIntPtr SHAppBarMessage(uint m, ref APPBARDATA d);
+  [DllImport("user32.dll")] static extern IntPtr FindWindow(string c, string n);
+  public static int State() { var d = new APPBARDATA(); d.cb = Marshal.SizeOf(d); return (int)SHAppBarMessage(4, ref d); }
+  public static void SetAutoHide() { var d = new APPBARDATA(); d.cb = Marshal.SizeOf(d); d.hwnd = FindWindow("Shell_TrayWnd", null); d.lp = (IntPtr)1; SHAppBarMessage(10, ref d); }
+}
+"@ -ErrorAction SilentlyContinue
+$script:tbBad = 0
+function Repair-TaskbarAutoHide {
+    try {
+        $s = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StuckRects3" -ErrorAction Stop).Settings
+        $wantHide = (($s[8] -band 1) -eq 1)
+        if ($wantHide -and ([HermesAppBar]::State() -band 1) -eq 0) {
+            if (++$script:tbBad -ge 2) { [HermesAppBar]::SetAutoHide(); $script:tbBad = 0 }
+        } else { $script:tbBad = 0 }
+    } catch {}
+}
 function Restart-Gateway {
     Stop-Gateway
     Start-Sleep -Milliseconds 500
@@ -221,6 +279,14 @@ $miAuto.add_Click({
     else { Disable-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue } })
 [void]$menu.Items.Add($miAuto)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+$menu.Items.Add((T "Restart tray" "重启托盘")).add_Click({
+    # stop our children (the new tray starts them again), keep the gateway, then relaunch through the elevated task
+    Stop-Relay; Stop-VdisplayHost
+    $tray.Visible = $false; $mutex.ReleaseMutex()
+    $cmd = 'Start-Sleep 2; if (Get-ScheduledTask -TaskName HermesAndroidTray -EA SilentlyContinue) { Start-ScheduledTask -TaskName HermesAndroidTray } else { Start-Process wscript.exe -ArgumentList "//B","//Nologo","`\"' + $Vbs + '`\"" }'
+    Start-Process powershell -ArgumentList "-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-Command",$cmd -WindowStyle Hidden
+    [System.Windows.Forms.Application]::Exit()
+})
 $menu.Items.Add((T "Exit" "退出")).add_Click({ Exit-Tray })
 $tray.ContextMenuStrip = $menu
 $tray.add_MouseClick({ if ($_.Button -eq "Left") { $script:next = 0 } })   # left click: re-check now
@@ -255,6 +321,7 @@ function Tick {
     }
     # vdisplay host: restart it if an agent screen is wanted but the host died.
     Ensure-VdisplayHost
+    Repair-TaskbarAutoHide
     if ((Test-Path $TsRes) -and (Get-Item $TsRes).LastWriteTime -gt $script:tsResSeen) {
         $script:tsResSeen = (Get-Item $TsRes).LastWriteTime
         $r = (Get-Content $TsRes -Raw).Trim()

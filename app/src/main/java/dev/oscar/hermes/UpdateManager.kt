@@ -137,6 +137,12 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
         // Keep the APK: if the install fails or is cancelled, the next try reuses it. Deleted once this version runs.
     }
 
+    /** Bytes of downloaded / partly downloaded update files in the cache. */
+    fun downloadedSize(): Long = ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") }?.sumOf { it.length() } ?: 0L
+
+    /** Delete every downloaded or partial update file (user action). */
+    fun deleteFiles() { ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") }?.forEach { it.delete() } }
+
     /** Drop downloaded APKs for versions that are already installed. */
     fun cleanup() {
         ctx.cacheDir.listFiles()?.filter { f ->

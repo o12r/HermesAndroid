@@ -101,6 +101,9 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
         } catch (e: IOException) { throw wrap(e) }
     }
 
+    /** The PC's private LAN addresses (relay GET /lan), default-route adapter first. */
+    suspend fun lanIps(): List<String> = call(req("/lan").build()).optJSONArray("ips")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList()
+
     suspend fun health(): String = call(Request.Builder().url("$root/health").build()).optString("relay")
 
     suspend fun sessions(): List<Session> {

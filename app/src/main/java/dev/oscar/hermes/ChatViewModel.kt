@@ -16,6 +16,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -350,13 +353,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (manual) updateStatus = if (u == null) s(R.string.up_to_date) else null
     }
 
+    var updateFileBytes by mutableStateOf(updates.downloadedSize())
+    private var installJob: kotlinx.coroutines.Job? = null
     fun installUpdate() {
         val u = update ?: return
-        viewModelScope.launch {
-            updateProgress = 0
+        installJob = viewModelScope.launch {
+            updateProgress = 0; updateStatus = null
             runCatching { updates.install(u) { p -> viewModelScope.launch(Dispatchers.Main) { updateProgress = p } } }
-                .onFailure { updateStatus = s(R.string.update_failed, it.message ?: "?") }
-            updateProgress = null
+                .onFailure { if (it !is kotlinx.coroutines.CancellationException) updateStatus = s(R.string.update_failed, it.message ?: "?") }
+            updateProgress = null; updateFileBytes = updates.downloadedSize()
+        }
+    }
+    /** Stop the running download; the partial file is kept so a later install resumes it. */
+    fun cancelUpdate() {
+        installJob?.cancel(); installJob = null
+        updateProgress = null; updateStatus = s(R.string.update_cancelled)
+        viewModelScope.launch(Dispatchers.IO) { kotlinx.coroutines.delay(300); withContext(Dispatchers.Main) { updateFileBytes = updates.downloadedSize() } }
+    }
+    fun deleteUpdateFile() {
+        installJob?.cancel(); installJob = null; updateProgress = null
+        viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(300); updates.deleteFiles()
+            withContext(Dispatchers.Main) { updateFileBytes = updates.downloadedSize(); updateStatus = s(R.string.update_file_deleted) }
         }
     }
     override fun onCleared() {
@@ -369,16 +387,70 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         error = e.message ?: e.toString()
     }
 
-    /** Use the main (Tailscale) URL if it answers, else the LAN URL; remembers the winner. */
+    /** The phone's own Wi-Fi IPv4 address, or null when it isn't on Wi-Fi. */
+    private fun wifiIp(): String? = runCatching {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+        cm.allNetworks.firstNotNullOfOrNull { n ->
+            val caps = cm.getNetworkCapabilities(n)
+            if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true)
+                cm.getLinkProperties(n)?.linkAddresses?.map { it.address }?.firstOrNull { it is java.net.Inet4Address }?.hostAddress
+            else null
+        }
+    }.getOrNull()
+    private fun sameSubnet(a: String?, b: String?) = a != null && b != null && a.substringBeforeLast('.') == b.substringBeforeLast('.')
+
+    /** Use the main (Tailscale) URL if it answers, else the LAN URL; remembers the winner. On the PC's own Wi-Fi the LAN URL goes first
+     *  (direct, cheaper on battery), and the LAN URL is learned automatically (from the relay, or by scanning the subnet). */
     private suspend fun pickRelay(): Boolean {
         val key = store.apiKey ?: return false
-        for (u in listOf(store.relayUrl, store.lanUrl).filter { it.isNotBlank() }.distinct()) {
+        val me = wifiIp()
+        val lanFirst = sameSubnet(me, runCatching { java.net.URI(store.lanUrl).host }.getOrNull())
+        val order = (if (lanFirst) listOf(store.lanUrl, store.relayUrl) else listOf(store.relayUrl, store.lanUrl)).filter { it.isNotBlank() }.distinct()
+        for (u in order) {
             if (runCatching { withTimeout(4000) { ApiClient(u, profile, key).health() } }.isSuccess) {
                 if (store.activeRelay != u) { store.activeRelay = u; gws.values.forEach { it.close() }; gws.clear(); chats.forEach { it.liveId = null } }
+                if (me != null) viewModelScope.launch { learnLan(u, key, me) }
                 return true
             }
         }
-        return false
+        return scanLan(key, me)
+    }
+
+    /** Connected through [via]: ask the PC for its LAN addresses and remember the one on our Wi-Fi subnet. */
+    private var lanLearnedFor: String? = null
+    private suspend fun learnLan(via: String, key: String, me: String) {
+        if (lanLearnedFor == me) return
+        val ip = runCatching { withTimeout(5000) { ApiClient(via, profile, key).lanIps() } }.getOrNull()?.firstOrNull { sameSubnet(it, me) } ?: return
+        lanLearnedFor = me
+        val url = "http://$ip:8643"
+        if (store.lanUrl != url) { store.lanUrl = url; lanAutoSet = url }
+    }
+    var lanAutoSet by mutableStateOf<String?>(null)
+
+    /** Neither URL answers but we're on Wi-Fi: look for the relay on our /24 (once a minute at most) and save it as the LAN URL. */
+    private var lastScan = 0L
+    private suspend fun scanLan(key: String, me: String?): Boolean {
+        if (me == null || System.currentTimeMillis() - lastScan < 60_000) return false
+        lastScan = System.currentTimeMillis()
+        val base = me.substringBeforeLast('.')
+        val found: String? = withContext(Dispatchers.IO) {
+            val sem = Semaphore(48)
+            coroutineScope {
+                val jobs = (1..254).map { "$base.$it" }.filter { it != me }.map { ip ->
+                    async {
+                        sem.withPermit {
+                            val name = runCatching { withTimeout(900) { ApiClient("http://$ip:8643", profile, key).health() } }.getOrNull()
+                            if (name == "hermes-phone-relay") ip else null
+                        }
+                    }
+                }
+                jobs.awaitAll().filterNotNull().firstOrNull()
+            }
+        } ?: return false
+        val url = "http://$found:8643"
+        store.lanUrl = url; lanAutoSet = url; store.activeRelay = url
+        gws.values.forEach { it.close() }; gws.clear(); chats.forEach { it.liveId = null }
+        return true
     }
 
     /** Keep the relay connection up (also in the background): reconnect with backoff, then re-sync every open chat. */

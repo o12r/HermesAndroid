@@ -63,6 +63,10 @@
     <string name="up_to_date">已是最新版本。</string>
     <string name="update_available">有可用更新：%1$s（%2$d）</string>
     <string name="update_from">来源：%1$s</string>
+    <string name="cancel_update">取消更新</string>
+    <string name="delete_update_file">删除更新文件（%1$s MB）</string>
+    <string name="update_cancelled">已取消下载，保留的部分文件下次可继续。</string>
+    <string name="update_file_deleted">已删除更新文件。</string>
     <string name="install">安装</string>
     <string name="later">稍后</string>
     <string name="downloading">正在下载… %1$d%%</string>

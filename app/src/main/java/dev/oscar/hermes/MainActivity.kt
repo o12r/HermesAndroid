@@ -267,7 +267,9 @@ fun UpdateDialog(vm: ChatViewModel) {
         } },
         confirmButton = { if (u != null) Button(onClick = { vm.installUpdate() }, enabled = vm.updateProgress == null) { Text(stringResource(R.string.install)) }
             else TextButton(onClick = { vm.checkUpdates(manual = true) }) { Text(stringResource(R.string.check_updates)) } },
-        dismissButton = { if (!force) TextButton(onClick = { dismissed = true }) { Text(stringResource(R.string.later)) } })
+        dismissButton = {
+            if (vm.updateProgress != null) TextButton(onClick = { vm.cancelUpdate() }) { Text(stringResource(R.string.cancel_update)) }
+            else if (!force) TextButton(onClick = { dismissed = true }) { Text(stringResource(R.string.later)) } })
 }
 
 @Composable
@@ -413,8 +415,8 @@ fun SessionsScreen(vm: ChatViewModel) {
                         Column(Modifier.weight(1f)) {
                             Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id),
                                 style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (ctxRow != null) Text(fmtTok(ctxRow.first) + " / " + fmtTok(ctxRow.second) + " tokens · " + (ctxRow.first * 100 / ctxRow.second) + "%",
-                                style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                            if (ctxRow != null) Text(fmtTok(ctxRow.first) + "/" + fmtTok(ctxRow.second) + " · " + (ctxRow.first * 100 / ctxRow.second) + "%",
+                                style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip,
                                 color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
                         }
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
@@ -1004,7 +1006,10 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             ChoiceRow(listOf("auto" to stringResource(R.string.update_source_auto), "github" to stringResource(R.string.source_github), "pc" to stringResource(R.string.source_pc)), vm.updateSource) { vm.chooseUpdateSource(it) }
             vm.update?.let { u -> Text(stringResource(R.string.update_available, u.versionName, u.versionCode), color = MaterialTheme.colorScheme.primary)
                 Button(onClick = { vm.installUpdate() }, enabled = vm.updateProgress == null) { Text(stringResource(R.string.install)) } }
-            vm.updateProgress?.let { p -> LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth()); Text(stringResource(R.string.downloading, p)) }
+            vm.updateProgress?.let { p -> LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth()); Text(stringResource(R.string.downloading, p))
+                OutlinedButton(onClick = { vm.cancelUpdate() }) { Text(stringResource(R.string.cancel_update)) } }
+            if (vm.updateFileBytes > 0 && vm.updateProgress == null)
+                OutlinedButton(onClick = { vm.deleteUpdateFile() }) { Text(stringResource(R.string.delete_update_file, "%.1f".format(vm.updateFileBytes / 1048576.0))) }
             OutlinedButton(onClick = { vm.checkUpdates(manual = true) }) { Text(stringResource(R.string.check_updates)) }
             vm.updateStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }

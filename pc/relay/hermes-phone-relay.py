@@ -725,6 +725,34 @@ def _stats_loop():
         time.sleep(1)
 
 
+def _lan_ips():
+    """Private IPv4 addresses of this PC: the default-route adapter first, then the others (no Tailscale / CGNAT)."""
+    import socket
+    out = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); out.append(s.getsockname()[0]); s.close()
+    except OSError:
+        pass
+    try:
+        for ai in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            out.append(ai[4][0])
+    except OSError:
+        pass
+    ok = lambda ip: re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", ip)
+    seen = []
+    for ip in out:
+        if ip and ok(ip) and ip not in seen:
+            seen.append(ip)
+    return seen
+
+
+async def lan_info(req: web.Request):
+    """GET /lan -> {ips: [...], port} (Bearer required): the phone picks the address on its own Wi-Fi subnet."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    return web.json_response({"ips": _lan_ips(), "port": PORT})
+
+
 async def pc_stats(req: web.Request):
     """GET /pc/stats -> {cpu, mem, gpu, ts} from the 1 s sampler cache (Bearer required)."""
     if not _authed(req):
@@ -819,6 +847,7 @@ def main():
     app.router.add_route("*", "/config/context", config_context)
     app.router.add_route("*", "/config/models", config_models)
     app.router.add_get("/pc/stats", pc_stats)
+    app.router.add_get("/lan", lan_info)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -844,6 +873,7 @@ def main():
             app.router.add_route("*", "/config/context", config_context)
             app.router.add_route("*", "/config/models", config_models)
             app.router.add_get("/pc/stats", pc_stats)
+            app.router.add_get("/lan", lan_info)
             app.on_startup.append(_watchdog)
 
 
