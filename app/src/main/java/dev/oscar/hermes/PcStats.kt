@@ -1,6 +1,8 @@
 package dev.oscar.hermes
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,7 +56,9 @@ fun PcStatsBar(vm: ChatViewModel) {
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                 StatValue("CPU", last?.cpu)
                 StatValue(stringResource(R.string.pc_mem), last?.mem)
-                StatValue(stringResource(R.string.pc_gpu), last?.gpu)
+                val gl = last?.gpus.orEmpty()
+                if (gl.size > 1) gl.forEachIndexed { i, g -> StatValue(stringResource(R.string.pc_gpu) + i, g.second) }
+                else StatValue(stringResource(R.string.pc_gpu), last?.gpu)
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, stringResource(R.string.pc_stats_expand),
                     Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -63,7 +67,11 @@ fun PcStatsBar(vm: ChatViewModel) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     StatGraph("CPU", vm.pcStats.map { it.cpu }, MaterialTheme.colorScheme.primary)
                     StatGraph(stringResource(R.string.pc_mem), vm.pcStats.map { it.mem }, MaterialTheme.colorScheme.secondary)
-                    StatGraph(stringResource(R.string.pc_gpu), vm.pcStats.mapNotNull { it.gpu }, MaterialTheme.colorScheme.tertiary)
+                    val names = vm.pcStats.lastOrNull()?.gpus.orEmpty().map { it.first }
+                    if (names.isEmpty()) StatGraph(stringResource(R.string.pc_gpu), vm.pcStats.mapNotNull { it.gpu }, MaterialTheme.colorScheme.tertiary)
+                    else names.forEachIndexed { i, n ->
+                        StatGraph(stringResource(R.string.pc_gpu) + i + " · " + n, vm.pcStats.mapNotNull { s -> s.gpus.getOrNull(i)?.second },
+                            if (i % 2 == 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -92,7 +100,9 @@ private fun StatGraph(label: String, values: List<Double?>, color: Color) {
         }
         if (pts.isEmpty()) return
         val grid = MaterialTheme.colorScheme.outlineVariant
-        Canvas(Modifier.fillMaxWidth().height(72.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(72.dp).padding(top = 2.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f), androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline, androidx.compose.foundation.shape.RoundedCornerShape(6.dp))) {
             val h = size.height
             listOf(0f, 0.5f, 1f).forEach { f -> drawLine(grid, androidx.compose.ui.geometry.Offset(0f, h * f), androidx.compose.ui.geometry.Offset(size.width, h * f), strokeWidth = 1f) }
             val step = size.width / maxOf(1, 59)

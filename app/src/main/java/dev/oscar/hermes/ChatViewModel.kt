@@ -61,7 +61,7 @@ data class PcScreen(val name: String, val kind: String, val role: String, val in
     val title: String? = null, val project: String? = null)
 data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
 /** One PC resource sample from the relay's GET /pc/stats (percentages, gpu null when unavailable). */
-data class PcStat(val cpu: Double?, val mem: Double?, val gpu: Double?, val ts: Long)
+data class PcStat(val cpu: Double?, val mem: Double?, val gpu: Double?, val ts: Long, val gpus: List<Pair<String, Double>> = emptyList())
 data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
 
 /** State of one conversation. Kept per chat so several can run at once and events never land in the wrong one. */
@@ -1088,7 +1088,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 .header("Authorization", "Bearer $key").build()).execute().use { r ->
                     if (!r.isSuccessful) return@use null
                     val j = JSONObject(r.body!!.string())
-                    PcStat(j.optDoubleOrNull("cpu"), j.optDoubleOrNull("mem"), j.optDoubleOrNull("gpu"), j.optLong("ts", 0))
+                    PcStat(j.optDoubleOrNull("cpu"), j.optDoubleOrNull("mem"), j.optDoubleOrNull("gpu"), j.optLong("ts", 0),
+                        j.optJSONArray("gpus")?.let { a -> List(a.length()) { a.getJSONObject(it).let { g -> g.optString("name") to g.optDouble("util", 0.0) } } } ?: emptyList())
                 }
         }.getOrNull()
     }

@@ -639,7 +639,7 @@ class _PDH_FMT_COUNTERVALUE(ctypes.Structure):
 
 
 class _PDH_FMT_COUNTERVALUE_ITEM(ctypes.Structure):
-    _fields_ = [("szName", wintypes.DWORD), ("FmtValue", _PDH_FMT_COUNTERVALUE)]
+    _fields_ = [("szName", ctypes.c_void_p), ("FmtValue", _PDH_FMT_COUNTERVALUE)]
 
 
 def _ft_val(v):
@@ -653,21 +653,48 @@ def _read_system_times():
 
 
 def _gpu_nvidia():
+    """[(name, util%)] per NVIDIA GPU via nvidia-smi, or []."""
     try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name,utilization.gpu", "--format=csv,noheader,nounits"],
                            capture_output=True, timeout=5, creationflags=NO_WINDOW)
         if r.returncode != 0:
-            return None
-        vals = []
+            return []
+        out = []
         for line in r.stdout.decode("utf-8", "replace").splitlines():
-            line = line.strip()
-            if re.fullmatch(r"\d+(\.\d+)?", line):
-                vals.append(float(line))
-        if vals:
-            return round(sum(vals) / len(vals), 1)
+            n, _, v = line.rpartition(",")
+            if re.fullmatch(r"\s*\d+(\.\d+)?\s*", v):
+                out.append((n.strip(), float(v)))
+        return out
+    except Exception:
+        return []
+
+
+_GPU_NAMES = {}   # luid "0xHHHHHHHH_0xLLLLLLLL" (lower case) -> adapter description
+
+
+def _load_gpu_names():
+    """Adapter LUID -> name from HKLM\\SOFTWARE\\Microsoft\\DirectX (same LUIDs the GPU Engine counters use)."""
+    _GPU_NAMES.clear()
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\DirectX")
+        i = 0
+        while True:
+            try:
+                sub = winreg.EnumKey(k, i); i += 1
+            except OSError:
+                break
+            try:
+                s = winreg.OpenKey(k, sub)
+                desc = winreg.QueryValueEx(s, "Description")[0]
+                luid = int(winreg.QueryValueEx(s, "AdapterLuid")[0])
+                if "Basic Render" in desc:
+                    continue
+                _GPU_NAMES["0x%08x_0x%08x" % (luid >> 32, luid & 0xFFFFFFFF)] = desc
+            except Exception:
+                pass
     except Exception:
         pass
-    return None
 
 
 def _gpu_pdh():
@@ -705,33 +732,43 @@ def _gpu_pdh():
         count = ctypes.c_ulong(0)
         r = pdh.PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, ctypes.byref(size), ctypes.byref(count), None)
         if (r & 0xFFFFFFFF) != PDH_MORE_DATA:
-            return None
+            return {}
         buf = ctypes.create_string_buffer(size.value)
         r = pdh.PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, ctypes.byref(size), ctypes.byref(count), buf)
         if r != 0:
             return None
-        total = 0.0
+        # per adapter (LUID): sum the instances of each engine type, report the busiest engine type (like Task Manager)
+        per = {}
         step = ctypes.sizeof(_PDH_FMT_COUNTERVALUE_ITEM)
         for i in range(count.value):
             item = _PDH_FMT_COUNTERVALUE_ITEM.from_buffer(buf, i * step)
-            if item.FmtValue.CStatus == 0:
-                total += item.FmtValue.doubleValue
-        return round(total, 1) if count.value > 0 else None
+            if item.FmtValue.CStatus != 0 or not item.szName:
+                continue
+            name = ctypes.wstring_at(item.szName).lower()
+            m = re.search(r"(luid_0x[0-9a-f]+_0x[0-9a-f]+).*?engtype_(\w+)", name)
+            if m:
+                d = per.setdefault(m.group(1)[5:], {})
+                d[m.group(2)] = d.get(m.group(2), 0.0) + item.FmtValue.doubleValue
+        return {l: round(min(max(e.values()), 100.0), 1) for l, e in per.items()}
     finally:
         pdh.PdhCloseQuery(query)
 
 
-def _gpu():
-    v = _gpu_nvidia()
-    if v is not None:
-        return v
+def _gpus():
+    """Every real GPU as [{name, util}]: the GPU Engine counters list the live adapters (LUIDs), DirectX's registry names them.
+    Basic Render Driver and adapters without a name (virtual displays) are skipped."""
+    _load_gpu_names()
     try:
-        return _gpu_pdh()
+        per = _gpu_pdh() or {}
     except Exception:
-        return None
+        per = {}
+    out = [{"name": _GPU_NAMES[l], "util": v} for l, v in per.items() if l in _GPU_NAMES]
+    if not out:
+        out = [{"name": n, "util": v} for n, v in _gpu_nvidia()]
+    return out
 
 
-STATS = {"cpu": None, "mem": None, "gpu": None, "ts": 0}
+STATS = {"cpu": None, "mem": None, "gpu": None, "gpus": [], "ts": 0}
 _stats_prev = {"busy": 0, "total": 0, "have": False}
 
 
@@ -751,7 +788,8 @@ def _sample_once():
     m.dwLength = ctypes.sizeof(m)
     if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
         mem = round(float(m.dwMemoryLoad), 1)
-    STATS.update(cpu=cpu, mem=mem, gpu=_gpu(), ts=int(time.time() * 1000))
+    gpus = _gpus()
+    STATS.update(cpu=cpu, mem=mem, gpu=(max(g["util"] for g in gpus) if gpus else None), gpus=gpus, ts=int(time.time() * 1000))
 
 
 def _stats_loop():
