@@ -30,8 +30,9 @@ class GatewayWs(
         relayUrl.trim().trimEnd('/').replaceFirst("http", "ws") + "/ws?profile=" + profile
     }
     private val http = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS).build()
+        .pingInterval(pingSec, TimeUnit.SECONDS).build()
     private val ids = AtomicInteger(0)
+    companion object { /** Set from the power mode before connecting: balanced 30 s, saver 60 s. */ @Volatile var pingSec = 30L }
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<JSONObject>>()
     private var ws: WebSocket? = null
     @Volatile var open = false; private set

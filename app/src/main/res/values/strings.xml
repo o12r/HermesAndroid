@@ -47,6 +47,11 @@
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
     <string name="theme_black">True black</string>
+    <string name="power_mode">Background power use</string>
+    <string name="power_balanced">Balanced</string>
+    <string name="power_saver">Saver</string>
+    <string name="power_balanced_hint">Keeps the connection with a 30 s heartbeat; replies arrive at once.</string>
+    <string name="power_saver_hint">60 s heartbeat and no wake lock while the screen is off; notifications can be delayed. Applies to new connections.</string>
     <string name="language">Language</string>
     <string name="lang_system">System</string>
     <string name="lang_en">English</string>

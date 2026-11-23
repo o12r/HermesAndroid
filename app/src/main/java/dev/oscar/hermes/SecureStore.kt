@@ -21,6 +21,10 @@ class SecureStore(ctx: Context) {
     var theme: String
         get() = prefs.getString("theme", "system")!!
         set(v) = prefs.edit().putString("theme", v).apply()
+    /** "balanced" | "saver": background power use (ping interval, wake lock, polling). */
+    var powerMode: String
+        get() = prefs.getString("powerMode", "balanced")!!
+        set(v) = prefs.edit().putString("powerMode", v).apply()
     /** "system" | "en" | "zh" */
     /** UI text scale, 0.8..1.5 (on top of the system font size). */
     var fontScale: Float

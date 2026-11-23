@@ -103,7 +103,7 @@ class MainActivity : ComponentActivity() {
         setIntent(android.content.Intent())   // don't re-apply on rotation
     }
 
-    override fun onStart() { super.onStart(); Notify.visible = true; vm.seen() }
+    override fun onStart() { super.onStart(); Notify.visible = true; vm.seen(); vm.onForeground() }
     override fun onStop() { Notify.visible = false; super.onStop() }
     override fun onDestroy() { if (isFinishing) KeepAliveService.stop(this); super.onDestroy() }
 
@@ -977,6 +977,9 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             "look" -> {
             ChoiceRow(listOf("system" to stringResource(R.string.theme_system), "light" to stringResource(R.string.theme_light),
                 "dark" to stringResource(R.string.theme_dark), "black" to stringResource(R.string.theme_black)), vm.theme) { vm.chooseTheme(it) }
+            Text(stringResource(R.string.power_mode))
+            ChoiceRow(listOf("balanced" to stringResource(R.string.power_balanced), "saver" to stringResource(R.string.power_saver)), vm.powerMode) { vm.choosePower(it) }
+            Text(stringResource(if (vm.powerMode == "saver") R.string.power_saver_hint else R.string.power_balanced_hint), style = MaterialTheme.typography.bodySmall)
             Text(stringResource(R.string.app_icon))
             ChoiceRow(listOf("dark" to stringResource(R.string.icon_dark), "light" to stringResource(R.string.icon_light)), vm.appIcon) { vm.chooseIcon(it) }
             var previewPct by remember { mutableStateOf((vm.fontScale * 100).toInt()) }

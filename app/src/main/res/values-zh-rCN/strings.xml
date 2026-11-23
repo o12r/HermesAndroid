@@ -47,6 +47,11 @@
     <string name="theme_light">浅色</string>
     <string name="theme_dark">深色</string>
     <string name="theme_black">纯黑</string>
+    <string name="power_mode">后台耗电</string>
+    <string name="power_balanced">平衡</string>
+    <string name="power_saver">省电</string>
+    <string name="power_balanced_hint">保持连接，心跳 30 秒，回复即时到达。</string>
+    <string name="power_saver_hint">心跳 60 秒，息屏时不持有唤醒锁；通知可能延迟。对新连接生效。</string>
     <string name="language">语言</string>
     <string name="lang_system">跟随系统</string>
     <string name="lang_en">English</string>

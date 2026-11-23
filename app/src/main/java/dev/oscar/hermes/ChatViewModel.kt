@@ -253,6 +253,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun chooseTheme(t: String) { theme = t; store.theme = t }
+    var powerMode by mutableStateOf(store.powerMode.also { GatewayWs.pingSec = if (it == "saver") 60L else 30L })
+    fun choosePower(m: String) {
+        powerMode = m; store.powerMode = m; GatewayWs.pingSec = if (m == "saver") 60L else 30L
+        KeepAliveService.start(getApplication())      // re-applies the wake lock policy
+    }
 
     /** Files the agent sent to the phone: download progress (0-100) per file name, shown on its chat bubble. */
     val fileProgress = mutableStateMapOf<String, Int>()
@@ -379,19 +384,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Keep the relay connection up (also in the background): reconnect with backoff, then re-sync every open chat. */
     private val reconnectJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
     private var notifiedDrop = false
+    /** Profiles whose background reconnect gave up after 3 tries; resumed when the app comes to the foreground. */
+    private val gaveUp = mutableSetOf<String>()
+    fun onForeground() {
+        if (gaveUp.isEmpty()) return
+        KeepAliveService.start(getApplication())
+        gaveUp.toList().forEach { gaveUp.remove(it); scheduleReconnect(it) }
+    }
     private fun scheduleReconnect(prof: String) {
         if (!store.hasKey || reconnectJobs[prof]?.isActive == true) return
         if (chats.none { it.profile == prof && it.id != null } && prof != profile) return
         reconnectJobs[prof] = viewModelScope.launch {
             var delayMs = 1500L
+            var bgFails = 0
             while (true) {
                 kotlinx.coroutines.delay(delayMs)
                 if (runCatching { pickRelay(); gatewayFor(prof); resync(prof) }.isSuccess) {
                     if (prof == profile) { offline = false; error = null }
                     notifiedDrop = false; return@launch
                 }
-                if (!notifiedDrop && (chats.any { it.dropped } || delayMs >= 12000)) {
+                if (!notifiedDrop) {      // notify at the first failed retry (whether or not the app is open)
                     notifiedDrop = true; Notify.alert(getApplication<Application>(), s(R.string.n_disconnected), s(R.string.n_disconnected_text))
+                }
+                // In the background: 3 failed tries and we stop (no endless wake-ups); the foreground reconnects.
+                if (!Notify.visible && ++bgFails >= 3) {
+                    gaveUp.add(prof)
+                    if (!notifiedDrop) { notifiedDrop = true; Notify.alert(getApplication<Application>(), s(R.string.n_disconnected), s(R.string.n_disconnected_text)) }
+                    KeepAliveService.stop(getApplication()); return@launch
                 }
                 delayMs = (delayMs * 2).coerceAtMost(60_000L)
             }
@@ -674,7 +693,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.IO) { relayCall("GET", "/elevate/pending") }?.let { org.json.JSONArray(it) }
             }.getOrNull()
             elevate = if (list == null) emptyList() else List(list.length()) { list.getJSONObject(it) }
-            kotlinx.coroutines.delay(3000)
+            kotlinx.coroutines.delay(if (Notify.visible) 3000L else 20_000L)     // background: poll rarely
         }
     }
 

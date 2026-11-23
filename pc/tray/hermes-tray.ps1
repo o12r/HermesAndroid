@@ -166,6 +166,11 @@ function Exit-Tray {
     [System.Windows.Forms.Application]::Exit()
 }
 
+function Restart-Gateway {
+    Stop-Gateway
+    Start-Sleep -Milliseconds 500
+    Ensure-Gateway
+}
 function Restart-Relay {
     Stop-Relay
     Start-Sleep -Milliseconds 800
@@ -180,6 +185,10 @@ $miRelay = $menu.Items.Add("…"); $miGw = $menu.Items.Add("…"); $miTs = $menu
 foreach ($m in $miRelay, $miGw, $miTs) { $m.Enabled = $false }
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $menu.Items.Add((T "Restart relay" "重启中继")).add_Click({ Restart-Relay; $tray.ShowBalloonTip(3000, "Hermes", (T "Restarting the relay…" "正在重启中继…"), "Info") })
+$menu.Items.Add((T "Restart gateway" "重启 Gateway")).add_Click({
+    $tray.ShowBalloonTip(3000, "Hermes", (T "Restarting the gateway…" "正在重启 Gateway…"), "Info")
+    Restart-Gateway; $script:lastGw = Get-Date; $script:next = 8
+})
 $menu.Items.Add((T "Open log" "打开日志")).add_Click({ if (Test-Path $Log) { Start-Process notepad.exe $Log } })
 $menu.Items.Add((T "Show pairing QR code" "显示配对二维码")).add_Click({
     Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$Install`"", "-PairOnly", "-NoAdb" -WindowStyle Hidden })

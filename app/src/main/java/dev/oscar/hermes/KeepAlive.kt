@@ -27,18 +27,16 @@ class KeepAliveService : Service() {
             .build()
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         else startForeground(1, n)
-        // Screen locked: keep the CPU and Wi-Fi awake so the gateway socket (and its 20 s pings) stays up.
-        if (wake == null) wake = getSystemService(android.os.PowerManager::class.java)
+        // Screen locked: keep the CPU awake so the gateway socket (and its pings) stays up. No Wi-Fi high-perf lock (big drain).
+        // Saver mode: no wake lock at all; the exempted app still gets network in Doze maintenance windows.
+        val saver = getSharedPreferences("hermes", Context.MODE_PRIVATE).getString("powerMode", "balanced") == "saver"
+        if (!saver && wake == null) wake = getSystemService(android.os.PowerManager::class.java)
             .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:keepalive").apply { setReferenceCounted(false); acquire() }
-        @Suppress("DEPRECATION")
-        if (wifi == null) wifi = applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
-            ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:keepalive")?.apply { setReferenceCounted(false); acquire() }
         return START_NOT_STICKY
     }
 
     private var wake: android.os.PowerManager.WakeLock? = null
-    private var wifi: android.net.wifi.WifiManager.WifiLock? = null
-    override fun onDestroy() { runCatching { wake?.release() }; runCatching { wifi?.release() }; wake = null; wifi = null; super.onDestroy() }
+    override fun onDestroy() { runCatching { wake?.release() }; wake = null; super.onDestroy() }
 
     override fun onTaskRemoved(rootIntent: Intent?) { stopSelf() }
 
