@@ -296,12 +296,20 @@ fun SessionsScreen(vm: ChatViewModel) {
             listOf(homeP to homeList)
     }
     Scaffold(
-        topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name)) }, actions = {
+        topBar = { Column { TopAppBar(title = { Text(stringResource(R.string.app_name), maxLines = 1, softWrap = false) }, actions = {
             ProfileMenu(vm)
             IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
             IconButton(onClick = { vm.openInbox() }) { Icon(Icons.Default.Inbox, stringResource(R.string.inbox)) }
-            IconButton(onClick = { vm.openScreens(Screen.Sessions) }) { Icon(Icons.Default.Monitor, stringResource(R.string.screens)) }
-            IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
+            var more by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { more = true }) { Icon(Icons.Default.MoreVert, null) }
+                DropdownMenu(more, { more = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.screens)) }, leadingIcon = { Icon(Icons.Default.Monitor, null) },
+                        onClick = { more = false; vm.openScreens(Screen.Sessions) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.refresh)) }, leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                        onClick = { more = false; vm.refreshSessions() })
+                }
+            }
             IconButton(onClick = { vm.screen = Screen.Settings }) {
                 BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } })
             ChatTabs(vm, onList = true) } },
@@ -464,10 +472,10 @@ fun ChatScreen(vm: ChatViewModel) {
                 Bubble(m, vm) }
         }
         if (!follow && list.canScrollForward && vm.messages.isNotEmpty())
-            ExtendedFloatingActionButton(onClick = { follow = true
+            SmallFloatingActionButton(onClick = { follow = true
                     jumpScope.launch { list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) } },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
-                icon = { Icon(Icons.Default.KeyboardArrowDown, null) }, text = { Text(stringResource(R.string.jump_newest)) })
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp)) {
+                Icon(Icons.Default.KeyboardArrowDown, stringResource(R.string.jump_newest)) }
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -813,29 +821,7 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
 
             HorizontalDivider()
             Text(stringResource(R.string.vdisplay), style = MaterialTheme.typography.titleSmall)
-            LaunchedEffect(Unit) { vm.vdisplay("status") }
             OutlinedButton(onClick = { vm.openScreens(Screen.Settings) }) { Text(stringResource(R.string.screens_manage)) }
-            when (vm.vdMode) {
-                null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
-                "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
-                else -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(R.string.vd_agent_chat, vm.currentTitle ?: stringResource(R.string.chat)), Modifier.weight(1f))
-                        // Only the agent opens its screen (when it needs a UI); the phone can see it and close it.
-                        if (vm.vdAgent) TextButton(onClick = { vm.vdisplay("off") }, enabled = !vm.vdBusy) { Text(stringResource(R.string.vd_close)) }
-                        else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall)
-                    }
-                    Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(R.string.vd_screen_off), Modifier.weight(1f))
-                        Switch(vm.vdScreenOff, { if (!vm.vdBusy) vm.vdisplay(if (it) "screen-off" else "screen-on") },
-                            enabled = !vm.vdBusy && (vm.vdScreenOff || vm.vdScreenOffAvailable))
-                    }
-                    Text(stringResource(if (vm.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
-                        style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            if (vm.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
 
             HorizontalDivider()
             Text(stringResource(R.string.updates), style = MaterialTheme.typography.titleSmall)
@@ -874,6 +860,7 @@ fun ScreensScreen(vm: ChatViewModel) {
     var open by remember { mutableStateOf<PcScreen?>(null) }
     BackHandler(open != null) { open = null }
     open?.let { sc -> ScreenDetail(vm, sc) { open = null }; return }
+    LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text(stringResource(R.string.screens)) },
             navigationIcon = { IconButton(onClick = { vm.screen = vm.screensBack }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
@@ -883,6 +870,31 @@ fun ScreensScreen(vm: ChatViewModel) {
         val pc = vm.pcScreens.filter { it.kind != "agent" }
         val agents = vm.pcScreens.filter { it.kind == "agent" }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            item { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LaunchedEffect(Unit) { vm.vdisplay("status") }
+        when (vm.vdMode) {
+            null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
+            "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
+            else -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.vd_agent_chat, vm.currentTitle ?: stringResource(R.string.chat)), Modifier.weight(1f))
+                    // Only the agent opens its screen (when it needs a UI); the phone can see it and close it.
+                    if (vm.vdAgent) TextButton(onClick = { vm.vdisplay("off") }, enabled = !vm.vdBusy) { Text(stringResource(R.string.vd_close)) }
+                    else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall)
+                }
+                Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.vd_screen_off), Modifier.weight(1f))
+                    Switch(vm.vdScreenOff, { if (!vm.vdBusy) vm.vdisplay(if (it) "screen-off" else "screen-on") },
+                        enabled = !vm.vdBusy && (vm.vdScreenOff || vm.vdScreenOffAvailable))
+                }
+                Text(stringResource(if (vm.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (vm.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                HorizontalDivider()
+            } }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             items(pc) { sc -> ScreenRow(screenLabel(sc), sc, sc.on) { open = sc } }
             item { Spacer(Modifier.height(8.dp)); Text(stringResource(R.string.screens_agent), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }

@@ -40,6 +40,7 @@ data class Hotfix(
  *  2. GitHub: releases/latest of [GITHUB_REPO] (asset *.apk, versionCode in the asset name) and hotfix.json on main.
  */
 class UpdateManager(private val ctx: Context, private val store: SecureStore) {
+    init { runCatching { cleanup() } }
     private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
         .followRedirects(true).build()
 
@@ -90,54 +91,29 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
     /** Download the APK and hand it to the system installer (the user confirms). */
     suspend fun install(u: UpdateInfo, progress: (Int) -> Unit) = withContext(Dispatchers.IO) {
         val file = File(ctx.cacheDir, "update-${u.versionCode}.apk")
-        ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") && it != file }?.forEach { it.delete() }
-        // Keep the CPU and Wi-Fi awake while downloading, so going to the background doesn't stall the socket.
-        val pm = ctx.getSystemService(android.os.PowerManager::class.java)
-        val wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:update").apply { acquire(10 * 60_000L) }
-        @Suppress("DEPRECATION")
-        val wifi = ctx.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
-            ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:update")?.apply { acquire() }
-        try {
-          for (pass in 0..1) {
-            // Resumable: on a dropped connection, retry with Range from where it stopped (up to 8 tries, backoff).
-            var total = -1L; var attempt = 0
-            while (true) {
-                val have = file.length()
-                if (total > 0 && have >= total) break
-                // Re-resolve every try: the relay address may have switched (Tailscale <-> Wi-Fi).
-                val base = if (u.source == "pc") relayReq("/apk") ?: throw ApiException("PC relay not reachable") else Request.Builder().url(u.apkUrl).build()
-                val req = base.newBuilder().apply { if (have > 0) header("Range", "bytes=$have-") }.build()
-                try {
-                    http.newCall(req).execute().use { resp ->
-                        if (resp.code == 416) { total = have; return@use }
-                        if (!resp.isSuccessful) throw ApiException("Download failed (HTTP ${resp.code})")
-                        val body = resp.body!!
-                        val append = resp.code == 206 && have > 0
-                        if (!append) file.delete()
-                        val start = if (append) have else 0L
-                        if (body.contentLength() > 0) total = start + body.contentLength()
-                        java.io.FileOutputStream(file, append).use { out ->
-                            val src = body.byteStream(); val buf = ByteArray(64 * 1024); var done = start; var n: Int
-                            while (src.read(buf).also { n = it } >= 0) {
-                                out.write(buf, 0, n); done += n
-                                if (total > 0) progress((done * 100 / total).toInt())
-                            }
-                        }
-                    }
-                    if (total <= 0) break        // unknown length: one full read is all we can do
-                    attempt = 0
-                } catch (e: java.io.IOException) {
-                    if (++attempt > 8) throw ApiException("Download interrupted: ${e.message}")
-                    kotlinx.coroutines.delay(minOf(30_000L, 1500L shl (attempt - 1)))
+        ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") && !it.name.startsWith(file.name) }?.forEach { it.delete() }
+        // Already downloaded and verified (e.g. the last install was cancelled or failed): install it again, no re-download.
+        if (!(File(file.path + ".parts").exists().not() && apkOk(file, u))) {
+            // Keep the CPU and Wi-Fi awake while downloading, so going to the background doesn't stall the sockets.
+            val pm = ctx.getSystemService(android.os.PowerManager::class.java)
+            val wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:update").apply { acquire(10 * 60_000L) }
+            @Suppress("DEPRECATION")
+            val wifi = ctx.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)
+                ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:update")?.apply { acquire() }
+            try {
+                for (pass in 0..1) {
+                    // Re-resolve every request: the relay address may have switched (Tailscale <-> Wi-Fi).
+                    Downloader.fetch(http, file, req = {
+                        if (u.source == "pc") relayReq("/apk") ?: throw ApiException("PC relay not reachable") else Request.Builder().url(u.apkUrl).build()
+                    }, progress = progress)
+                    // A corrupt file (HTML error page, bad resume) makes the installer fail: verify, else download once from scratch.
+                    if (apkOk(file, u)) break
+                    file.delete(); File(file.path + ".parts").delete()
+                    if (pass == 1) throw ApiException("Downloaded APK is invalid; try again")
                 }
-            }
-            // A corrupt/partial file (stale leftover, HTML error page, bad resume) makes the installer fail with
-            // "package info is null". Check it parses as our APK; otherwise wipe it and download once from scratch.
-            if (apkOk(file, u)) break
-            file.delete()
-            if (pass == 1) throw ApiException("Downloaded APK is invalid (${file.length()} bytes); try again")
-          }
-        } finally { runCatching { wake.release() }; runCatching { wifi?.release() } }
+            } finally { runCatching { wake.release() }; runCatching { wifi?.release() } }
+        }
+        progress(100)
         val pi = ctx.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         params.setAppPackageName(ctx.packageName)
@@ -148,7 +124,14 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
             s.commit(PendingIntent.getBroadcast(ctx, id, intent, flags).intentSender)
         }
-        file.delete()
+        // Keep the APK: if the install fails or is cancelled, the next try reuses it. Deleted once this version runs.
+    }
+
+    /** Drop downloaded APKs for versions that are already installed. */
+    fun cleanup() {
+        ctx.cacheDir.listFiles()?.filter { f ->
+            f.name.startsWith("update-") && (Regex("""update-(\d+)""").find(f.name)?.groupValues?.get(1)?.toIntOrNull() ?: 0) <= currentCode
+        }?.forEach { it.delete() }
     }
 
     private fun apkOk(f: File, u: UpdateInfo): Boolean {
