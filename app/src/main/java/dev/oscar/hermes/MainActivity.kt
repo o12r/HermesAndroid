@@ -1,5 +1,10 @@
 package dev.oscar.hermes
 
+import kotlinx.coroutines.launch
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
 import android.content.Context
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
@@ -126,7 +131,8 @@ fun trueBlack(d: ColorScheme) = d.copy(
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.reconnect(); vm.checkUpdates(manual = false) }
     BackHandler(vm.screen != Screen.Sessions && vm.store.hasKey) {
-        if (vm.screen == Screen.Settings && vm.settingsBack == Screen.Chat) { vm.screen = Screen.Chat; vm.settingsBack = Screen.Sessions }
+        if (vm.screen == Screen.Screens) vm.screen = vm.screensBack
+        else if (vm.screen == Screen.Settings && vm.settingsBack == Screen.Chat) { vm.screen = Screen.Chat; vm.settingsBack = Screen.Sessions }
         else { vm.screen = Screen.Sessions; vm.refreshSessions() } }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
@@ -135,6 +141,7 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
             Screen.Settings -> SettingsScreen(vm, recreate)
             Screen.Sessions -> SessionsScreen(vm)
             Screen.Chat -> ChatScreen(vm)
+            Screen.Screens -> ScreensScreen(vm)
         }
     }
     UpdateDialog(vm)
@@ -293,6 +300,7 @@ fun SessionsScreen(vm: ChatViewModel) {
             ProfileMenu(vm)
             IconButton(onClick = { creating = true }) { Icon(Icons.Default.CreateNewFolder, stringResource(R.string.new_project)) }
             IconButton(onClick = { vm.openInbox() }) { Icon(Icons.Default.Inbox, stringResource(R.string.inbox)) }
+            IconButton(onClick = { vm.openScreens(Screen.Sessions) }) { Icon(Icons.Default.Monitor, stringResource(R.string.screens)) }
             IconButton(onClick = { vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
             IconButton(onClick = { vm.screen = Screen.Settings }) {
                 BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } } })
@@ -448,10 +456,18 @@ fun ChatScreen(vm: ChatViewModel) {
                 IconButton(onClick = { vm.settingsBack = Screen.Chat; vm.screen = Screen.Settings }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
                 ProfileMenu(vm) }, windowInsets = WindowInsets(0))
         ChatTabs(vm)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
+        val jumpScope = rememberCoroutineScope()
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
             itemsIndexed(vm.messages) { i, m ->
                 if (i > 0) HorizontalDivider(thickness = 0.5.dp, color = androidx.compose.ui.graphics.Color(0xFF9E9E9E).copy(alpha = 0.45f))
                 Bubble(m, vm) }
+        }
+        if (!follow && list.canScrollForward && vm.messages.isNotEmpty())
+            ExtendedFloatingActionButton(onClick = { follow = true
+                    jumpScope.launch { list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) } },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                icon = { Icon(Icons.Default.KeyboardArrowDown, null) }, text = { Text(stringResource(R.string.jump_newest)) })
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -798,13 +814,16 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             HorizontalDivider()
             Text(stringResource(R.string.vdisplay), style = MaterialTheme.typography.titleSmall)
             LaunchedEffect(Unit) { vm.vdisplay("status") }
+            OutlinedButton(onClick = { vm.openScreens(Screen.Settings) }) { Text(stringResource(R.string.screens_manage)) }
             when (vm.vdMode) {
                 null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
                 "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
                 else -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(stringResource(R.string.vd_agent_chat, vm.currentTitle ?: stringResource(R.string.chat)), Modifier.weight(1f))
-                        Switch(vm.vdAgent, { if (!vm.vdBusy) vm.vdisplay(if (it) "on" else "off") }, enabled = !vm.vdBusy && vm.currentId != null)
+                        // Only the agent opens its screen (when it needs a UI); the phone can see it and close it.
+                        if (vm.vdAgent) TextButton(onClick = { vm.vdisplay("off") }, enabled = !vm.vdBusy) { Text(stringResource(R.string.vd_close)) }
+                        else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall)
                     }
                     Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -835,4 +854,96 @@ fun fmtTok(n: Long): String = when {
     n >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", n / 1_000_000.0)
     n >= 1_000 -> String.format(java.util.Locale.US, "%.1fk", n / 1_000.0)
     else -> n.toString()
+}
+
+
+@Composable
+fun screenLabel(sc: PcScreen): String {
+    val base = if (sc.role == "main") stringResource(R.string.screen_main) else stringResource(R.string.screen_secondary, maxOf(1, sc.index))
+    return when (sc.kind) {
+        "screen-off" -> stringResource(R.string.screen_off_for, base)
+        "agent" -> sc.title ?: sc.session ?: "?"
+        else -> base
+    }
+}
+
+/** PC screens: physical ones as main / secondary 1, 2...; agent screens by profile -> project, named after their session. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ScreensScreen(vm: ChatViewModel) {
+    var open by remember { mutableStateOf<PcScreen?>(null) }
+    BackHandler(open != null) { open = null }
+    open?.let { sc -> ScreenDetail(vm, sc) { open = null }; return }
+    Column(Modifier.fillMaxSize()) {
+        TopAppBar(title = { Text(stringResource(R.string.screens)) },
+            navigationIcon = { IconButton(onClick = { vm.screen = vm.screensBack }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
+            actions = { IconButton(onClick = { vm.loadScreens() }, enabled = !vm.screensBusy) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) } },
+            windowInsets = WindowInsets(0))
+        if (vm.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        val pc = vm.pcScreens.filter { it.kind != "agent" }
+        val agents = vm.pcScreens.filter { it.kind == "agent" }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
+            items(pc) { sc -> ScreenRow(screenLabel(sc), sc, sc.on) { open = sc } }
+            item { Spacer(Modifier.height(8.dp)); Text(stringResource(R.string.screens_agent), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
+            if (agents.isEmpty()) item { Text(stringResource(R.string.screens_no_agent), style = MaterialTheme.typography.bodySmall) }
+            agents.groupBy { it.profile ?: "default" }.toSortedMap().forEach { (prof, byProf) ->
+                item { Text("👤 $prof", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 6.dp)) }
+                byProf.groupBy { it.project ?: it.cwd?.trimEnd('\\', '/')?.substringAfterLast('\\')?.substringAfterLast('/') ?: "—" }
+                    .toSortedMap().forEach { (proj, l) ->
+                        item { Text("📁 $proj", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 12.dp)) }
+                        items(l) { sc -> Box(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true) { open = sc } } }
+                    }
+            }
+        }
+    }
+}
+
+@Composable
+fun ScreenRow(label: String, sc: PcScreen, enabled: Boolean, onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick)) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Monitor, null)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (sc.on) "${sc.w}×${sc.h} @${sc.hz}Hz" else stringResource(R.string.screen_is_off),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+/** One screen's screenshot, refreshable; agent screens can be closed from here. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ScreenDetail(vm: ChatViewModel, sc: PcScreen, back: () -> Unit) {
+    var bmp by remember(sc.name) { mutableStateOf<ImageBitmap?>(null) }
+    var err by remember(sc.name) { mutableStateOf<String?>(null) }
+    var busy by remember(sc.name) { mutableStateOf(false) }
+    var n by remember(sc.name) { mutableStateOf(0) }
+    LaunchedEffect(sc.name, n) {
+        busy = true; err = null
+        try { bmp = vm.screenShot(sc.name).asImageBitmap() } catch (e: Exception) { err = e.message }
+        busy = false
+    }
+    val label = screenLabel(sc)
+    Column(Modifier.fillMaxSize()) {
+        TopAppBar(title = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
+            actions = {
+                IconButton(onClick = { n++ }, enabled = !busy) { Icon(Icons.Default.Refresh, stringResource(R.string.screen_refresh)) }
+                if (sc.kind == "agent" && sc.session != null)
+                    TextButton(onClick = { vm.closeAgentScreen(sc.session); back() }) { Text(stringResource(R.string.vd_close)) }
+            }, windowInsets = WindowInsets(0))
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(8.dp)) {
+            err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            bmp?.let { Image(it, label, Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth) }
+            Spacer(Modifier.height(8.dp))
+            Text("${sc.name.removePrefix("\\\\.\\")} · ${sc.w}×${sc.h} @${sc.hz}Hz", style = MaterialTheme.typography.bodySmall)
+            sc.cwd?.let { Text("📁 $it", style = MaterialTheme.typography.bodySmall) }
+            sc.session?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
+    }
 }

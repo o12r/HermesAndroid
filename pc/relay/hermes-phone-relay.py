@@ -7,7 +7,7 @@ process can mint (`hermes gateway attach`). This relay:
   * mints a fresh ticket for the requested profile and pipes frames both ways, unmodified.
 Run with the Hermes venv python. Never logs keys or tickets.
 """
-import asyncio, hmac, json, logging, os, re, subprocess, sys
+import asyncio, hmac, json, logging, os, re, subprocess, sys, tempfile, time
 from pathlib import Path
 from aiohttp import web, ClientSession, WSMsgType
 
@@ -164,7 +164,8 @@ async def fs_op(req: web.Request):
 
 VDISPLAY = HERMES_HOME / "launchers" / "hermes-vdisplay.py"   # open-source virtual display CLI (pc/vdisplay)
 # on/off = agent screen; screen-off/screen-on = main screen dark + user windows on the user screen (independent)
-VD_OPS = {"status": ["status"], "on": ["on"], "off": ["off"], "screen-off": ["screen", "off"],
+# no "on": only the agent opens its own screen; the phone can only see and close it
+VD_OPS = {"status": ["status"], "off": ["off"], "screens": ["screens"], "screen-off": ["screen", "off"],
           "screen-on": ["screen", "on"], "extend": ["mode", "extend"], "second-only": ["mode", "second-only"]}
 
 
@@ -200,6 +201,34 @@ async def vdisplay_op(req: web.Request):
     if args[0] != "status":
         log.info("phone vdisplay %s -> %s", req.match_info["op"], res.get("ok"))
     return web.json_response(res)
+
+
+async def vdisplay_shot(req: web.Request):
+    """POST /vdisplay/shot {"display": "<device name>"} -> image/jpeg of that screen (phone screen manager)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await req.json()
+    except ValueError:
+        body = {}
+    name = str((body or {}).get("display") or "")
+    if not re.fullmatch(r"\\\\\.\\DISPLAY\d{1,3}", name) or not VDISPLAY.exists():
+        return web.json_response({"error": "bad display"}, status=400)
+    out = Path(tempfile.gettempdir()) / f"hermes-shot-{os.getpid()}-{time.time_ns()}.jpg"
+    py = Path(sys.executable).with_name("python.exe")
+    proc = await asyncio.create_subprocess_exec(str(py if py.exists() else sys.executable), "-I", str(VDISPLAY),
+                                                "shot-display", name, str(out), stdout=subprocess.PIPE,
+                                                stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), 60)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"error": "timed out"}, status=504)
+    if not out.exists():
+        return web.json_response({"error": (err.decode("utf-8", "replace").strip().splitlines() or ["shot failed"])[-1]},
+                                 status=500)
+    data = out.read_bytes(); out.unlink(missing_ok=True)
+    return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 ELEVATE = HERMES_HOME / "launchers" / "hermes-elevate.py"   # phone-approved elevation (pc/elevate)
@@ -376,6 +405,7 @@ def main():
     app.router.add_route("*", "/api/{tail:.*}", http_proxy)
     app.router.add_get("/app/{app}/{what}", app_files)
     app.router.add_post("/fs/{op}", fs_op)
+    app.router.add_post("/vdisplay/shot", vdisplay_shot)
     app.router.add_post("/vdisplay/{op}", vdisplay_op)
     app.router.add_get("/elevate/pending", elevate_pending)
     app.router.add_post("/elevate/{op}/{id}", elevate_decide)
@@ -397,6 +427,7 @@ def main():
             app.router.add_route("*", "/api/{tail:.*}", http_proxy)
             app.router.add_get("/app/{app}/{what}", app_files)
             app.router.add_post("/fs/{op}", fs_op)
+            app.router.add_post("/vdisplay/shot", vdisplay_shot)
             app.router.add_post("/vdisplay/{op}", vdisplay_op)
             app.router.add_get("/elevate/pending", elevate_pending)
             app.router.add_post("/elevate/{op}/{id}", elevate_decide)

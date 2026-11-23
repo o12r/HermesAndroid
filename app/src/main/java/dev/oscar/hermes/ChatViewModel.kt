@@ -29,7 +29,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
-enum class Screen { Sessions, Chat, Settings }
+enum class Screen { Sessions, Chat, Settings, Screens }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null,
     /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
     val steps: List<Step> = emptyList(),
@@ -45,6 +45,10 @@ data class Attachment(val name: String, val isImage: Boolean, val payload: Strin
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
     val archived: Boolean, val sessionIds: List<String>, val homeCwd: String? = null)
+/** A PC screen for the screen manager. kind: physical | screen-off | agent; role: main | secondary (index 1, 2, ...). */
+data class PcScreen(val name: String, val kind: String, val role: String, val index: Int, val on: Boolean,
+    val w: Int, val h: Int, val hz: Int, val session: String?, val profile: String?, val cwd: String?,
+    val title: String? = null, val project: String? = null)
 data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
 data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
 
@@ -674,6 +678,79 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var vdBusy by mutableStateOf(false)
     /** Sessions that have an agent screen open on the PC (each session gets its own). */
     var vdAgents by mutableStateOf<Set<String>>(emptySet())
+
+    // ---- screen manager (relay /vdisplay/screens, /vdisplay/shot, /vdisplay/off)
+    var pcScreens by mutableStateOf<List<PcScreen>>(emptyList())
+    var screensBusy by mutableStateOf(false)
+    var screensBack = Screen.Sessions
+
+    private fun relayRequest(path: String, body: JSONObject): okhttp3.Request {
+        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        return okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + path).header("Authorization", "Bearer $key")
+            .post(body.toString().toRequestBody("application/json".toMediaType())).build()
+    }
+
+    private val relayHttp by lazy { okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build() }
+
+    fun openScreens(from: Screen) { screensBack = from; screen = Screen.Screens; loadScreens() }
+
+    fun loadScreens() = viewModelScope.launch {
+        screensBusy = true
+        try {
+            val o = withContext(Dispatchers.IO) {
+                relayHttp.newCall(relayRequest("/vdisplay/screens", JSONObject())).execute().use { r ->
+                    if (!r.isSuccessful) throw ApiException("HTTP ${r.code}")
+                    JSONObject(r.body!!.string())
+                }
+            }
+            val a = o.optJSONArray("screens") ?: JSONArray()
+            fun JSONObject.optS(k: String) = optString(k).ifBlank { null }
+            val raw = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { j ->
+                PcScreen(j.optString("name"), j.optString("kind"), j.optString("role"), j.optInt("index"), j.optBoolean("on"),
+                    j.optInt("w"), j.optInt("h"), j.optInt("hz"), j.optS("session"), j.optS("profile"), j.optS("cwd"))
+            }
+            pcScreens = raw
+            vdAgents = raw.mapNotNull { it.session }.toSet()
+            // Name each agent screen after its session, grouped by that session's profile and project.
+            val key = store.apiKey ?: return@launch
+            val named = raw.filter { it.kind == "agent" }.groupBy { it.profile ?: "default" }.flatMap { (prof, list) ->
+                val titles = runCatching { ApiClient(store.relayBase(), prof, key).sessions().associate { it.id to it.title } }
+                    .getOrDefault(emptyMap())
+                val projs = runCatching {
+                    val t = gatewayFor(prof).call("projects.tree", JSONObject().put("preview_limit", 0).put("session_limit", 1000))
+                    val n = t.optJSONArray("projects") ?: JSONArray()
+                    (0 until n.length()).mapNotNull { n.optJSONObject(it) }.flatMap { p ->
+                        val label = if (p.optBoolean("isNoProject")) s(R.string.home) else p.optString("label")
+                        val ids = p.optJSONArray("sessionIds") ?: JSONArray()
+                        (0 until ids.length()).map { ids.optString(it) to label }
+                    }.toMap()
+                }.getOrDefault(emptyMap())
+                list.map { it.copy(title = titles[it.session], project = projs[it.session]) }
+            }
+            pcScreens = raw.filter { it.kind != "agent" } + named
+        } catch (e: Exception) { status = e.message } finally { screensBusy = false }
+    }
+
+    /** JPEG of one PC screen, decoded. */
+    suspend fun screenShot(name: String): android.graphics.Bitmap = withContext(Dispatchers.IO) {
+        relayHttp.newCall(relayRequest("/vdisplay/shot", JSONObject().put("display", name))).execute().use { r ->
+            if (!r.isSuccessful) throw ApiException(runCatching { JSONObject(r.body!!.string()).optString("error") }
+                .getOrNull()?.ifBlank { null } ?: "HTTP ${r.code}")
+            android.graphics.BitmapFactory.decodeStream(r.body!!.byteStream()) ?: throw ApiException("bad image")
+        }
+    }
+
+    /** Close a session's agent screen (only the agent opens one; the phone may close it). */
+    fun closeAgentScreen(session: String) = viewModelScope.launch {
+        screensBusy = true
+        try {
+            withContext(Dispatchers.IO) {
+                relayHttp.newCall(relayRequest("/vdisplay/off", JSONObject().put("session", session))).execute().close()
+            }
+        } catch (e: Exception) { status = e.message } finally { screensBusy = false }
+        if (session == cur.id) vdAgent = false
+        loadScreens()
+    }
 
     fun vdisplay(op: String) = viewModelScope.launch {
         vdBusy = true

@@ -185,7 +185,9 @@
     <string name="queue">Queue: send when this turn ends</string>
     <string name="queued">Queued: %1$s</string>
     <string name="unqueue">Remove from queue</string>
-    <string name="vd_hint">The agent works on its own virtual screen (extended to the right) without stealing focus.</string>
+    <string name="vd_hint">When the agent needs a UI it opens its own virtual screen (to the right) without stealing focus, and closes it when done or when this session is closed on both the phone and the PC.</string>
+    <string name="vd_close">Close</string>
+    <string name="vd_none">Not open</string>
     <string name="vd_screen_off">Turn PC screen off</string>
     <string name="vd_screen_off_hint">The main screen goes dark and your windows move to a separate virtual screen. Any key or mouse move on the PC turns it back on.</string>
     <string name="vd_screen_off_need_driver">Needs the second virtual monitor: reinstall the driver from the PC tray menu.</string>
@@ -193,4 +195,15 @@
     <string name="elevate_body">The agent wants to run this program as administrator on your PC:</string>
     <string name="elevate_publisher">Publisher: %1$s</string>
     <string name="elevate_allow">Approve</string>
+    <string name="screens">Screens</string>
+    <string name="screens_pc">PC screens</string>
+    <string name="screens_agent">Agent screens</string>
+    <string name="screens_no_agent">No agent has a screen open.</string>
+    <string name="screen_main">Main screen</string>
+    <string name="screen_secondary">Secondary %1$d</string>
+    <string name="screen_off_for">Screen-off stand-in for %1$s</string>
+    <string name="screen_is_off">Off (screen-off)</string>
+    <string name="screens_manage">Manage screens</string>
+    <string name="jump_newest">Jump to newest</string>
+    <string name="screen_refresh">Refresh screenshot</string>
 </resources>

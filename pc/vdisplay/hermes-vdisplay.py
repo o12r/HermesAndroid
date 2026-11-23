@@ -7,7 +7,7 @@ session is open on neither the phone nor the PC), the screen-off monitors only w
   status                         JSON: installed / attached / mode / display bounds
   install | uninstall            install-vdd.ps1 (one UAC prompt)
   on | off  (agent on|off)       this session's agent screen on / off (session = $HERMES_SESSION_ID, or
-                                 $HERMES_VDISPLAY_SESSION, else "manual"); every session gets its own screen
+                                 $HERMES_VDISPLAY_SESSION, else "manual"); never automatic: a session's agent opens its own screen on demand
   agents                         JSON: open agent screens {session: display}
   screen off | screen on         physical screens go dark; one screen-off monitor per physical screen takes its
                                  windows; real keyboard/mouse input turns them back on. Legacy: mode ...
@@ -333,7 +333,7 @@ def _spawn_host():
 def _request(sid, on):
     r = _jload(AGENT_REQ, {})
     if on:
-        r[sid] = {"home": os.environ.get("HERMES_HOME", ""), "t": time.time()}
+        r[sid] = {"home": os.environ.get("HERMES_HOME", ""), "cwd": os.getcwd(), "t": time.time()}
     else:
         r.pop(sid, None)
     AGENT_REQ.write_text(json.dumps(r), encoding="utf-8")
@@ -1126,6 +1126,54 @@ def shot(out=None):
     return str(out)
 
 
+def _profile_of(home):
+    p = Path(home) if home else None
+    return p.name if p and p.parent.name.lower() == "profiles" else "default"
+
+
+def screens():
+    """Every screen for the phone's screen manager. Physical: role main / secondary (index 1, 2, ... left to right).
+    Agent: owning session, its profile and working folder. Screen-off: the physical screen it stands in for."""
+    def order(ps):
+        return sorted(ps, key=lambda d: (not d["primary"], d["x"], d["y"]))
+    phys = order([d for d in physical() if d["attached"]])
+    lay = order(_jload(LAYOUT, {}).get("physical", [])) if screen_off() else []
+    out, idx = [], {}
+    for i, d in enumerate(phys or lay):
+        role = "main" if i == 0 else "secondary"
+        idx[(d["x"], d["y"])] = (role, i)
+        out.append({"name": d["name"], "kind": "physical", "role": role, "index": i, "on": bool(phys),
+                    "w": d["w"], "h": d["h"], "hz": d["hz"]})
+    for d in svdas():
+        role, i = idx.get((d["x"], d["y"]), ("main" if d["primary"] else "secondary", 0))
+        out.append({"name": d["name"], "kind": "screen-off", "role": role, "index": i, "on": True,
+                    "w": d["w"], "h": d["h"], "hz": d["hz"]})
+    agents = _jload(AGENT_SCREENS, {}) if _alive(HOST_PID) else {}
+    reqs, by = _jload(AGENT_REQ, {}), {d["name"]: d for d in displays() if d["attached"]}
+    for sid, name in agents.items():
+        d = by.get(name)
+        if not d:
+            continue
+        r = reqs.get(sid, {})
+        out.append({"name": name, "kind": "agent", "session": sid, "profile": _profile_of(r.get("home")),
+                    "cwd": r.get("cwd", ""), "on": True, "w": d["w"], "h": d["h"], "hz": d["hz"]})
+    return out
+
+
+def shot_display(name, out=None, quality=70, max_w=1600):
+    """JPEG of any attached screen (phone screen manager)."""
+    from PIL import ImageGrab
+    d = next((d for d in displays() if d["name"].lower() == str(name).lower() and d["attached"]), None)
+    if not d:
+        raise RuntimeError(f"display {name} is not active")
+    im = ImageGrab.grab(bbox=(d["x"], d["y"], d["x"] + d["w"], d["y"] + d["h"]), all_screens=True).convert("RGB")
+    if im.width > max_w:
+        im = im.resize((max_w, im.height * max_w // im.width))
+    out = Path(out or STATE / "shot-display.jpg")
+    im.save(out, "JPEG", quality=quality)
+    return str(out)
+
+
 # ---------------------------------------------------------------- CLI
 def status():
     v, ok = vdd(), svda_installed()
@@ -1157,6 +1205,10 @@ def main(a):
         print(json.dumps(status())); return 0
     if c == "status":
         print(json.dumps(status(), indent=1)); return 0
+    if c == "screens":
+        print(json.dumps({"screens": screens(), "screen_off": screen_off()}, ensure_ascii=False)); return 0
+    if c == "shot-display":
+        print(shot_display(r[0], r[1] if len(r) > 1 else None)); return 0
     if c in ("on", "agent-on") or (c == "agent" and r[:1] == ["on"]):
         turn_on()
     elif c in ("off", "agent-off") or (c == "agent" and r[:1] == ["off"]):

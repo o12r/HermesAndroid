@@ -185,7 +185,9 @@
     <string name="queue">排队：本轮结束后发送</string>
     <string name="queued">已排队：%1$s</string>
     <string name="unqueue">移出队列</string>
-    <string name="vd_hint">Agent 在自己的虚拟屏（扩展到右侧）上操作，不抢焦点。</string>
+    <string name="vd_hint">Agent 需要界面时会自己打开虚拟屏（在右侧），不抢焦点；用完自己关闭，手机和 PC 都退出该会话时也会关闭。</string>
+    <string name="vd_close">关闭</string>
+    <string name="vd_none">未开启</string>
     <string name="vd_screen_off">关闭 PC 屏幕</string>
     <string name="vd_screen_off_hint">主屏息屏，你的窗口挪到单独的虚拟屏。在 PC 上按任意键或动鼠标即恢复。</string>
     <string name="vd_screen_off_need_driver">需要第二块虚拟屏：请在 PC 托盘菜单中重新安装驱动。</string>
@@ -193,4 +195,15 @@
     <string name="elevate_body">Agent 想在你的电脑上以管理员身份运行此程序：</string>
     <string name="elevate_publisher">发布者：%1$s</string>
     <string name="elevate_allow">批准</string>
+    <string name="screens">屏幕</string>
+    <string name="screens_pc">PC 屏幕</string>
+    <string name="screens_agent">Agent 屏幕</string>
+    <string name="screens_no_agent">当前没有 Agent 打开屏幕。</string>
+    <string name="screen_main">主屏幕</string>
+    <string name="screen_secondary">副屏 %1$d</string>
+    <string name="screen_off_for">%1$s 的熄屏替身</string>
+    <string name="screen_is_off">已熄屏</string>
+    <string name="screens_manage">管理屏幕</string>
+    <string name="jump_newest">跳到最新</string>
+    <string name="screen_refresh">刷新截图</string>
 </resources>
