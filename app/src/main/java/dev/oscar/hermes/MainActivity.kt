@@ -961,11 +961,11 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
         val mod = Modifier.size(32.dp)
         if (m.ts > 0) Text(fmtMsgTime(m.ts), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
-        Spacer(Modifier.weight(1f))
         if (m.tokIn != null || m.tokOut != null) Text(
-            listOfNotNull(m.prefillTps?.let { "prefill " + fmtSpeed(it) }, m.genTps?.let { "gen " + fmtSpeed(it) },
+            listOfNotNull(m.prefillTps?.let { "prefill " + fmtSpeed(it) }, m.genTps?.let { "generation " + fmtSpeed(it) },
                 fmtTok((m.tokIn ?: 0) + (m.tokOut ?: 0)) + " tokens").joinToString(" · "),
-            maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 4.dp))
+            maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
+        Spacer(Modifier.weight(1f))
         IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(m.text))
             android.widget.Toast.makeText(ctx, copied, android.widget.Toast.LENGTH_SHORT).show() }, mod) {
             Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), Modifier.size(16.dp)) }

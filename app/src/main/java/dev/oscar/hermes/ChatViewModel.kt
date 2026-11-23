@@ -1229,7 +1229,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val m = apiFor(c.profile).messages(id)
             val failed = c.messages.filter { it.failed }
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
-                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { UiMsg(r.role, it, id = r.id, steps = r.steps, ts = r.ts) } })
+                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { t -> val st = if (r.role == "assistant") store.replyStat(id, t) else null
+                    UiMsg(r.role, t, id = r.id, steps = r.steps, ts = r.ts, tokIn = st?.get(0)?.toLong(), tokOut = st?.get(1)?.toLong(), prefillTps = st?.get(2), genTps = st?.get(3)) } })
             c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u.ifBlank { null }, session = id) })
             c.messages.addAll(failed); c.loaded = true
             if (c === cur) { offline = false; error = null }
@@ -1447,6 +1448,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             val pre = if (ttft >= 0.05f && i - i0 > 0) (i - i0) / ttft else null
                             val gt = if (gen >= 0.2f && o - o0 > 0) (o - o0) / gen else null
                             updateLast(c) { it.copy(tokIn = i - i0, tokOut = o - o0, prefillTps = pre, genTps = gt) }
+                            c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf((i - i0).toFloat(), (o - o0).toFloat(), pre, gt)) } }
                         }
                         c.totIn = i; c.totOut = o } }
                 if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")

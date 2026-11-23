@@ -38,6 +38,17 @@ class SecureStore(ctx: Context) {
     /** Last session list + project tree per profile (JSON), so the session page opens instantly. */
     fun snap(profile: String): String? = prefs.getString("snap_$profile", null)
     fun setSnap(profile: String, json: String) = prefs.edit().putString("snap_$profile", json).apply()
+    /** Per-reply token/speed stats, kept per session (key = hash of the reply text) so history keeps showing them. */
+    fun replyStat(sid: String, text: String): List<Float?>? = runCatching {
+        val a = org.json.JSONObject(prefs.getString("mstat_$sid", "{}")!!).optJSONArray(text.hashCode().toString()) ?: return null
+        List(4) { if (a.isNull(it)) null else a.getDouble(it).toFloat() }
+    }.getOrNull()
+    fun setReplyStat(sid: String, text: String, v: List<Float?>) {
+        val o = runCatching { org.json.JSONObject(prefs.getString("mstat_$sid", "{}")!!) }.getOrDefault(org.json.JSONObject())
+        while (o.length() >= 300) o.remove(o.keys().next())
+        o.put(text.hashCode().toString(), org.json.JSONArray(v.map { it ?: org.json.JSONObject.NULL }))
+        prefs.edit().putString("mstat_$sid", o.toString()).apply()
+    }
     /** User-chosen profile order (names); profiles not listed follow alphabetically. */
     var profileOrder: List<String>
         get() = prefs.getString("profileOrder", "")!!.lines().filter { it.isNotBlank() }
