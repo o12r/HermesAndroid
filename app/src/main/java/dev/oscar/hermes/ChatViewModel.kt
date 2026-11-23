@@ -243,7 +243,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun api() = ApiClient(store.relayBase(), profile, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
 
     private val netCb = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { viewModelScope.launch { if (offline) reconnect() } }
+        override fun onAvailable(network: Network) { viewModelScope.launch { if (store.hasKey) { delay(800); pickRelay() }; if (offline) reconnect() } }
         override fun onLost(network: Network) { viewModelScope.launch { status = s(R.string.network_changed) } }
     }
     init {
@@ -386,14 +386,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** The phone's own Wi-Fi IPv4 address, or null when it isn't on Wi-Fi. */
-    private fun wifiIp(): String? = runCatching {
+    private fun wifiIp(): String? = localNet()?.first
+    /** (own IPv4, default gateway) of the LAN-ish network: Wi-Fi, Ethernet, or WSA/emulator's virtual NIC; never VPN or cellular. */
+    private fun localNet(): Pair<String, String?>? = runCatching {
         val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
-        cm.allNetworks.firstNotNullOfOrNull { n ->
-            val caps = cm.getNetworkCapabilities(n)
-            if (caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true)
-                cm.getLinkProperties(n)?.linkAddresses?.map { it.address }?.firstOrNull { it is java.net.Inet4Address }?.hostAddress
-            else null
-        }
+        cm.allNetworks.mapNotNull { n ->
+            val caps = cm.getNetworkCapabilities(n) ?: return@mapNotNull null
+            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) return@mapNotNull null
+            val lp = cm.getLinkProperties(n) ?: return@mapNotNull null
+            val ip = lp.linkAddresses.map { it.address }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress ?: return@mapNotNull null
+            val gw = lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }?.gateway?.hostAddress
+            (if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) 0 else 1) to (ip to gw)
+        }.minByOrNull { it.first }?.second
     }.getOrNull()
     private fun sameSubnet(a: String?, b: String?) = a != null && b != null && a.substringBeforeLast('.') == b.substringBeforeLast('.')
 
@@ -403,11 +407,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val key = store.apiKey ?: return false
         val me = wifiIp()
         val lanFirst = sameSubnet(me, runCatching { java.net.URI(store.lanUrl).host }.getOrNull())
-        val order = (if (lanFirst) listOf(store.lanUrl, store.relayUrl) else listOf(store.relayUrl, store.lanUrl)).filter { it.isNotBlank() }.distinct()
+        val gwUrl = localNet()?.second?.let { "http://$it:8643" }
+        val order = (if (lanFirst) listOf(store.lanUrl, store.relayUrl, gwUrl) else listOf(store.relayUrl, store.lanUrl, gwUrl)).filterNotNull().filter { it.isNotBlank() }.distinct()
         for (u in order) {
             if (runCatching { withTimeout(4000) { ApiClient(u, profile, key).health() } }.isSuccess) {
                 if (store.activeRelay != u) { store.activeRelay = u; gws.values.forEach { it.close() }; gws.clear(); chats.forEach { it.liveId = null } }
                 if (me != null) viewModelScope.launch { learnLan(u, key, me) }
+                if (u == gwUrl && store.lanUrl.isBlank()) store.lanUrl = u
                 return true
             }
         }
