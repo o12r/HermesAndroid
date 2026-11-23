@@ -939,6 +939,17 @@ fun ColumnScope.FailedActions(m: UiMsg, vm: ChatViewModel) {
     }
 }
 
+/** Send time: HH:mm today, MM-dd HH:mm this year, else yyyy-MM-dd HH:mm. */
+fun fmtMsgTime(ms: Long): String {
+    val t = java.util.Calendar.getInstance().apply { timeInMillis = ms }; val n = java.util.Calendar.getInstance()
+    val f = when {
+        t.get(java.util.Calendar.YEAR) != n.get(java.util.Calendar.YEAR) -> "yyyy-MM-dd HH:mm"
+        t.get(java.util.Calendar.DAY_OF_YEAR) != n.get(java.util.Calendar.DAY_OF_YEAR) -> "MM-dd HH:mm"
+        else -> "HH:mm"
+    }
+    return java.text.SimpleDateFormat(f, java.util.Locale.getDefault()).format(java.util.Date(ms))
+}
+
 /** Copy / edit (own messages) / branch from here. Edit and branch need the stored row id. */
 @Composable
 fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
@@ -946,8 +957,11 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
     val ctx = LocalContext.current
     var editing by remember { mutableStateOf(false) }
     val copied = stringResource(R.string.copied)
-    Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         val mod = Modifier.size(32.dp)
+        if (m.ts > 0) Text(fmtMsgTime(m.ts), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
+        Spacer(Modifier.weight(1f))
         if (m.tokIn != null || m.tokOut != null) Text(
             listOfNotNull(m.prefillTps?.let { "prefill " + fmtSpeed(it) }, m.genTps?.let { "gen " + fmtSpeed(it) },
                 fmtTok((m.tokIn ?: 0) + (m.tokOut ?: 0)) + " tokens").joinToString(" · "),

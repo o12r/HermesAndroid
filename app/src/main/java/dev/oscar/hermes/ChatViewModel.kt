@@ -48,7 +48,9 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Tokens this reply used (input/output), from the PC's session totals; null if unknown. */
     val tokIn: Long? = null, val tokOut: Long? = null,
     /** Speeds measured on the phone for this reply: prompt tokens / time-to-first-token, output tokens / generation time (tok/s). */
-    val prefillTps: Float? = null, val genTps: Float? = null)
+    val prefillTps: Float? = null, val genTps: Float? = null,
+    /** Send time (epoch ms): stored timestamp for history, creation time for live messages; 0 = unknown. */
+    val ts: Long = System.currentTimeMillis())
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
@@ -1207,7 +1209,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val m = apiFor(c.profile).messages(id)
             val failed = c.messages.filter { it.failed }
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
-                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { UiMsg(r.role, it, id = r.id, steps = r.steps) } })
+                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { UiMsg(r.role, it, id = r.id, steps = r.steps, ts = r.ts) } })
             c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u.ifBlank { null }, session = id) })
             c.messages.addAll(failed); c.loaded = true
             if (c === cur) { offline = false; error = null }

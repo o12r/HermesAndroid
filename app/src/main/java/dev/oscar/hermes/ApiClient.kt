@@ -24,7 +24,7 @@ data class ModelChoice(val provider: String, val providerName: String, val model
 }
 data class ModelOptions(val currentProvider: String, val currentModel: String, val choices: List<ModelChoice>)
 data class Skill(val name: String, val description: String)
-data class Msg(val role: String, val content: String, val id: Int? = null, val steps: List<Step> = emptyList())
+data class Msg(val role: String, val content: String, val id: Int? = null, val steps: List<Step> = emptyList(), val ts: Long = 0L)
 
 /** One step of Hermes's work shown (collapsed) above a reply: thinking text or a tool call with its output. */
 data class Step(val kind: String, val name: String, val detail: String, val output: String? = null, val toolId: String? = null)
@@ -121,22 +121,24 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
         val out = mutableListOf<Msg>()
         var pending = mutableListOf<Step>()
         var lastId: Int? = null
+        var lastTs = 0L
         fun flush() {
             if (pending.isEmpty()) { lastId = null; return }
             val text = pending.filter { it.kind == "text" }.joinToString("") { it.detail }
-            out.add(Msg("assistant", text, lastId, pending.toList()))
+            out.add(Msg("assistant", text, lastId, pending.toList(), lastTs))
             pending = mutableListOf(); lastId = null
         }
         for (i in 0 until a.length()) {
             val r = a.optJSONObject(i) ?: continue
             val id = r.optInt("id", 0).takeIf { it > 0 }
+            val ts = r.optDouble("timestamp", 0.0).let { if (it.isNaN()) 0L else if (it < 1e11) (it * 1000).toLong() else it.toLong() }
             when (r.optString("role")) {
                 "user" -> {
                     flush()
-                    contentText(r.opt("content")).takeIf { it.isNotBlank() }?.let { out.add(Msg("user", it, id)) }
+                    contentText(r.opt("content")).takeIf { it.isNotBlank() }?.let { out.add(Msg("user", it, id, ts = ts)) }
                 }
                 "assistant" -> {
-                    lastId = id ?: lastId
+                    lastId = id ?: lastId; if (ts > 0) lastTs = ts
                     Steps.thinkingOf(r).takeIf { it.isNotBlank() }?.let { pending.add(Step("thinking", "", it)) }
                     contentText(r.opt("content")).takeIf { it.isNotBlank() }?.let { pending.add(Step("text", "", it)) }
                     val calls = r.opt("tool_calls").let { if (it is String) runCatching { JSONArray(it) }.getOrNull() else it as? JSONArray }

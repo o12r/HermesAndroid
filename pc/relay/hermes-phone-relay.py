@@ -37,6 +37,26 @@ def profile_ok(p: str) -> bool:
                               and (HERMES_HOME / "profiles" / p).is_dir())
 
 
+IO_THREADS = 32      # worker threads for blocking work (file/yaml/stat); keeps the event loop free for sockets
+_IO_POOL = None
+
+
+def _io(fn, *a):
+    """Run blocking [fn] on the dedicated thread pool so one slow disk/yaml/subprocess call never stalls other phones."""
+    return asyncio.get_running_loop().run_in_executor(_IO_POOL, fn, *a)
+
+
+_HTTP = None         # one shared aiohttp client (keep-alive pool) for all proxied /api calls
+
+
+def _http():
+    global _HTTP
+    if _HTTP is None or _HTTP.closed:
+        from aiohttp import TCPConnector
+        _HTTP = ClientSession(connector=TCPConnector(limit=100, limit_per_host=50, keepalive_timeout=30))
+    return _HTTP
+
+
 _ATTACH_SEM = None   # created lazily inside the running loop: at most 3 `gateway attach` subprocesses at once
 MAX_WS = 64          # simultaneous phone sockets; more get 503 instead of exhausting the PC
 _WS_COUNT = 0
@@ -128,12 +148,12 @@ async def http_proxy(req: web.Request):
     headers["x-hermes-gateway-ticket"] = ticket
     body = await req.read()
     try:
-        async with ClientSession() as s:
-            async with s.request(req.method, origin + req.path_qs, headers=headers, data=body or None,
-                                 timeout=__import__("aiohttp").ClientTimeout(total=120)) as r:
-                data = await r.read()
-                return web.Response(status=r.status, body=data,
-                                    content_type=(r.content_type or "application/json"))
+        s = _http()
+        async with s.request(req.method, origin + req.path_qs, headers=headers, data=body or None,
+                             timeout=__import__("aiohttp").ClientTimeout(total=120)) as r:
+            data = await r.read()
+            return web.Response(status=r.status, body=data,
+                                content_type=(r.content_type or "application/json"))
     except Exception as e:
         log.warning("proxy %s failed: %s", req.path, e)
         return web.json_response({"error": f"gateway unavailable: {e}"}, status=502)
@@ -175,10 +195,11 @@ async def fs_op(req: web.Request):
         return web.json_response({"error": "path must be absolute"}, status=400)
     op = req.match_info["op"]
     if op == "stat":
-        return web.json_response({"exists": p.exists(), "dir": p.is_dir()})
+        ex, isdir = await _io(lambda: (p.exists(), p.is_dir()))
+        return web.json_response({"exists": ex, "dir": isdir})
     if op == "mkdir":
         try:
-            p.mkdir(parents=True, exist_ok=True)
+            await _io(lambda: p.mkdir(parents=True, exist_ok=True))
         except OSError as e:
             return web.json_response({"error": f"mkdir failed: {e.strerror or e}"}, status=400)
         log.info("phone created folder %s", p)
@@ -332,7 +353,7 @@ async def outbox_list(req: web.Request):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + wait
     while True:
-        files = _outbox_files()
+        files = await _io(_outbox_files)
         if any(f"{x['name']}|{x['time']}" not in known for x in files) or loop.time() >= deadline:
             break
         await asyncio.sleep(1)
@@ -347,11 +368,10 @@ async def outbox_item(req: web.Request):
     if not SAFE_NAME.fullmatch(name):
         return web.json_response({"error": "bad name"}, status=400)
     f = OUTBOX / name
-    if not f.is_file() or name.endswith(".session"):
+    if not await _io(f.is_file) or name.endswith(".session"):
         return web.json_response({"error": "not found"}, status=404)
     if req.method == "DELETE":
-        f.unlink()
-        f.with_name(name + ".session").unlink(missing_ok=True)
+        await _io(lambda: (f.unlink(), f.with_name(name + ".session").unlink(missing_ok=True)))
         return web.json_response({"ok": True})
     return web.FileResponse(f, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
@@ -453,11 +473,11 @@ async def config_context(req: web.Request):
                 return web.json_response({"error": f"{k} out of range"}, status=400)
             vals[k] = v
         try:
-            await asyncio.get_running_loop().run_in_executor(None, _ctx_write, vals)
+            await asyncio.get_running_loop().run_in_executor(_IO_POOL, _ctx_write, vals)
         except Exception as e:
             log.warning("context settings write failed: %s", e)
             return web.json_response({"error": f"write failed: {e}"}, status=500)
-    return web.json_response(await asyncio.get_running_loop().run_in_executor(None, _ctx_state))
+    return web.json_response(await asyncio.get_running_loop().run_in_executor(_IO_POOL, _ctx_state))
 
 
 # ---------------------------------------------------------------- model settings (all profiles)
@@ -588,11 +608,11 @@ async def config_models(req: web.Request):
         if err:
             return web.json_response({"error": err}, status=400)
         try:
-            await asyncio.get_running_loop().run_in_executor(None, _model_write, body)
+            await asyncio.get_running_loop().run_in_executor(_IO_POOL, _model_write, body)
         except Exception as e:
             log.warning("models write failed: %s", e)
             return web.json_response({"error": f"write failed: {e}"}, status=500)
-    return web.json_response(await asyncio.get_running_loop().run_in_executor(None, _model_state))
+    return web.json_response(await asyncio.get_running_loop().run_in_executor(_IO_POOL, _model_state))
 
 
 # ---------------------------------------------------------------- PC stats (CPU / memory / GPU, sampled in a thread)
@@ -871,6 +891,9 @@ async def ws_handler(req: web.Request):
 
 
 def main():
+    global _IO_POOL
+    from concurrent.futures import ThreadPoolExecutor
+    _IO_POOL = ThreadPoolExecutor(max_workers=IO_THREADS, thread_name_prefix="relay-io")
     threading.Thread(target=_stats_loop, daemon=True).start()
     app = web.Application()
     app.router.add_get("/health", health)
