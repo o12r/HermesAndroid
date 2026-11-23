@@ -45,6 +45,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.animation.animateContentSize
@@ -492,7 +494,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
             if (vm.messages.lastOrNull()?.role == "user") follow = true
             if (!follow) return@collect
             val now = android.os.SystemClock.uptimeMillis()
-            if (!vm.streaming || now - lastScroll >= 120) { lastScroll = now; list.scrollToItem(size - 1, Int.MAX_VALUE / 2) }
+            if (!vm.streaming || now - lastScroll >= 120) { lastScroll = now; list.scrollToItem(size - 1); list.scrollBy(1_000_000f) }
         }
     }
     Column(Modifier.fillMaxSize()) {
@@ -524,7 +526,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
         }
         if (!follow && list.canScrollForward && vm.messages.isNotEmpty())
             SmallFloatingActionButton(onClick = { follow = true
-                    jumpScope.launch { list.scrollToItem(vm.messages.lastIndex, Int.MAX_VALUE / 2) } },
+                    jumpScope.launch { list.scrollToItem(vm.messages.lastIndex); list.scrollBy(1_000_000f) } },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp)) {
                 Icon(Icons.Default.KeyboardArrowDown, stringResource(R.string.jump_newest)) }
         }
@@ -952,10 +954,11 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             var previewPct by remember { mutableStateOf((vm.fontScale * 100).toInt()) }
             Text(stringResource(R.string.font_size, previewPct), style = MaterialTheme.typography.titleSmall)
             Slider(
+                modifier = Modifier.padding(horizontal = 24.dp).systemGestureExclusion(),
                 value = (previewPct - 80).toFloat(),
                 onValueChange = { previewPct = (it.toInt() + 80).coerceIn(80, 150) },
                 onValueChangeFinished = { vm.chooseFontScale(previewPct / 100f) },
-                valueRange = 0f..70f, steps = 69)
+                valueRange = 0f..70f)
             Text(stringResource(R.string.font_preview), style = MaterialTheme.typography.bodyMedium)
             Text(stringResource(R.string.language), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.lang_system), "en" to stringResource(R.string.lang_en),
