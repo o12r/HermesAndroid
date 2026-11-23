@@ -80,22 +80,32 @@ private fun StatValue(label: String, pct: Double?) {
     }
 }
 
-/** A small line graph of the last N samples (0..100 scaled to the height); empty = "N/A". */
+/** History graph of the last 60 samples on a fixed 0..100% axis: gridlines, filled area, thick line, current value. */
 @Composable
 private fun StatGraph(label: String, values: List<Double?>, color: Color) {
     Column {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        val pts = values.mapNotNull { it }
-        if (pts.isEmpty()) { Text(stringResource(R.string.pc_na), style = MaterialTheme.typography.labelMedium); return }
-        Canvas(Modifier.fillMaxWidth().height(40.dp)) {
-            val step = size.width / maxOf(1, pts.size - 1)
-            val path = Path()
+        val pts = values.mapNotNull { it }.takeLast(60)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+            Text(pts.lastOrNull()?.let { it.toInt().toString() + "%" } ?: stringResource(R.string.pc_na), style = MaterialTheme.typography.labelMedium, color = color)
+        }
+        if (pts.isEmpty()) return
+        val grid = MaterialTheme.colorScheme.outlineVariant
+        Canvas(Modifier.fillMaxWidth().height(72.dp)) {
+            val h = size.height
+            listOf(0f, 0.5f, 1f).forEach { f -> drawLine(grid, androidx.compose.ui.geometry.Offset(0f, h * f), androidx.compose.ui.geometry.Offset(size.width, h * f), strokeWidth = 1f) }
+            val step = size.width / maxOf(1, 59)
+            val x0 = size.width - (pts.size - 1) * step   // newest sample sits at the right edge
+            val line = Path(); val area = Path()
             pts.forEachIndexed { i, v ->
-                val x = i * step
-                val y = size.height * (1f - (v / 100.0).coerceIn(0.0, 1.0).toFloat())
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                val x = x0 + i * step
+                val y = h * (1f - (v / 100.0).coerceIn(0.0, 1.0).toFloat())
+                if (i == 0) { line.moveTo(x, y); area.moveTo(x, h); area.lineTo(x, y) } else { line.lineTo(x, y); area.lineTo(x, y) }
             }
-            drawPath(path, color, style = Stroke(width = 2f))
+            area.lineTo(size.width, h); area.close()
+            drawPath(area, color.copy(alpha = 0.18f))
+            drawPath(line, color, style = Stroke(width = 4f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
         }
     }
 }

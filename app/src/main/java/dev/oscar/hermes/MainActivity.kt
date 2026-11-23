@@ -1194,7 +1194,7 @@ fun ScreensScreen(vm: ChatViewModel) {
                 HorizontalDivider()
             } }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
-            items(pc, key = { "pc:" + it.name }) { sc -> Column { ScreenRow(screenLabel(sc), sc, sc.on, emptyList()) { toggle(sc) }
+            items(pc, key = { "pc:" + it.name }) { sc -> Column { ScreenRow(screenLabel(sc), sc, sc.on, screenActions(vm, sc)) { toggle(sc) }
                 if (sc.name in open) ScreenInline(vm, sc) { open = open - sc.name } } }
             item { Spacer(Modifier.height(8.dp)); Text(stringResource(R.string.screens_agent), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             if (agents.isEmpty()) item { Text(stringResource(R.string.screens_no_agent), style = MaterialTheme.typography.bodySmall) }
@@ -1203,7 +1203,7 @@ fun ScreensScreen(vm: ChatViewModel) {
                 byProf.groupBy { it.project ?: it.cwd?.trimEnd('\\', '/')?.substringAfterLast('\\')?.substringAfterLast('/') ?: "—" }
                     .toSortedMap().forEach { (proj, l) ->
                         item { Text("📁 $proj", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 12.dp)) }
-                        items(l, key = { "ag:" + it.name + (it.session ?: "") }) { sc -> Column(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true, emptyList()) { toggle(sc) }
+                        items(l, key = { "ag:" + it.name + (it.session ?: "") }) { sc -> Column(Modifier.padding(start = 12.dp)) { ScreenRow(screenLabel(sc), sc, true, screenActions(vm, sc)) { toggle(sc) }
                             if (sc.name in open) ScreenInline(vm, sc) { open = open - sc.name } } }
                     }
             }
@@ -1229,7 +1229,8 @@ fun screenColor(sc: PcScreen) = when (sc.kind) {
 
 @Composable
 fun ScreenRow(label: String, sc: PcScreen, enabled: Boolean, actions: List<Pair<String, () -> Unit>> = emptyList(), onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick)) {
+    var menu by remember { mutableStateOf(false) }
+    Card(Modifier.fillMaxWidth().combinedClickable(enabled = enabled || actions.isNotEmpty(), onLongClick = { if (actions.isNotEmpty()) menu = true }) { if (enabled) onClick() }) {
         Row(Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(4.dp).height(36.dp).background(screenColor(sc)))
             Spacer(Modifier.width(8.dp))
@@ -1241,7 +1242,6 @@ fun ScreenRow(label: String, sc: PcScreen, enabled: Boolean, actions: List<Pair<
                     style = MaterialTheme.typography.bodySmall)
             }
             if (actions.isNotEmpty()) Box {
-                var menu by remember { mutableStateOf(false) }
                 IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, null) }
                 DropdownMenu(menu, { menu = false }) {
                     actions.forEach { (t, f) -> DropdownMenuItem(text = { Text(t) }, onClick = { menu = false; f() }) } }
@@ -1268,7 +1268,7 @@ fun ScreenInline(vm: ChatViewModel, sc: PcScreen, close: () -> Unit) {
         err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         var zoom by remember { mutableStateOf(false) }
         bmp?.let { Image(it, label, Modifier.fillMaxWidth().clickable { zoom = true }, contentScale = ContentScale.FillWidth)
-            if (zoom) ZoomImage(it, label) { zoom = false } }
+            if (zoom) ZoomImage(it, label, busy, { n++ }) { zoom = false } }
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = { n++ }, enabled = !busy) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text(stringResource(R.string.screen_refresh)) }
@@ -1282,15 +1282,36 @@ fun ScreenInline(vm: ChatViewModel, sc: PcScreen, close: () -> Unit) {
 
 /** Full-screen, static screenshot: pinch to zoom, drag to pan, tap ✕ to close. */
 @Composable
-fun ZoomImage(img: ImageBitmap, label: String, close: () -> Unit) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = close, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+fun ZoomImage(img: ImageBitmap, label: String, busy: Boolean, refresh: () -> Unit, close: () -> Unit) {
+    // Forced landscape while the screenshot is maximised; restored on exit.
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    DisposableEffect(Unit) {
+        var c = ctx; while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+        val act = c as? android.app.Activity
+        val old = act?.requestedOrientation
+        act?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        onDispose { if (old != null) act.requestedOrientation = old }
+    }
+    androidx.compose.ui.window.Dialog(onDismissRequest = close, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        // Hide the system bars for the maximised view.
+        val view = androidx.compose.ui.platform.LocalView.current
+        DisposableEffect(view) {
+            val w = (view.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
+            if (w != null) androidx.core.view.WindowCompat.getInsetsController(w, view).apply {
+                hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE }
+            onDispose { }
+        }
         var scale by remember { mutableStateOf(1f) }
         var off by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
         val st = androidx.compose.foundation.gestures.rememberTransformableState { z, pan, _ ->
             scale = (scale * z).coerceIn(1f, 8f); off = if (scale == 1f) androidx.compose.ui.geometry.Offset.Zero else off + pan }
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             Image(img, label, Modifier.fillMaxSize().androidx_transform(st).graphicsLayerZoom(scale, off), contentScale = ContentScale.Fit)
-            IconButton(onClick = close, Modifier.align(Alignment.TopEnd).systemBarsPadding()) { Icon(Icons.Default.Close, null, tint = Color.White) }
+            IconButton(onClick = close, Modifier.align(Alignment.TopStart).padding(4.dp)) { Icon(Icons.Default.Close, stringResource(R.string.back), tint = Color.White) }
+            IconButton(onClick = refresh, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp), enabled = !busy) {
+                if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                else Icon(Icons.Default.Refresh, stringResource(R.string.screen_refresh), tint = Color.White) }
         }
     }
 }
