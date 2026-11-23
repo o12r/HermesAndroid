@@ -384,10 +384,11 @@ fun SessionsScreen(vm: ChatViewModel) {
                         verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
                         Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
-                        Text(if (p.isHome) stringResource(R.string.home) else p.name,
-                            Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(list.size.toString(), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
-                        Spacer(Modifier.weight(1f))
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (p.isHome) stringResource(R.string.home) else p.name, Modifier.weight(1f, fill = false),
+                                style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(list.size.toString(), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+                        }
                         Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
@@ -405,13 +406,18 @@ fun SessionsScreen(vm: ChatViewModel) {
                 if (isOpen) items(list, key = { p.id + ":" + it.id }, contentType = { "sess" }) { s ->
                     var menu by remember { mutableStateOf(false) }
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
-                    Row(Modifier.fillMaxWidth().height(36.dp)
+                    val ctxRow = vm.sessionCtx[s.id]
+                    Row(Modifier.fillMaxWidth().height(if (ctxRow != null) 46.dp else 36.dp)
                         .combinedClickable(onLongClick = { menu = true }, onDoubleClick = { renaming = s }) { if (p.id != "__all") vm.lastProject = p; vm.open(s) }
                         .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val ctx = vm.sessionCtx[s.id]
-                        Text(time + " · " + s.count + if (ctx != null) " · " + fmtTok(ctx.first) + "/" + fmtTok(ctx.second) + " tok" else "", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
+                        Column(Modifier.weight(1f)) {
+                            Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id),
+                                style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (ctxRow != null) Text(fmtTok(ctxRow.first) + " / " + fmtTok(ctxRow.second) + " tokens · " + (ctxRow.first * 100 / ctxRow.second) + "%",
+                                style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                                color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
+                        }
+                        Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
                         Box { IconButton(onClick = { menu = true }, Modifier.size(30.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(16.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; moving = s })
@@ -623,7 +629,7 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
                 else vm.model.substringAfter('|')
             FilterChip(selected = vm.model.isNotBlank(), enabled = !vm.switching, onClick = { vm.modelMenuOpen = true; if (vm.modelOptions == null) vm.loadMeta() },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                leadingIcon = { Icon(Icons.Default.Memory, null, Modifier.size(16.dp)) }, modifier = Modifier.widthIn(max = 260.dp))
+                leadingIcon = { Icon(Icons.Default.Memory, null, Modifier.size(16.dp)) }, modifier = Modifier.widthIn(max = 150.dp))
             DropdownMenu(vm.modelMenuOpen, { vm.modelMenuOpen = false }, Modifier.heightIn(max = 480.dp)) {
                 val cur = vm.modelOptions?.currentModel.orEmpty()
                 DropdownMenuItem(text = { Text(stringResource(R.string.server_default) + if (cur.isNotBlank()) " ($cur)" else "") },
@@ -669,10 +675,13 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
         }
         val c = vm.cur
         Spacer(Modifier.weight(1f))
-        val usage = if (c.ctxMax > 0) fmtTok(c.ctxUsed) + " / " + fmtTok(c.ctxMax) + " tokens"
-            else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) + " tokens" else stringResource(R.string.ctx_title)
+        val cfgMax = vm.ctxSettings?.opt("context_length")?.toString()?.toDoubleOrNull()?.toLong() ?: 0L
+        LaunchedEffect(c.id == null) { if (c.id == null && vm.ctxSettings == null && vm.store.hasKey) vm.loadCtxSettings() }
+        val usage = if (c.ctxMax <= 0 && c.ctxUsed <= 0 && c.id == null) (if (cfgMax > 0) "0/" + fmtTok(cfgMax) else "—")
+            else if (c.ctxMax > 0) fmtTok(c.ctxUsed) + "/" + fmtTok(c.ctxMax)
+            else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) else stringResource(R.string.ctx_title)
         AssistChip(onClick = onOpenContextSettings,
-            label = { Text(usage, maxLines = 1,
+            label = { Text(usage, maxLines = 1, softWrap = false,
                 color = if (c.ctxMax > 0 && c.ctxUsed * 100 / c.ctxMax >= 80) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant) },
             leadingIcon = { Icon(Icons.Default.DataUsage, null, Modifier.size(16.dp)) })
     }
@@ -1007,8 +1016,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
 
 /** 1234 -> 1.2k, 1234567 -> 1.2M. */
 fun fmtTok(n: Long): String = when {
-    n >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", n / 1_000_000.0)
-    n >= 1_000 -> String.format(java.util.Locale.US, "%.1fk", n / 1_000.0)
+    n >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", n / 1_000_000.0).replace(".0M", "M")
+    n >= 1_000 -> String.format(java.util.Locale.US, "%.1fk", n / 1_000.0).replace(".0k", "k")
     else -> n.toString()
 }
 
