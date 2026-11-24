@@ -16,12 +16,14 @@ HERMES_HOME = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes"
 HOST = os.environ.get("RELAY_HOST", "0.0.0.0")  # all addresses: Tailscale + LAN (API key required)
 PORT = int(os.environ.get("RELAY_PORT", "8643"))
 HERMES = str(HERMES_HOME / "bin" / "hermes.exe")
-LOG = HERMES_HOME / "launchers" / "phone-relay.log"
+LOG = Path(os.environ.get("RELAY_LOG") or HERMES_HOME / "launchers" / "phone-relay.log")
 logging.basicConfig(filename=LOG, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("relay")
 
 
 def api_key() -> str:
+    if os.environ.get("RELAY_API_KEY"):   # test instances
+        return os.environ["RELAY_API_KEY"]
     for line in (HERMES_HOME / ".env").read_text(encoding="utf-8").splitlines():
         if line.startswith("API_SERVER_KEY="):
             return line.split("=", 1)[1].strip()
@@ -437,6 +439,114 @@ async def outbox_item(req: web.Request):
         await _io(lambda: (f.unlink(), f.with_name(name + ".session").unlink(missing_ok=True)))
         return web.json_response({"ok": True})
     return web.FileResponse(f, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------- phone -> PC uploads (any size, chunked, resumable)
+INBOX = Path(os.environ.get("RELAY_INBOX") or HERMES_HOME / "inbox")          # <inbox>/<yyyy-mm-dd>/<name>; the agent reads these PC paths
+UPLOADS = {}                           # id -> {"part","final","size","got":{offset: length}}
+UP_LOCK = threading.Lock()
+BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+WIN_RESERVED = re.compile(r"(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$")
+
+
+def _clean_name(name):
+    name = BAD_CHARS.sub("_", os.path.basename(str(name).replace("\\", "/"))).strip(" .") or "file"
+    if WIN_RESERVED.match(name):
+        name = "_" + name
+    stem, dot, ext = name.rpartition(".")
+    return name[:150] if not dot or not stem else stem[:150 - len(ext) - 1] + "." + ext[:20]
+
+
+def _upload_init(name, size):
+    day = INBOX / time.strftime("%Y-%m-%d")
+    day.mkdir(parents=True, exist_ok=True)
+    base = _clean_name(name)
+    stem, dot, ext = base.rpartition(".")
+    if not dot or not stem:
+        stem, ext = base, ""
+    for n in range(0, 10000):
+        cand = base if n == 0 else f"{stem} ({n}){'.' + ext if ext else ''}"
+        final = day / cand
+        part = day / (cand + ".part")
+        if final.exists():
+            continue
+        try:
+            with open(part, "xb") as f:      # exclusive create: reserves the name, never overwrites
+                if size:
+                    f.truncate(size)
+        except FileExistsError:
+            continue
+        uid = os.urandom(12).hex()
+        with UP_LOCK:
+            UPLOADS[uid] = {"part": part, "final": final, "size": size, "got": {}}
+        return uid
+    raise OSError("no free name")
+
+
+def _write_at(part, offset, data):
+    with open(part, "r+b") as f:
+        f.seek(offset)
+        f.write(data)
+
+
+async def upload_init(req: web.Request):
+    """POST /upload/init {name,size} -> {id, chunk}"""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        b = await req.json()
+        name, size = str(b["name"]), int(b["size"])
+        if size < 0:
+            raise ValueError
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+    uid = await _io(_upload_init, name, size)
+    return web.json_response({"id": uid, "chunk": 4 * 1024 * 1024})
+
+
+async def upload_chunk(req: web.Request):
+    """PUT /upload/<id>?offset=N (body = bytes, streamed) writes a chunk; GET /upload/<id> lists received chunks (resume)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    u = UPLOADS.get(req.match_info["id"])
+    if not u:
+        return web.json_response({"error": "unknown upload"}, status=404)
+    if req.method == "GET":
+        return web.json_response({"size": u["size"], "got": [[o, n] for o, n in sorted(u["got"].items())]})
+    try:
+        off = int(req.query["offset"])
+    except Exception:
+        return web.json_response({"error": "bad offset"}, status=400)
+    pos = off
+    async for data in req.content.iter_chunked(1 << 20):
+        if pos + len(data) > u["size"] or off < 0:
+            return web.json_response({"error": "out of range"}, status=416)
+        await _io(_write_at, u["part"], pos, data)
+        pos += len(data)
+    if pos > off:
+        u["got"][off] = pos - off
+    return web.json_response({"ok": True, "written": pos - off})
+
+
+async def upload_done(req: web.Request):
+    """POST /upload/<id>/done -> {path}; fails with 409 (and the missing ranges) unless every byte arrived."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    uid = req.match_info["id"]
+    u = UPLOADS.get(uid)
+    if not u:
+        return web.json_response({"error": "unknown upload"}, status=404)
+    end = 0
+    for o, n in sorted(u["got"].items()):
+        if o > end:
+            break
+        end = max(end, o + n)
+    if end != u["size"]:
+        return web.json_response({"error": "incomplete", "have": end, "size": u["size"]}, status=409)
+    await _io(os.replace, u["part"], u["final"])
+    UPLOADS.pop(uid, None)
+    log.info("upload saved %s (%d bytes)", u["final"], u["size"])
+    return web.json_response({"path": str(u["final"]), "size": u["size"]})
 
 
 # ---------------------------------------------------------------- context / compression settings (all profiles)
@@ -926,6 +1036,125 @@ async def _watchdog(app):
     app["watchdog"] = asyncio.create_task(loop())
 
 
+# ---- background-task progress (POST /bgtasks) ----------------------------------------------------------------------
+# The gateway already lists a session's background processes (WS RPC `process.list`: id, command, cwd, status, exit_code,
+# uptime_seconds, output_tail). The phone calls that on its own socket and posts the rows here; the relay only adds what
+# needs the PC: parsing progress from the output tail and, for silent downloads (`curl -s -o f URL`), file size vs Content-Length.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_CURL_HDR = re.compile(r"%\s+Total\s+%\s+Received")
+_CURL_ROW = re.compile(r"^\s*(\d{1,3})\s+\S+\s+\d{1,3}\s+\S+\s+\d{1,3}\s+\S+")   # " 45 4672M  45 2100M  0 0 ..."
+_PCT = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d+)?)\s?%")
+_COUNT = re.compile(r"(?<![\w/.:\-])(\d{1,9})/(\d{1,9})(?![\w/.:\-])")
+_SIZE_TTL = 60.0
+_TOTALS = {}          # url -> (monotonic ts, content-length|None)
+
+
+def _lines(tail: str) -> list:
+    return [l for l in re.split(r"[\r\n]+", _ANSI.sub("", tail or "")) if l.strip()]
+
+
+def parse_progress(tail: str):
+    """(percent 0-100 | None, detail | None) from a process output tail. Last meaningful signal wins."""
+    ls = _lines(tail)
+    for i in range(len(ls) - 1, -1, -1):
+        l = ls[i]
+        m = _CURL_ROW.match(l)
+        if m and any(_CURL_HDR.search(h) for h in ls[max(0, i - 3):i]) and int(m.group(1)) <= 100:   # curl meter: first column = %
+            return float(m.group(1)), l.strip()[:120]
+        pcts = [float(x) for x in _PCT.findall(l) if float(x) <= 100]
+        if pcts:                                                       # tqdm / wget / pip / curl -# / generic
+            return pcts[-1], l.strip()[:120]
+        c = _COUNT.findall(l)
+        if c:
+            a, b = int(c[-1][0]), int(c[-1][1])
+            if b >= 2 and a <= b:
+                return round(100.0 * a / b, 1), f"{a}/{b}"
+    return None, None
+
+
+def _out_file_url(command: str, cwd):
+    """(output path, url) for curl -o/--output FILE or wget -O/-P style commands, else (None, None)."""
+    import shlex
+    try:
+        t = shlex.split(command or "", posix=True)
+    except ValueError:
+        return None, None
+    url = next((x for x in t if re.match(r"https?://", x)), None)
+    out = None
+    for i, x in enumerate(t[:-1]):
+        base = os.path.basename(t[0]).lower()
+        if x == "--output" or x == "-O" and "wget" in base or re.fullmatch(r"-[A-Za-z]*o", x) and "curl" in base \
+                or x == "--output-document":
+            out = t[i + 1]
+        elif x.startswith("--output="):
+            out = x.split("=", 1)[1]
+    if not url or not out:
+        return None, None
+    path = Path(out)
+    if not path.is_absolute() and cwd:
+        path = Path(cwd) / path
+    return path, url
+
+
+def _content_length(url: str):
+    now = time.monotonic()
+    hit = _TOTALS.get(url)
+    if hit and (hit[1] is not None or now - hit[0] < _SIZE_TTL):
+        return hit[1]
+    import urllib.request
+    n = None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=6) as r:   # follows redirects
+            n = int(r.headers.get("Content-Length") or 0) or None
+    except Exception:
+        n = None
+    _TOTALS[url] = (now, n)
+    if len(_TOTALS) > 64:
+        _TOTALS.pop(next(iter(_TOTALS)), None)
+    return n
+
+
+def _fmt_bytes(n: float) -> str:
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024 or u == "GB":
+            return f"{n:.0f} {u}" if u == "B" else f"{n:.1f} {u}"
+        n /= 1024
+
+
+def bgtask_progress(row: dict) -> dict:
+    """Enrich one process.list row (blocking: stat + maybe one HEAD)."""
+    tail = str(row.get("output_tail") or row.get("output_preview") or "")
+    ls = _lines(tail)
+    pct, detail = parse_progress(tail)
+    if pct is None and row.get("status") == "running":
+        path, url = _out_file_url(str(row.get("command") or ""), row.get("cwd"))
+        try:
+            size = path.stat().st_size if path else None
+        except OSError:
+            size = None
+        if size:
+            total = _content_length(url)
+            if total and size <= total:
+                pct, detail = round(100.0 * size / total, 1), f"{_fmt_bytes(size)} / {_fmt_bytes(total)}"
+            else:
+                detail = _fmt_bytes(size)
+    if row.get("status") != "running" and row.get("exit_code") == 0 and pct is not None:
+        pct = 100.0
+    return {"id": row.get("session_id"), "percent": pct, "detail": detail, "last": ls[-1].strip()[:200] if ls else "",
+            "tail": ls[-30:]}
+
+
+async def bgtasks(req: web.Request):
+    """POST /bgtasks {processes:[process.list rows]} -> {tasks:[{id, percent|null, detail|null, last, tail:[<=30 lines]}]}. Read-only."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        rows = [r for r in (await req.json()).get("processes", [])[:20] if isinstance(r, dict)]
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+    return web.json_response({"tasks": [await _io(bgtask_progress, r) for r in rows]})
+
+
 async def health(_req):
     return web.json_response({"status": "ok", "relay": "hermes-phone-relay"})
 
@@ -1010,10 +1239,14 @@ def main():
     app.router.add_post("/elevate/{op}/{id}", elevate_decide)
     app.router.add_get("/outbox", outbox_list)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
+    app.router.add_post("/upload/init", upload_init)
+    app.router.add_post("/upload/{id}/done", upload_done)
+    app.router.add_route("*", "/upload/{id}", upload_chunk)
     app.router.add_route("*", "/config/context", config_context)
     app.router.add_route("*", "/config/models", config_models)
     app.router.add_get("/pc/stats", pc_stats)
     app.router.add_get("/lan", lan_info)
+    app.router.add_post("/bgtasks", bgtasks)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -1038,10 +1271,14 @@ def main():
             app.router.add_post("/elevate/{op}/{id}", elevate_decide)
             app.router.add_get("/outbox", outbox_list)
             app.router.add_route("*", "/outbox/{name}", outbox_item)
+            app.router.add_post("/upload/init", upload_init)
+            app.router.add_post("/upload/{id}/done", upload_done)
+            app.router.add_route("*", "/upload/{id}", upload_chunk)
             app.router.add_route("*", "/config/context", config_context)
             app.router.add_route("*", "/config/models", config_models)
             app.router.add_get("/pc/stats", pc_stats)
             app.router.add_get("/lan", lan_info)
+            app.router.add_post("/bgtasks", bgtasks)
             app.on_startup.append(_watchdog)
 
 

@@ -663,11 +663,19 @@ class Daemon:
 
     def extend(self):
         snap = _agent_rects()   # Windows rescales/reshuffles windows when a physical screen re-attaches
+        try:
+            snap2 = _standin_snap()
+        except Exception:
+            snap2 = []
         to_extend()
         try:
             _agent_rects_restore(snap)
         except Exception:
             pass
+        try:
+            _standin_restore(snap2)
+        except Exception as e:
+            _tlog(f"standin_restore failed: {e}")
         self.so = {}
         self.publish()
         _tlog(f"extend done phys_att={[d['name'] for d in physical() if d['attached']]} agents={[a['name'] for a in self.agents.values()]}")
@@ -681,18 +689,30 @@ class Daemon:
                  "rect": w["rect"], "zoomed": bool(u32.IsZoomed(w["hwnd"])), "iconic": bool(u32.IsIconic(w["hwnd"])),
                  "dpi": _dpi(w["hwnd"])}
                 for w in windows() if w["display"] in names]
+        for p in phys:
+            try:
+                p["dpi"] = _eff_dpi(p["name"])   # read only; the physical screen's own scaling is never written
+            except Exception:
+                p["dpi"] = 0
         LAYOUT.write_text(json.dumps({"physical": phys, "off": sorted(names), "windows": wins}), encoding="utf-8")
         pairs = []
         try:
             for i, p in enumerate(phys):
                 if p["name"] not in names:
                     continue
-                got, _g = self.add_visible(_svda_guid(i), i, (p["w"], p["h"], USER_HZ), f"Hermes Off {i + 1}",
-                                           f"HRMSOFF{i + 1:04d}", _svda_guid(110 + i), 110 + i,
-                                           taken={n for _, n in pairs})
+                for hz_try in dict.fromkeys([p["hz"] or USER_HZ, USER_HZ]):   # physical refresh first, 30 Hz floor after
+                    try:
+                        got, _g = self.add_visible(_svda_guid(i), i, (p["w"], p["h"], hz_try), f"Hermes Off {i + 1}",
+                                                   f"HRMSOFF{i + 1:04d}", _svda_guid(110 + i), 110 + i,
+                                                   taken={n for _, n in pairs})
+                        break
+                    except RuntimeError as e:
+                        _tlog(f"stand-in {p['w']}x{p['h']}@{hz_try} failed ({e})")
+                        if hz_try == USER_HZ:
+                            raise
                 pairs.append((p, got))
             for p, name in pairs:
-                w, hh, hz = _best_mode(name, p["w"], p["h"])
+                w, hh, hz = _best_mode(name, p["w"], p["h"], p["hz"] or USER_HZ)
                 _stage_new(name, p["x"], p["y"], w, hh, hz, primary=p["primary"])
             _park_agents(max(p["x"] + p["w"] for p in phys), min(p["y"] for p in phys))   # agent screens stay right
             # two commits: stand-ins attach first, then the physical screens detach (Windows refuses -1 when it
@@ -704,6 +724,11 @@ class Daemon:
                 time.sleep(0.5)
             _tlog(f"standins committed: {[(n, any(d['name'] == n and d['attached'] for d in displays())) for _p, n in pairs]}"
                   f" phys_att={[d['name'] for d in physical() if d['attached']]}")
+            for p, n in pairs:   # same scaling as the physical screen, so windows keep their size on screen on
+                try:
+                    _match_scale(n, p.get("dpi", 0))
+                except Exception as e:
+                    _tlog(f"match_scale error {e}")
             _tlog("before detach: " + str([(d["name"][4:], d["x"], d["y"], d["w"], d["h"], d["primary"])
                                            for d in displays() if d["attached"]]))
             # Detach through the CCD API: with an agent screen present ChangeDisplaySettingsEx(name, 0x0) answers -1
@@ -729,6 +754,13 @@ class Daemon:
                     break
             _tlog("after detach: " + str([(d["name"][4:], d["x"], d["y"], d["w"], d["h"], d["primary"])
                                           for d in displays() if d["attached"]]))
+            for p, n in pairs:   # topology change may reset it: verify again, log the result
+                try:
+                    if p.get("dpi") and _eff_dpi(n) != p["dpi"]:
+                        _match_scale(n, p["dpi"])
+                    _tlog(f"standin {n}: dpi {_eff_dpi(n)} (physical {p.get('dpi')}) mode {[(d['w'], d['h'], d['hz']) for d in displays() if d['name'] == n]}")
+                except Exception as e:
+                    _tlog(f"dpi verify error {e}")
             self.so = {"off": sorted(names), "standins": {p["name"]: n for p, n in pairs}, "t": time.time()}
             self.publish()
             _tlog(f"applied: off={sorted(names)} phys_att={[d['name'] for d in physical() if d['attached']]}")
@@ -1108,17 +1140,240 @@ def _evacuate(names):
     return moved
 
 
-def _keep_sizes(moved):
-    """Moving to a screen with another DPI / removing a monitor makes Windows rescale a window (a 1280x800 agent
-    window became 2576x1616): put every (hwnd, pid, w, h, x, y) back to the size / position it had before."""
-    for _ in range(2):
-        time.sleep(0.4)
-        for h, pid, cw, ch, x, y in moved:
-            if not u32.IsWindow(h) or _pid(h) != pid or u32.IsIconic(h) or u32.IsZoomed(h):
+class _PerMonitorV2:
+    """Run a block in a per-monitor-v2 DPI awareness thread context: GetWindowRect / SetWindowPos then use real
+    physical pixels whatever the process / window context is."""
+
+    def __enter__(self):
+        self.old = None
+        try:
+            u32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+            u32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            self.old = u32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *a):
+        if self.old:
+            try:
+                u32.SetThreadDpiAwarenessContext(ctypes.c_void_p(self.old))
+            except Exception:
+                pass
+
+
+def _mon_dpi(h):
+    """Effective DPI of the monitor the window is on (0 when unknown)."""
+    try:
+        x, y = ctypes.c_uint(), ctypes.c_uint()
+        sh = ctypes.WinDLL("shcore")
+        sh.GetDpiForMonitor.argtypes = [W.HMONITOR, ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+        hm = u32.MonitorFromWindow(h, 2)
+        return int(x.value) if sh.GetDpiForMonitor(hm, 0, ctypes.byref(x), ctypes.byref(y)) == 0 else 0
+    except Exception:
+        return 0
+
+
+# ---- per-screen DPI scaling (stand-in = physical screen)
+# Undocumented DisplayConfigSetDeviceInfo types: -3 GET_DPI_SCALE {header, min/cur/max ScaleRel}, -4 SET_DPI_SCALE
+# {header, scaleRel}. ScaleRel is a step count relative to the screen's recommended scale on the 100..500 % list;
+# the setting is stored per monitor (adapter + target id), so it is only ever written for the stand-in's own source.
+DPI_STEPS = [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500]
+
+
+class _DCHDR(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int32), ("size", ctypes.c_uint32), ("lo", ctypes.c_uint32), ("hi", ctypes.c_int32),
+                ("id", ctypes.c_uint32)]
+
+
+class _DCGET(ctypes.Structure):
+    _fields_ = [("h", _DCHDR), ("mn", ctypes.c_int32), ("cur", ctypes.c_int32), ("mx", ctypes.c_int32)]
+
+
+class _DCSET(ctypes.Structure):
+    _fields_ = [("h", _DCHDR), ("rel", ctypes.c_int32)]
+
+
+def _source_of(gdi):
+    """(adapter luid lo, hi, source id) of the active path whose GDI name is `gdi`, else None."""
+    n_p, n_m = ctypes.c_uint32(), ctypes.c_uint32()
+    if u32.GetDisplayConfigBufferSizes(2, ctypes.byref(n_p), ctypes.byref(n_m)):
+        return None
+    paths = (ctypes.c_ubyte * (72 * n_p.value))(); modes = (ctypes.c_ubyte * (64 * n_m.value))()
+    if u32.QueryDisplayConfig(2, ctypes.byref(n_p), paths, ctypes.byref(n_m), modes, None):
+        return None
+    for i in range(n_p.value):
+        p = bytes(paths[i * 72:(i + 1) * 72])
+        hdr = (ctypes.c_ubyte * 84)()
+        hdr[0:4] = (1).to_bytes(4, "little"); hdr[4:8] = (84).to_bytes(4, "little"); hdr[8:20] = p[0:12]
+        if u32.DisplayConfigGetDeviceInfo(hdr) == 0 and \
+                bytes(hdr[20:84]).decode("utf-16-le").split(chr(0))[0].upper() == gdi.upper():
+            return (int.from_bytes(p[0:4], "little"), int.from_bytes(p[4:8], "little", signed=True),
+                    int.from_bytes(p[8:12], "little"))
+    return None
+
+
+def _scale_range(gdi):
+    """(min, cur, max) ScaleRel of the screen, None when the API is unavailable."""
+    try:
+        src = _source_of(gdi)
+        if not src:
+            return None
+        g = _DCGET(); g.h.type = -3; g.h.size = ctypes.sizeof(g); g.h.lo, g.h.hi, g.h.id = src
+        if u32.DisplayConfigGetDeviceInfo(ctypes.byref(g)) != 0:
+            return None
+        return g.mn, g.cur, g.mx
+    except Exception:
+        return None
+
+
+def _scale_pct(gdi):
+    r = _scale_range(gdi)
+    if not r:
+        return 0
+    i = r[1] - r[0]
+    return DPI_STEPS[i] if 0 <= i < len(DPI_STEPS) else 0
+
+
+def _set_scale_pct(gdi, pct):
+    """Set the screen's scaling to `pct` percent. Returns the percent in effect afterwards (0 = unknown)."""
+    r = _scale_range(gdi)
+    if not r or pct not in DPI_STEPS:
+        _tlog(f"set_scale {gdi}: GET failed or {pct}% not a step (range {r})")
+        return 0
+    rel = max(r[0], min(r[2], DPI_STEPS.index(pct) + r[0]))
+    src = _source_of(gdi)
+    s = _DCSET(); s.h.type = -4; s.h.size = ctypes.sizeof(s); s.h.lo, s.h.hi, s.h.id = src; s.rel = rel
+    rc = u32.DisplayConfigSetDeviceInfo(ctypes.byref(s))
+    now = _scale_pct(gdi)
+    _tlog(f"set_scale {gdi} -> {pct}% (rel {rel}, range {r[0]}..{r[2]}, was {DPI_STEPS[r[1] - r[0]]}%) rc={rc} now {now}%")
+    return now
+
+
+def _eff_dpi(gdi):
+    """Effective DPI (MDT_EFFECTIVE_DPI, per-monitor-v2 aware thread) of the monitor with GDI name `gdi` (0 = unknown)."""
+    out = []
+    try:
+        sh = ctypes.WinDLL("shcore")
+        sh.GetDpiForMonitor.argtypes = [W.HMONITOR, ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+        CB = ctypes.WINFUNCTYPE(W.BOOL, W.HMONITOR, W.HDC, ctypes.POINTER(RECT), W.LPARAM)
+
+        def cb(hm, _dc, _rc, _lp):
+            mi = MONITORINFOEXW(); mi.cbSize = ctypes.sizeof(mi)
+            if u32.GetMonitorInfoW(hm, ctypes.byref(mi)) and mi.szDevice.upper() == gdi.upper():
+                x, y = ctypes.c_uint(), ctypes.c_uint()
+                if sh.GetDpiForMonitor(hm, 0, ctypes.byref(x), ctypes.byref(y)) == 0:
+                    out.append(int(x.value))
+            return True
+        u32.EnumDisplayMonitors.argtypes = [W.HDC, ctypes.c_void_p, CB, W.LPARAM]
+        with _PerMonitorV2():
+            u32.EnumDisplayMonitors(None, None, CB(cb), 0)
+    except Exception:
+        pass
+    return out[0] if out else 0
+
+
+def _match_scale(standin, want_dpi):
+    """Give the stand-in the physical screen's scaling (want_dpi = its effective DPI). Logs and returns the measured
+    effective DPI of the stand-in; on failure the size-restore fallback (_standin_restore) stays in charge."""
+    if not want_dpi:
+        _tlog("match_scale: physical dpi unknown -> fallback")
+        return 0
+    pct = int(round(want_dpi * 100 / 96.0))
+    try:
+        for _ in range(3):
+            if _eff_dpi(standin) == want_dpi:
+                break
+            _set_scale_pct(standin, pct)
+            time.sleep(0.7)
+        got = _eff_dpi(standin)
+    except Exception as e:
+        _tlog(f"match_scale failed: {e}")
+        return 0
+    _tlog(f"match_scale {standin}: want dpi {want_dpi} got {got} -> {'OK' if got == want_dpi else 'MISMATCH, fallback'}")
+    return got
+
+
+def _settle_size(items, rounds=4):
+    """items: [(hwnd, pid, w, h, x_or_None, y_or_None)]. Rule: a window keeps its PHYSICAL pixel size (and, when a
+    position is given, that position) across a screen with another DPI. Windows' own DPI move rescales it
+    (96 -> 192 dpi doubles 1280x800 to 2560x1600) and an app may rescale again on WM_DPICHANGED after the move,
+    so re-apply after a short wait until a verify pass finds nothing to fix. Returns the final (hwnd, rect, dpi)."""
+    with _PerMonitorV2():
+        for i in range(rounds):
+            time.sleep(0.4)
+            fixed = 0
+            for h, pid, cw, ch, x, y in items:
+                if not u32.IsWindow(h) or _pid(h) != pid or u32.IsIconic(h) or u32.IsZoomed(h):
+                    continue
+                r = RECT(); u32.GetWindowRect(h, ctypes.byref(r))
+                tx, ty = (r.l, r.t) if x is None else (x, y)
+                if [r.l, r.t, r.r - r.l, r.b - r.t] != [tx, ty, cw, ch]:
+                    u32.SetWindowPos(h, None, tx, ty, cw, ch, SWP_NOZORDER | SWP_NOACTIVATE)
+                    fixed += 1
+            if not fixed and i >= 1:
+                break
+        for h, pid, cw, ch, x, y in items:   # DPI-unaware window (its own DPI < the monitor's): Windows bitmap-scales
+            if not u32.IsWindow(h) or _pid(h) != pid or u32.IsIconic(h) or u32.IsZoomed(h):   # it, so ask in its units
                 continue
             r = RECT(); u32.GetWindowRect(h, ctypes.byref(r))
-            if [r.l, r.t, r.r - r.l, r.b - r.t] != [x, y, cw, ch]:
-                u32.SetWindowPos(h, None, x, y, cw, ch, SWP_NOZORDER | SWP_NOACTIVATE)
+            md = _mon_dpi(h)
+            if r.r - r.l != cw and md and 0 < _dpi(h) < md:
+                try:
+                    u32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+                    old = u32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-1))   # DPI_AWARENESS_CONTEXT_UNAWARE
+                    f = _dpi(h) / md
+                    for _ in range(3):
+                        u32.SetWindowPos(h, None, int((r.l if x is None else x) * f), int((r.t if x is None else y) * f),
+                                         int(cw * f), int(ch * f), SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE)
+                        time.sleep(0.3)
+                    u32.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
+                except Exception:
+                    pass
+        out = []
+        for h, pid, cw, ch, x, y in items:
+            if u32.IsWindow(h) and _pid(h) == pid:
+                r = RECT(); u32.GetWindowRect(h, ctypes.byref(r))
+                out.append((h, [r.l, r.t, r.r - r.l, r.b - r.t], _dpi(h), [cw, ch]))
+        return out
+
+
+def _keep_sizes(moved):
+    """Agent screen removed / windows moved to the main screen: put every (hwnd, pid, w, h, x, y) back to the
+    physical size / position it had right after the move."""
+    res = _settle_size(moved)
+    _tlog("keep_sizes " + str([(h, rc, dpi, want) for h, rc, dpi, want in res]))
+
+
+def _standin_snap():
+    """Normal-state windows on a screen-off stand-in: physical size + position relative to the stand-in."""
+    names = {d["name"] for d in svdas()}
+    out = []
+    with _PerMonitorV2():
+        for w in windows():
+            h = w["hwnd"]
+            if w["display"] in names and not u32.IsIconic(h) and not u32.IsZoomed(h):
+                mon = _monitor(h).rcMonitor
+                r = RECT(); u32.GetWindowRect(h, ctypes.byref(r))
+                out.append((h, w["pid"], r.r - r.l, r.b - r.t, r.l - mon.l, r.t - mon.t))
+    return out
+
+
+def _standin_restore(snap):
+    """Screen back on: a window that lived on the 96 dpi stand-in gets rescaled by Windows onto the 192 dpi
+    physical screen (1280x800 -> 2558x1598); give it its old physical size back (position: same offset on the
+    screen it is on now, clamped into the work area)."""
+    items = []
+    with _PerMonitorV2():
+        for h, pid, cw, ch, rx, ry in snap:
+            if not u32.IsWindow(h) or _pid(h) != pid or u32.IsIconic(h) or u32.IsZoomed(h):
+                continue
+            mi = _monitor(h); mon, wk = mi.rcMonitor, mi.rcWork
+            cw, ch = min(cw, wk.r - wk.l), min(ch, wk.b - wk.t)
+            x = max(wk.l, min(mon.l + rx, wk.r - cw)); y = max(wk.t, min(mon.t + ry, wk.b - ch))
+            items.append((h, pid, cw, ch, x, y))
+    res = _settle_size(items)
+    _tlog("standin_restore " + str([(h, rc, dpi, want) for h, rc, dpi, want in res]))
 
 
 def _rescue_orphans():
@@ -1264,6 +1519,7 @@ u32.GetForegroundWindow.restype = W.HWND
 u32.WindowFromPoint.argtypes = [W.POINT]
 u32.WindowFromPoint.restype = W.HWND
 SWP_NOZORDER, SWP_NOACTIVATE, SWP_NOSIZE = 0x4, 0x10, 0x1
+SWP_NOMOVE = 0x2
 
 
 class WINDOWPLACEMENT(ctypes.Structure):

@@ -606,8 +606,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
     // The chat.draft is the current chat's draft, so typed text survives switching chats / going back.
     val chat = vm.cur
     val list = remember(chat) { androidx.compose.foundation.lazy.LazyListState(if (chat.follow) 0 else chat.scrollIdx, if (chat.follow) 0 else chat.scrollOff) }
-    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let { u -> vm.addAttachment(u, true) } }
-    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let { u -> vm.addAttachment(u, false) } }
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { if (it.isNotEmpty()) vm.addAttachments(it) }
     // Follow new output only while the user is at the bottom; scrolling up to read stops it, scrolling back resumes.
     var follow by remember(chat) { mutableStateOf(chat.follow) }
     var renamingTitle by remember { mutableStateOf(false) }
@@ -683,6 +682,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                 label = { Text(stringResource(R.string.queued, q), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.unqueue), Modifier.size(16.dp)) }) }
         }
+        vm.uploadStatus?.let { Text(it, Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
         if (vm.attachments.isNotEmpty()) Row(Modifier.padding(horizontal = 8.dp)) {
             vm.attachments.forEach { a -> InputChip(selected = false, onClick = { vm.attachments.remove(a) }, label = { Text(a.name, maxLines = 1) },
                 trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) }, modifier = Modifier.padding(end = 4.dp)) }
@@ -720,28 +720,21 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
             // Buttons stacked outside the field, on its right. Collapsed (one line): only send or stop.
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 val small = Modifier.size(40.dp)
+                // Buttons that would be disabled are hidden instead of shown greyed out.
+                if (vm.hotfix.attachments && !vm.streaming) IconButton(onClick = { pickFiles.launch(arrayOf("*/*")) }, small) {
+                    Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
                 if (focused) {
                     IconButton(onClick = { full = true }, small) { Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }
                     if (vm.streaming) IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
                     // Queue: send after the running turn ends.
                     if (vm.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.queueMsg(chat.draft); chat.draft = "" }, small) {
                         Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
-                    var attachMenu by remember { mutableStateOf(false) }
-                    if (vm.hotfix.attachments) Box {
-                        IconButton(onClick = { attachMenu = true }, small, enabled = !vm.streaming) { Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
-                        DropdownMenu(attachMenu, { attachMenu = false }) {
-                            DropdownMenuItem(text = { Text(stringResource(R.string.image)) }, leadingIcon = { Icon(Icons.Default.Image, null) },
-                                onClick = { attachMenu = false; pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) })
-                            DropdownMenuItem(text = { Text(stringResource(R.string.text_file)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
-                                onClick = { attachMenu = false; pickFile.launch("*/*") })
-                        } }
                 } else if (vm.streaming) {
                     // One line while streaming: stop only, no steer.
                     IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
                 }
                 // While Hermes works, Send steers the running turn instead of waiting (only when expanded).
-                if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
-                    enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
+                if (chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small) {
                     Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
             }
         }
@@ -796,7 +789,7 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
         }
         Box {
             FilterChip(selected = vm.effort.isNotBlank(), enabled = !vm.switching, onClick = { effortOpen = true },
-                label = { Text(stringResource(R.string.thinking, vm.effort.ifBlank { def }), style = MaterialTheme.typography.labelSmall) },
+                label = { Text(vm.effort.ifBlank { def }, style = MaterialTheme.typography.labelSmall) },
                 leadingIcon = { Icon(Icons.Default.Psychology, null, Modifier.size(16.dp)) })
             DropdownMenu(effortOpen, { effortOpen = false }) {
                 SecureStore.EFFORTS.forEach { e -> DropdownMenuItem(text = { Text(e.ifBlank { def }) },
@@ -804,6 +797,25 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
             }
         }
         val c = vm.cur
+        val tasks = c.messages.mapNotNull { it.task }
+        if (tasks.isNotEmpty()) {
+            var tasksOpen by remember { mutableStateOf(false) }
+            val running = tasks.count { it.status == "running" }
+            Box {
+                AssistChip(onClick = { tasksOpen = true },
+                    label = { Text(running.toString(), style = MaterialTheme.typography.labelSmall) },
+                    leadingIcon = { Icon(Icons.Default.Schedule, stringResource(R.string.tasks_chip), Modifier.size(16.dp)) })
+                DropdownMenu(tasksOpen, { tasksOpen = false }) {
+                    tasks.forEach { t ->
+                        val st = stringResource(when (t.status) { "running" -> R.string.task_running; "failed" -> R.string.task_failed; else -> R.string.task_done })
+                        val kind = stringResource(when (t.kind) { "bg" -> R.string.task_background; "proc" -> R.string.task_process; else -> R.string.task_subagent })
+                        DropdownMenuItem(text = { Text(kind + (t.chat.title?.takeIf { it.isNotBlank() && t.kind != "bg" }?.let { " · " + it.take(40) } ?: "") + " — " + st,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge) },
+                            onClick = { tasksOpen = false; vm.openTask(t) })
+                    }
+                }
+            }
+        }
         val cfgMax = vm.ctxSettings?.opt("context_length")?.toString()?.toDoubleOrNull()?.toLong() ?: 0L
         LaunchedEffect(c.id == null) { if (c.id == null && vm.ctxSettings == null && vm.store.hasKey) vm.loadCtxSettings() }
         val usage = if (c.ctxMax <= 0 && c.ctxUsed <= 0 && c.id == null) (if (cfgMax > 0) "0/" + fmtTok(cfgMax) else "—")
@@ -935,13 +947,21 @@ fun TaskCard(t: TaskInfo, onOpen: () -> Unit) {
     Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).clickable(onClick = onOpen)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (t.kind == "bg") "⚙" else "🤖", Modifier.padding(end = 8.dp))
+            Text(if (t.kind == "sa") "🤖" else "⚙", Modifier.padding(end = 8.dp))
             Column(Modifier.weight(1f)) {
-                Text(stringResource(if (t.kind == "bg") R.string.task_background else R.string.task_subagent) + if (goal.isNotBlank() && t.kind != "bg") " · $goal" else "",
+                Text(stringResource(when (t.kind) { "bg" -> R.string.task_background; "proc" -> R.string.task_process; else -> R.string.task_subagent }) + if (goal.isNotBlank() && t.kind != "bg") " · $goal" else "",
                     style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(status + if (secs > 0 || t.status == "running") " · " + (if (secs >= 60) "${secs / 60}m ${secs % 60}s" else "${secs}s") else "",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (t.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSecondaryContainer)
+                if (t.kind == "proc" && t.status == "running") {
+                    val pc = t.percent
+                    if (pc != null) LinearProgressIndicator(progress = { (pc / 100.0).toFloat().coerceIn(0f, 1f) }, Modifier.fillMaxWidth().padding(top = 4.dp))
+                    else LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
+                }
+                if (t.kind == "proc" && t.last.isNotBlank())
+                    Text((if (t.percent != null && t.status == "running") "${t.percent.toInt()}% · " else "") + t.last, style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             }
             Text("🔒", Modifier.padding(start = 6.dp))
         }

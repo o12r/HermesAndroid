@@ -22,6 +22,7 @@
     <string name="other">其他…</string>
     <string name="submit">提交</string>
     <string name="skip">跳过</string>
+    <string name="tasks_chip">后台任务</string>
     <string name="attach">附件</string>
     <string name="image">图片</string>
     <string name="text_file">文本文件</string>
@@ -89,6 +90,8 @@
     <string name="err_session_corrupt">该对话已损坏（缺少创建凭据），无法在此挪动或删除。</string>
     <string name="err_set_key">请先在设置中填写 API 密钥</string>
     <string name="err_desktop_only">%1$s 无法在手机上使用（需要桌面界面）。</string>
+    <string name="uploading_large">正在向电脑上传大文件… %1$s %2$d%%</string>
+    <string name="upload_relay_old">电脑端中继版本过旧，不支持文件上传，请更新并重启。</string>
     <string name="attachments_disabled">附件功能暂时停用。</string>
     <string name="note_model">模型：%1$s</string>
     <string name="note_thinking">思考：%1$s</string>
@@ -257,6 +260,7 @@
     <string name="delete_n_sessions_q">删除 %1$d 个会话？</string>
     <string name="task_subagent">子代理</string>
     <string name="task_background">后台任务</string>
+    <string name="task_process">后台进程</string>
     <string name="task_running">运行中</string>
     <string name="task_done">已完成</string>
     <string name="task_failed">失败</string>

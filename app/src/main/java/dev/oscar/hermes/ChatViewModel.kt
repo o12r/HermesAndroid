@@ -54,8 +54,10 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Sub-agent / background task card (role "task"). */
     val task: TaskInfo? = null)
 /** Notice card for a sub-agent / background task: [chat] is its read-only transcript tab. */
-data class TaskInfo(val key: String, val kind: String, val status: String, val startedAt: Long, val endedAt: Long, val chat: Chat)
-data class Attachment(val name: String, val isImage: Boolean, val payload: String)
+data class TaskInfo(val key: String, val kind: String, val status: String, val startedAt: Long, val endedAt: Long, val chat: Chat,
+    /** kind "proc" (terminal background process): parsed progress 0-100 (null = unknown) and its last output line. */
+    val percent: Double? = null, val last: String = "")
+data class Attachment(val name: String, val isImage: Boolean, val payload: String, val pcPath: String? = null)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
     val archived: Boolean, val sessionIds: List<String>, val homeCwd: String? = null)
@@ -181,6 +183,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (!c.streaming && !c.loaded) loadMessagesInto(c)
             runCatching { ensureLive(gatewayFor(c.profile), c) }
             loadChatCtx(c)
+            if (c === cur) kickProcPoll(c)
         }
     }
 
@@ -497,6 +500,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Profiles whose background reconnect gave up after 3 tries; resumed when the app comes to the foreground. */
     private val gaveUp = mutableSetOf<String>()
     fun onForeground() {
+        kickProcPoll()
         if (gaveUp.isEmpty()) return
         KeepAliveService.start(getApplication())
         gaveUp.toList().forEach { gaveUp.remove(it); scheduleReconnect(it) }
@@ -569,14 +573,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Attach a chat to its live session (creates one for a new chat). Returns whether a turn is running. */
     private suspend fun attach(g: GatewayWs, c: Chat): Boolean {
-        val snap = c.id?.let { g.call("session.resume", JSONObject().put("session_id", it).put("omit_messages", true)) }
-            ?: g.call("session.create", JSONObject().put("source", "gui").apply {
-                    c.newCwd?.let { put("cwd", it).put("cwd_explicit", true) }
+        // A project's remembered cwd may no longer exist on the PC; the gateway then refuses with invalid_params.
+        // Fall back to the profile's default workspace instead of failing the new chat.
+        fun createParams(withCwd: Boolean) = JSONObject().put("source", "gui").apply {
+                    if (withCwd) c.newCwd?.let { put("cwd", it).put("cwd_explicit", true) }
                     // The pick made before the first message is the new session's own model (per-session override,
                     // like the desktop composer). prompt.submit's model_override only lasts one turn.
                     c.model.substringAfter('|', "").ifBlank { null }?.let { m -> put("model", m)
                         c.model.substringBefore('|', "").ifBlank { null }?.let { put("provider", it) } }
-                    c.effort.ifBlank { null }?.let { put("reasoning", it) } }).also { r ->
+                    c.effort.ifBlank { null }?.let { put("reasoning", it) } }
+        val snap = c.id?.let { g.call("session.resume", JSONObject().put("session_id", it).put("omit_messages", true)) }
+            ?: (if (c.newCwd == null) g.call("session.create", createParams(false))
+                else try { g.call("session.create", createParams(true)) }
+                catch (e: ApiException) { if (e.unreachable) throw e; android.util.Log.w("HermesRpc", "session.create with cwd failed (${e.message}); retrying without cwd"); g.call("session.create", createParams(false)) }).also { r ->
                 c.newCwd = null; c.createdHere = true
                 c.id = r.optString("stored_session_id").ifBlank { r.getString("session_id") }
                 c.id?.let { store.setSessionModel(it, c.model); store.setSessionEffort(it, c.effort) }
@@ -1405,11 +1414,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val m = apiFor(c.profile).messages(id)
             val failed = c.messages.filter { it.failed }
+            val cards = c.messages.filter { it.task != null }   // sub-agent / background / process cards are not in the server history
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
                 (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { t -> val st = if (r.role == "assistant") store.replyStat(id, t) else null
                     UiMsg(r.role, t, id = r.id, steps = r.steps, ts = r.ts, tokIn = st?.get(0)?.toLong(), tokOut = st?.get(1)?.toLong(), prefillTps = st?.get(2), genTps = st?.get(3)) } })
             c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u.ifBlank { null }, session = id) })
-            c.messages.addAll(failed); c.loaded = true
+            c.messages.addAll(failed); c.messages.addAll(cards); c.loaded = true
             if (c === cur) { offline = false; error = null }
         } catch (e: Exception) { if (c === cur) fail(e) }
     }
@@ -1575,7 +1585,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 g.call("image.attach_bytes", JSONObject().put("session_id", sid).put("filename", a.name)
                     .put("content_base64", a.payload.substringAfter("base64,")))
             }
-            val files = atts.filter { !it.isImage }.joinToString("") { "File `${it.name}`:\n```\n${it.payload}\n```\n\n" }
+            val files = atts.filter { !it.isImage }.joinToString("") {
+                if (it.pcPath != null) "File `${it.name}` was uploaded to this PC at: ${it.pcPath}\n\n"
+                else "File `${it.name}`:\n```\n${it.payload}\n```\n\n" }
             val p = JSONObject().put("session_id", sid).put("text", files + text).put("submission_id", UUID.randomUUID().toString())
             g.call("prompt.submit", p)
             c.createdHere = false
@@ -1600,6 +1612,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         val away = !Notify.visible || c !== cur          // not looking at this chat
         val name = c.title ?: s(R.string.chat)
+        if (type == "tool.complete" || type == "message.complete") kickProcPoll(c)   // a command may have started a background process
         when (type) {
             "session.usage" -> (p.optJSONObject("usage") ?: p).let { u -> applyUsage(c, u) }
             "session.info", "session.control.update", "session.updated" -> {
@@ -1732,6 +1745,74 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (last >= 0 && c.messages[last].role == "assistant" && c.streaming) c.messages.add(last, card) else c.messages.add(card) }
     }
 
+    // ---- background terminal processes: progress cards -------------------------------------------------------------
+    // The gateway lists a session's processes (RPC process.list); the relay (POST /bgtasks) parses progress from their output.
+    // Polled every 3s only while the app is in the foreground, the chat is the open one and a process is still running.
+    private val procJobs = HashMap<Chat, kotlinx.coroutines.Job>()
+
+    fun kickProcPoll(c: Chat = cur) {
+        if (c.readOnly || c.liveId == null || !store.hasKey || procJobs[c]?.isActive == true) return
+        procJobs[c] = viewModelScope.launch {
+            while (Notify.visible && c === cur) {
+                val sid = c.liveId ?: break
+                if (!runCatching { pollProcs(c, sid) }.getOrDefault(false) && !c.streaming) break   // keep looking while a turn runs: the process may not exist yet
+                delay(3000)
+            }
+        }
+    }
+
+    /** One poll; true while any process of the session is still running. */
+    private suspend fun pollProcs(c: Chat, sid: String): Boolean {
+        val r = withTimeout(8000) { gatewayFor(c.profile).call("process.list", JSONObject().put("session_id", sid)) }
+        val arr = r.optJSONArray("processes") ?: return false
+        val rows = (0 until arr.length()).map { arr.getJSONObject(it) }.filter { row ->
+            row.str("status") == "running" || c.messages.any { it.task?.key == "proc:" + row.str("session_id") } }
+        if (rows.isEmpty()) return false
+        val prog = fetchBgProgress(rows)
+        rows.forEach { applyProc(c, it, prog[it.str("session_id")]) }
+        return rows.any { it.str("status") == "running" }
+    }
+
+    private suspend fun fetchBgProgress(rows: List<JSONObject>): Map<String, JSONObject> = withContext(Dispatchers.IO) {
+        runCatching {
+            val body = JSONObject().put("processes", JSONArray().also { a -> rows.forEach { a.put(it) } })
+            relayHttp.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build().newCall(relayRequest("/bgtasks", body)).execute().use { r ->
+                if (!r.isSuccessful) return@use emptyMap<String, JSONObject>()
+                val a = JSONObject(r.body!!.string()).optJSONArray("tasks") ?: JSONArray()
+                (0 until a.length()).map { a.getJSONObject(it) }.associateBy { it.str("id") }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun applyProc(c: Chat, row: JSONObject, pr: JSONObject?) {
+        val pid = row.str("session_id"); val key = "proc:$pid"
+        val now = System.currentTimeMillis()
+        val cmd = row.str("command").replace('\n', ' ').trim()
+        val ro = taskChats.getOrPut(System.identityHashCode(c).toString() + key) {
+            Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true; it.title = cmd.take(40).ifBlank { pid } } }
+        val old = c.messages.firstOrNull { it.task?.key == key && it.task.chat === ro }?.task
+        val running = row.str("status") == "running"
+        val failed = !running && !row.isNull("exit_code") && row.optInt("exit_code", 0) != 0
+        val status = if (running) "running" else if (failed) "failed" else "done"
+        val started = old?.startedAt ?: (now - row.optLong("uptime_seconds", 0) * 1000)
+        val ended = if (running) 0L else old?.endedAt?.takeIf { it > 0 } ?: now
+        val tail = pr?.optJSONArray("tail")?.let { a -> (0 until a.length()).map { a.optString(it) } }
+            ?: row.str("output_tail").split(Regex("[\r\n]+")).filter { it.isNotBlank() }.takeLast(30)
+        val pct = pr?.optDoubleOrNull("percent")
+        val last = pr?.str("detail").orEmpty().ifBlank { pr?.str("last").orEmpty() }.ifBlank { tail.lastOrNull().orEmpty() }.take(160)
+        if (ro.messages.none { it.role == "system" }) ro.messages.add(0, UiMsg("system", cmd.ifBlank { pid }))
+        val text = "```\n" + tail.joinToString("\n") + "\n```"
+        if (tail.isNotEmpty() && ro.messages.lastOrNull()?.takeIf { it.role == "assistant" }?.text != text) {
+            if (ro.messages.lastOrNull()?.role == "assistant") ro.messages[ro.messages.lastIndex] = ro.messages.last().copy(text = text)
+            else ro.messages.add(UiMsg("assistant", text)) }
+        ro.streaming = running
+        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, "proc", status, started, ended, ro, pct, last))
+        val i = c.messages.indexOfFirst { it.uid == card.uid }
+        if (i >= 0) { if (c.messages[i].task != card.task) c.messages[i] = card }
+        else { val l = c.messages.lastIndex
+            if (l >= 0 && c.messages[l].role == "assistant" && c.streaming) c.messages.add(l, card) else c.messages.add(card) }
+    }
+
     /** Open a task card's read-only transcript as a tab. */
     fun openTask(t: TaskInfo) { addTab(t.chat); switchTo(t.chat) }
 
@@ -1819,28 +1900,96 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- attachments ----------
-    fun addAttachment(uri: Uri, image: Boolean) = viewModelScope.launch {
+    /** Progress notice while a big file streams to the PC ("Uploading large file... 42%"); null when idle. */
+    var uploadStatus by mutableStateOf<String?>(null)
+    private var uploadsActive = 0
+
+    fun addAttachments(uris: List<Uri>) = viewModelScope.launch {
         if (!hotfix.attachments) { error = s(R.string.attachments_disabled); return@launch }
-        try { attachments.add(withContext(Dispatchers.IO) { readAttachment(uri, image) }) } catch (e: Exception) { error = e.message }
+        for (u in uris) {
+            try { attachments.add(readAttachment(u)) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message ?: e.toString() }
+        }
     }
 
-    private fun readAttachment(uri: Uri, image: Boolean): Attachment {
+    /** Images -> JPEG (existing path); everything else (text included) -> uploaded to the PC inbox via the relay. */
+    private suspend fun readAttachment(uri: Uri): Attachment = withContext(Dispatchers.IO) {
         val cr = getApplication<Application>().contentResolver
-        val name = cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "file"
+        var name = "file"; var size = -1L
+        cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+            if (it.moveToFirst()) { it.getString(0)?.let { n -> name = n }; if (!it.isNull(1)) size = it.getLong(1) } }
         val mime = cr.getType(uri).orEmpty()
-        if (image || mime.startsWith("image/")) {
-            val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, uri)) { dec, info, _ ->
-                val s = info.size; val m = maxOf(s.width, s.height)
-                if (m > 1600) dec.setTargetSize(s.width * 1600 / m, s.height * 1600 / m)
-                dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            }
-            val out = ByteArrayOutputStream(); bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
-            return Attachment(name.substringBeforeLast('.') + ".jpg", true, "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
+        if (mime.startsWith("image/")) {
+            try {
+                val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, uri)) { dec, info, _ ->
+                    val s = info.size; val m = maxOf(s.width, s.height)
+                    if (m > 1600) dec.setTargetSize(s.width * 1600 / m, s.height * 1600 / m)
+                    dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
+                val out = ByteArrayOutputStream(); bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                return@withContext Attachment(name.substringBeforeLast('.') + ".jpg", true, "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
+            } catch (e: Exception) { /* not decodable as a picture: send the file itself */ }
         }
-        val bytes = cr.openInputStream(uri)!!.use { it.readBytes() }
-        if (bytes.size > 200_000) throw ApiException("$name is too large (max 200 KB for text files)")
-        if (bytes.take(4000).any { it == 0.toByte() }) throw ApiException("$name looks binary; only images and text files are supported")
-        return Attachment(name, false, String(bytes, Charsets.UTF_8))
+        uploadToPc(uri, name, size)
+    }
+
+    private fun setUploadStatus(name: String, pct: Int) { uploadStatus = s(R.string.uploading_large, name, pct) }
+
+    /** Chunked, parallel (4 connections x 4 MB) upload through the relay: /upload/init, PUT /upload/<id>?offset=N, /upload/<id>/done. */
+    private suspend fun uploadToPc(uri: Uri, name: String, size0: Long): Attachment = withContext(Dispatchers.IO) {
+        val app = getApplication<Application>()
+        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val base = store.relayBase().trimEnd('/')
+        val http = okhttp3.OkHttpClient.Builder().readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build()
+        var tmp: java.io.File? = null
+        uploadsActive++; setUploadStatus(name, 0)
+        try {
+            var pfd = app.contentResolver.openFileDescriptor(uri, "r")
+            val seekable = pfd != null && size0 >= 0 && runCatching { java.io.FileInputStream(pfd!!.fileDescriptor).channel.position(0) }.isSuccess
+            var size = size0
+            if (!seekable) {   // provider gave a pipe / no size: spool to cache so chunks can be read at any offset
+                pfd?.close()
+                val f = java.io.File(app.cacheDir, "upload-" + UUID.randomUUID()); tmp = f
+                app.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
+                size = f.length(); pfd = android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+            }
+            val ch = java.io.FileInputStream(pfd!!.fileDescriptor).channel
+            val json = "application/json".toMediaType()
+            fun call(rb: okhttp3.Request.Builder): String = http.newCall(rb.header("Authorization", "Bearer $key").build()).execute().use { r ->
+                if (r.code == 404) throw ApiException(s(R.string.upload_relay_old))
+                if (!r.isSuccessful) throw ApiException("upload: HTTP ${r.code} ${r.body?.string().orEmpty().take(200)}")
+                r.body?.string().orEmpty() }
+            val init = JSONObject(call(okhttp3.Request.Builder().url("$base/upload/init").post(JSONObject().put("name", name).put("size", size).toString().toRequestBody(json))))
+            val id = init.getString("id"); val chunk = init.optLong("chunk", 4L shl 20).coerceAtLeast(1L shl 20)
+            val sent = java.util.concurrent.atomic.AtomicLong(0)
+            val sem = kotlinx.coroutines.sync.Semaphore(4)
+            kotlinx.coroutines.coroutineScope {
+                (0 until size step chunk).map { off ->
+                    async {
+                        sem.withPermit {
+                            val len = minOf(chunk, size - off).toInt()
+                            val buf = java.nio.ByteBuffer.allocate(len)
+                            var pos = off
+                            while (buf.hasRemaining()) { val n = ch.read(buf, pos); if (n < 0) break; pos += n }
+                            val bytes = buf.array()
+                            var attempt = 0
+                            while (true) {
+                                try { call(okhttp3.Request.Builder().url("$base/upload/$id?offset=$off").put(bytes.toRequestBody("application/octet-stream".toMediaType()))); break }
+                                catch (e: ApiException) { throw e }
+                                catch (e: Exception) { if (++attempt >= 4) throw e; kotlinx.coroutines.delay(500L * attempt) }
+                            }
+                            setUploadStatus(name, (sent.addAndGet(len.toLong()) * 100 / maxOf(size, 1)).toInt())
+                        }
+                    }
+                }.awaitAll()
+            }
+            pfd.close()
+            val path = JSONObject(call(okhttp3.Request.Builder().url("$base/upload/$id/done").post("{}".toRequestBody(json)))).getString("path")
+            Attachment(name, false, "", path)
+        } finally {
+            tmp?.delete()
+            if (--uploadsActive <= 0) { uploadsActive = 0; uploadStatus = null }
+        }
     }
 
     fun saveSettings(relay: String, lan: String, key: String?) {

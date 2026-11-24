@@ -34,6 +34,12 @@ $Updates  = Join-Path $Launch "app-updates\hermes-android"
 $PyLib    = Join-Path $Launch "pylib"
 $Py       = Join-Path $HH "hermes-agent\venv\Scripts\python.exe"
 $PyW      = Join-Path $HH "hermes-agent\venv\Scripts\pythonw.exe"
+if (-not (Test-Path $Py)) {
+    # Newer Hermes keeps the venv outside the checkout: installs\<id>\environments\<id>\venv (also try hermes-agent\.venv).
+    $cand = @(Join-Path $HH "hermes-agent\.venv\Scripts\python.exe")
+    $cand += @(Get-ChildItem (Join-Path $HH "installs\*\environments\*\venv\Scripts\python.exe") -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
+    foreach ($c in $cand) { if (Test-Path $c) { $Py = $c; $PyW = Join-Path (Split-Path $c) "pythonw.exe"; break } }
+}
 $Task     = "Hermes_PhoneRelay"
 $Port     = 8643
 
@@ -105,7 +111,7 @@ function Tailscale-IP {
 function Lan-IP {
     # The private address of the adapter that has the default route (real Wi-Fi/Ethernet, not Docker/WSL/Hyper-V).
     $cfg = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" -and $_.InterfaceAlias -notmatch 'vEthernet|WSL|Tailscale|Loopback|tun|tap|vpn|clash|sing|wg|zerotier' -and
-        $_.NetAdapter.InterfaceDescription -notmatch 'Tunnel|TAP|VPN|Virtual|WireGuard|Wintun|Hyper-V' }
+        $_.NetAdapter.InterfaceDescription -notmatch 'Tunnel|TAP|VPN|WireGuard|Wintun|Hyper-V Virtual Ethernet|Virtual Ethernet|VirtualBox|VMware' }
     foreach ($c in $cfg) { foreach ($a in $c.IPv4Address) { if ($a.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)') { return $a.IPAddress } } }
     return $null
 }
@@ -152,13 +158,13 @@ if ($Uninstall) {
     if (Test-Path $vdd) {
         Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$vdd`"", "-Uninstall" -Wait
         Ok "virtual display driver uninstall finished"
-    } else { Warn "install-vdd.ps1 not found in ${Launch}: virtual display driver not removed (use the tray menu or run pc\vdisplay\install-vdd.ps1 -Uninstall)" }
+    } else { Warn "install-vdd.ps1 not found in ${Launch}: virtual display driver not removed (run pc\vdisplay\install-vdd.ps1 -Uninstall)" }
     if (Get-ScheduledTask -TaskName "HermesVDisplayGuard" -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName "HermesVDisplayGuard" -Confirm:$false -ErrorAction SilentlyContinue
         if (Get-ScheduledTask -TaskName "HermesVDisplayGuard" -ErrorAction SilentlyContinue) { Warn "task HermesVDisplayGuard still present (needs admin: delete it with schtasks /Delete /TN HermesVDisplayGuard /F)" } else { Ok "task HermesVDisplayGuard removed" }
     }
     Remove-Item (Join-Path $Launch "phone-outbox") -Recurse -ErrorAction SilentlyContinue
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install-tray-task.ps1", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "live_sessions.py", "install-vdd.ps1", "hermes-elevate.py", "install-elevate.ps1") {
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "hotspot.ps1", "install-tray-task.ps1", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "live_sessions.py", "install-vdd.ps1", "hermes-elevate.py", "install-elevate.ps1") {
         Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
     Remove-Item (Join-Path $Launch "sudovda") -Recurse -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
@@ -171,7 +177,7 @@ if ($Uninstall) {
 # ---------------------------------------------------------------- 1. find Hermes
 Step "Checking Hermes"
 if (-not (Test-Path $Py)) { throw "Hermes not found at $HH (expected $Py). Install Hermes Agent first." }
-& $Py -I -c "import aiohttp" 2>$null; if ($LASTEXITCODE) { throw "The Hermes venv has no aiohttp; update Hermes (hermes update)." }
+$ErrorActionPreference = "Continue"; & $Py -I -c "import aiohttp" 2>$null; $ErrorActionPreference = "Stop"; if ($LASTEXITCODE) { throw "The Hermes venv has no aiohttp; update Hermes (hermes update)." }
 Ok "Hermes at $HH"
 $ts = Tailscale-IP; $lan = Lan-IP
 if ($ts) { Ok "Tailscale IP $ts" } else { Warn "Tailscale not found/connected: the phone can then only connect over the same Wi-Fi" }
@@ -262,8 +268,8 @@ if (-not $PairOnly) {
 
     # ------------------------------------------- tray app (admin: owns relay + gateway + Tailscale + vdisplay host)
     Step "Tray app"
-    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install-tray-task.ps1") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
-    # virtual display (agent screen) CLI + driver installer; the driver itself is installed on demand from the tray
+    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "hotspot.ps1", "install-tray-task.ps1") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
+    # virtual display (agent screen) CLI + driver installer; the driver is installed by the next step
     foreach ($f in "hermes-vdisplay.py", "live_sessions.py", "install-vdd.ps1") { Copy-Item (Join-Path $Here "vdisplay\$f") $Launch -Force }
     Copy-Item (Join-Path $Here "vdisplay\sudovda") $Launch -Recurse -Force   # on-demand agent + screen-off monitors
     # phone-approved elevation (task + whitelist are set up on demand with install-elevate.ps1)
@@ -277,6 +283,24 @@ if (-not $PairOnly) {
     Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $Launch 'install-tray-task.ps1')`"" -Wait -WindowStyle Hidden
     Add-TrayShortcuts
     Ok "tray icon started as administrator (logon task; toggle in its menu); shortcuts in Start menu and on the desktop"
+
+    # ------------------------------------------- virtual display driver (SudoVDA; install-vdd.ps1 self-elevates, one UAC prompt)
+    Step "Virtual display driver"
+    $vddOk = $false
+    try { $vddOk = [bool](Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains "root\sudomaker\sudovda" }) } catch {}
+    if ($vddOk) { Ok "virtual display driver already installed" }
+    else {
+        $vdd = Join-Path $Launch "install-vdd.ps1"
+        if (-not (Test-Path $vdd)) { Warn "install-vdd.ps1 missing: virtual display driver not installed" }
+        else {
+            try {
+                $p = Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$vdd`"" -PassThru -ErrorAction Stop
+                if ($p.WaitForExit(300000)) {
+                    if ($p.ExitCode -eq 0) { Ok "virtual display driver installed" } else { Warn "install-vdd.ps1 exited with code $($p.ExitCode): virtual display driver may not be installed (re-run install.cmd to retry)" }
+                } else { Warn "install-vdd.ps1 still running after 5 minutes; continuing" }
+            } catch { Warn "virtual display driver not installed ($($_.Exception.Message)); re-run install.cmd to retry" }
+        }
+    }
 } else {
     $key = Get-Key; if (-not $key) { throw "No API_SERVER_KEY yet: run install.cmd without -PairOnly first." }
     $script:ApkUrl = "https://github.com/$Repo/releases/latest"
@@ -287,9 +311,9 @@ Step "Pair the phone"
 $url = if ($ts) { "http://${ts}:$Port" } elseif ($lan) { "http://${lan}:$Port" } else { throw "No Tailscale or LAN address found." }
 $lanUrl = if ($lan -and $ts) { "http://${lan}:$Port" } else { "" }
 $pair = "hermes://pair?url=" + [uri]::EscapeDataString($url) + "&lan=" + [uri]::EscapeDataString($lanUrl) + "&key=" + $key
-Set-Clipboard -Value $key
+try { Set-Clipboard -Value $key; $clip = $true } catch { $clip = $false }   # no clipboard in non-interactive sessions
 Ok "server address: $url$(if ($lanUrl) { "   (Wi-Fi fallback: $lanUrl)" })"
-Ok "API key copied to the clipboard (not shown)"
+if ($clip) { Ok "API key copied to the clipboard (not shown)" } else { Warn "no clipboard available; the API key is in the Hermes .env (API_SERVER_KEY)" }
 
 $ErrorActionPreference = "Continue"
 $adbExe = Find-Adb

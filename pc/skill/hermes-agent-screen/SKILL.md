@@ -11,7 +11,7 @@ An open-source virtual monitor driver (SudoVDA, MIT; never Parsec) gives the age
 **Design:** one resident daemon (`_daemon`, started on demand, exits when nothing is wanted) owns every virtual monitor.
 It runs elevated through the scheduled task `HermesVDisplayGuard` (so it can also move admin windows), and the CLI is a
 thin client over a localhost socket. It writes `%LOCALAPPDATA%\hermes\vdisplay\state.json` after every change, and
-`status` comes from that file. Driver install/uninstall: tray menu -> Agent virtual screen, or `install-vdd.ps1 [-Uninstall]`
+`status` comes from that file. Driver install/uninstall: done by `install.cmd` / `install.cmd -Uninstall`, or run `install-vdd.ps1 [-Uninstall]`
 (one UAC prompt; it also registers/removes the task). Phone elevation cannot run it: driver changes need a UAC click.
 
 **Two independent switches:** `agent screen` (on/off) and `screen off` (on/off). Toggling one never changes the other.

@@ -42,7 +42,24 @@ $VdCli   = Join-Path $Launch "hermes-vdisplay.py"
 
 # zh UI when Windows is Chinese
 $zh = (Get-UICulture).Name -like "zh*"
-function T($en, $cn) { if ($zh) { $cn } else { $en } }
+function T($en, $cn) { if ($zh) { $cn } else { $en } }
+
+# Persisted tray toggles (%LOCALAPPDATA%\hermes\tray-settings.json). Defaults: Tailscale auto start ON, hotspot OFF.
+$SetFile = Join-Path $HH "tray-settings.json"
+function Get-Setting($name, $default) {
+    try { $j = Get-Content $SetFile -Raw -ErrorAction Stop | ConvertFrom-Json; if ($null -ne $j.$name) { return [bool]$j.$name } } catch {}
+    $default
+}
+function Set-Setting($name, [bool]$value) {
+    $h = @{}
+    try { (Get-Content $SetFile -Raw -ErrorAction Stop | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $h[$_.Name] = $_.Value } } catch {}
+    $h[$name] = $value
+    try { ($h | ConvertTo-Json) | Set-Content $SetFile -Encoding UTF8 } catch {}
+}
+$script:AutoTs = Get-Setting "autoTailscale" $true
+$script:AutoHotspot = Get-Setting "autoHotspot" $false
+$HsPs   = Join-Path $Launch "hotspot.ps1"
+$HsRes  = Join-Path $Launch "hotspot.result"
 
 function Get-Key {
     $f = Join-Path $HH ".env"
@@ -139,8 +156,8 @@ function Start-Relay {
 function Ensure-Gateway {
     Start-Process $Hermes -ArgumentList "gateway", "ensure" -WindowStyle Hidden | Out-Null
 }
-function Start-Tailscale {
-    if (Test-Path $TsFix) { Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$TsFix`"" -WindowStyle Hidden | Out-Null }
+function Start-Tailscale {
+    if ($script:AutoTs -and (Test-Path $TsFix)) { Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$TsFix`"" -WindowStyle Hidden | Out-Null }
 }
 # vdisplay daemon: started only when the daemon's own state.json says something is wanted (an agent screen or
 # screen-off) but no daemon is running; the daemon exits by itself when nothing is wanted.
@@ -270,7 +287,7 @@ $menu.Items.Add((T "Restart gateway" "重启 Gateway")).add_Click({
 $menu.Items.Add((T "Open log" "打开日志")).add_Click({ if (Test-Path $Log) { Start-Process notepad.exe $Log } })
 $menu.Items.Add((T "Show pairing QR code" "显示配对二维码")).add_Click({
     Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$Install`"", "-PairOnly", "-NoAdb" -WindowStyle Hidden })
-# ---- agent virtual screen (hermes-vdisplay.py; driver installed on demand)
+# ---- agent virtual screen (hermes-vdisplay.py; driver installed by install.ps1)
 $VdPy  = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"
 function Vd([string[]]$a) {
     Start-Process $VdPy -ArgumentList (@("-I", "`"$VdCli`"") + $a) -WindowStyle Hidden }
@@ -284,11 +301,6 @@ foreach ($it in @(
     if ($it[0] -eq "-") { [void]$miVd.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)); continue }
     $a = $it[1]; $mi = $miVd.DropDownItems.Add($it[0]); $mi.Tag = $a
     $mi.add_Click({ param($s) Vd $s.Tag }) }
-[void]$miVd.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-$miVd.DropDownItems.Add((T "Install driver…" "安装驱动…")).add_Click({
-    Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $Launch 'install-vdd.ps1')`"", "-Verb", "RunAs" })
-$miVd.DropDownItems.Add((T "Uninstall driver" "卸载驱动")).add_Click({
-    Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $Launch 'install-vdd.ps1')`"", "-Uninstall", "-Verb", "RunAs" })
 $miVd.Visible = Test-Path $VdCli
 [void]$menu.Items.Add($miVd)
 $miAuto = New-Object System.Windows.Forms.ToolStripMenuItem (T "Start with Windows" "开机自启")
@@ -297,7 +309,15 @@ $miAuto.Checked = [bool](Get-ScheduledTask -TaskName $Task -ErrorAction Silently
 $miAuto.add_Click({
     if ($miAuto.Checked) { Enable-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue }
     else { Disable-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue } })
-[void]$menu.Items.Add($miAuto)
+[void]$menu.Items.Add($miAuto)
+$miAutoTs = New-Object System.Windows.Forms.ToolStripMenuItem (T "Auto start Tailscale" "自动启动 Tailscale")
+$miAutoTs.CheckOnClick = $true; $miAutoTs.Checked = $script:AutoTs
+$miAutoTs.add_Click({ $script:AutoTs = $miAutoTs.Checked; Set-Setting "autoTailscale" $script:AutoTs })
+[void]$menu.Items.Add($miAutoTs)
+$miAutoHs = New-Object System.Windows.Forms.ToolStripMenuItem (T "Auto start Mobile hotspot" "自动启动移动热点")
+$miAutoHs.CheckOnClick = $true; $miAutoHs.Checked = $script:AutoHotspot
+$miAutoHs.add_Click({ $script:AutoHotspot = $miAutoHs.Checked; Set-Setting "autoHotspot" $script:AutoHotspot })
+[void]$menu.Items.Add($miAutoHs)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $menu.Items.Add((T "Restart tray" "重启托盘")).add_Click({
     # stop our children (the new tray starts them again), keep the gateway, then relaunch through the elevated task
@@ -335,13 +355,19 @@ function Tick {
         Ensure-Gateway
     }
     # Tailscale down: start it and connect (login page if needed); right away, then at most once a minute.
-    if ($now.ts -ne "ok" -and (Test-Path $TsFix) -and ((Get-Date) - $script:lastTsFix).TotalSeconds -ge 60) {
+    if ($script:AutoTs -and $now.ts -ne "ok" -and (Test-Path $TsFix) -and ((Get-Date) - $script:lastTsFix).TotalSeconds -ge 60) {
         $script:lastTsFix = Get-Date
         Start-Tailscale
     }
     # vdisplay host: restart it if an agent screen is wanted but the host died.
     Ensure-VdisplayHost
-    Repair-TaskbarAutoHide
+    Repair-TaskbarAutoHide
+    if ((Test-Path $HsRes) -and (Get-Item $HsRes).LastWriteTime -gt $script:hsSeen) {
+        $script:hsSeen = (Get-Item $HsRes).LastWriteTime
+        $r = (Get-Content $HsRes -Raw).Trim()
+        if ($r -like "fail*") { $tray.ShowBalloonTip(8000, "Hermes Android", (T "Mobile hotspot: " "移动热点：") + $r.Substring(5).Trim(), "Warning") }
+        else { $tray.ShowBalloonTip(4000, "Hermes Android", (T "Mobile hotspot is on" "移动热点已开启"), "Info") }
+    }
     if ((Test-Path $TsRes) -and (Get-Item $TsRes).LastWriteTime -gt $script:tsResSeen) {
         $script:tsResSeen = (Get-Item $TsRes).LastWriteTime
         $r = (Get-Content $TsRes -Raw).Trim()
@@ -372,8 +398,13 @@ function Tick {
 Start-Relay
 Ensure-Gateway
 Start-Tailscale
-Ensure-VdisplayHost
-
+Ensure-VdisplayHost
+# Mobile hotspot: hidden Windows PowerShell 5.1 child (WinRT), never on the UI thread; it retries and has its own time limit.
+$script:hsSeen = if (Test-Path $HsRes) { (Get-Item $HsRes).LastWriteTime } else { [datetime]::MinValue }
+if ($script:AutoHotspot -and (Test-Path $HsPs)) {
+    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$HsPs`"", "-Start" -WindowStyle Hidden | Out-Null
+}
+
 $timer = New-Object System.Windows.Forms.Timer; $timer.Interval = 1000
 $timer.add_Tick({
     $script:next--

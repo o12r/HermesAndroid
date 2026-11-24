@@ -67,7 +67,7 @@ live, so its screen disappears after ~2–3 minutes — that is expected. Use a 
 
 ## Other ways to switch modes
 
-- **Tray:** right-click → Agent virtual screen → Agent screen on / off · Screen off / on · Install driver…
+- **Tray:** right-click → Agent virtual screen → Agent screen on / off · Screen off / on (the driver is installed by `install.cmd`)
 - **Phone relay (needs the API key):** `POST http://<pc>:8643/vdisplay/{status|on|off|screen-off|screen-on}` with the header `Authorization: Bearer <API_SERVER_KEY>`
 - **Phone app:** Settings → PC agent screen
 
