@@ -39,6 +39,15 @@ if (-not (Test-Path $Py)) {
     $cand = @(Join-Path $HH "hermes-agent\.venv\Scripts\python.exe")
     $cand += @(Get-ChildItem (Join-Path $HH "installs\*\environments\*\venv\Scripts\python.exe") -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
     foreach ($c in $cand) { if (Test-Path $c) { $Py = $c; $PyW = Join-Path (Split-Path $c) "pythonw.exe"; break } }
+    # The tray/relay/vdisplay scripts all hard-code hermes-agent\venv: link it to the real venv (re-run this installer after a Hermes update moves it).
+    if ((Test-Path $Py) -and -not (Test-Path (Join-Path $HH "hermes-agent\venv"))) {
+        try {
+            $vl = Join-Path $HH "hermes-agent\venv"
+            if (Test-Path $vl) { (Get-Item $vl -Force).Delete() }   # dangling junction from an earlier install
+            New-Item -ItemType Junction -Path $vl -Target (Split-Path (Split-Path $Py)) -ErrorAction Stop | Out-Null
+            $Py = Join-Path $vl "Scripts\python.exe"; $PyW = Join-Path $vl "Scripts\pythonw.exe"
+        } catch { Write-Host "   !!  could not link hermes-agent\venv ($($_.Exception.Message)); the tray/relay launchers may not find Python" -ForegroundColor Yellow }
+    }
 }
 $Task     = "Hermes_PhoneRelay"
 $Port     = 8643
@@ -223,8 +232,12 @@ if (-not $PairOnly) {
         $r = Invoke-WebRequest "http://127.0.0.1:$Port/api/sessions?profile=default&limit=1" -Headers @{ Authorization = "Bearer $key" } -UseBasicParsing -TimeoutSec 60
         Ok "gateway reachable through the relay (HTTP $($r.StatusCode))"
     } catch { Warn "relay is up but the Hermes gateway didn't answer: run 'hermes gateway ensure' and re-run this installer" }
-    $fw = Get-NetFirewallApplicationFilter -Program $PyW -ErrorAction SilentlyContinue
-    if (-not $fw) { Warn "Windows Firewall may ask once to allow Python: allow it (Private networks is enough for Wi-Fi; Tailscale works either way)" }
+    # Inbound rule for the phone (Wi-Fi/LAN/Tailscale); Private+Domain only, so public networks stay closed.
+    try {
+        Get-NetFirewallRule -DisplayName "Hermes phone relay" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        New-NetFirewallRule -DisplayName "Hermes phone relay" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private,Domain -ErrorAction Stop | Out-Null
+        Ok "firewall: inbound TCP $Port allowed on Private/Domain networks (Tailscale works either way)"
+    } catch { Warn "could not add a firewall rule for :$Port ($($_.Exception.Message)): allow it manually if the phone cannot connect" }
 
     # ------------------------------------------------------------ 4. update folder + APK
     Step "App package"
