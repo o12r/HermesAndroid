@@ -12,7 +12,6 @@
     <string name="cancel">取消</string>
     <string name="retry">重试</string>
     <string name="delete_session_q">删除此会话？</string>
-    <string name="msgs">%1$d 条消息</string>
     <string name="approve_q">批准执行命令？</string>
     <string name="approve_once">仅本次批准</string>
     <string name="approve_session">本会话内批准</string>
@@ -51,6 +50,10 @@
     <string name="theme_system">跟随系统</string>
     <string name="theme_light">浅色</string>
     <string name="theme_dark">深色</string>
+    <string name="clock_format">时间格式</string>
+    <string name="clock_system">跟随系统</string>
+    <string name="clock_12">12 小时制</string>
+    <string name="clock_24">24 小时制</string>
     <string name="theme_black">纯黑</string>
     <string name="power_mode">后台耗电</string>
     <string name="power_balanced">平衡</string>
@@ -83,7 +86,6 @@
     <string name="network_changed">网络已变化…</string>
     <string name="stopping">正在停止…</string>
     <string name="thinking_status">💭 思考中…</string>
-    <string name="err_unreachable">无法连接 PC 中继。请确认手机和电脑都已开启 Tailscale，且 Hermes 正在运行。</string>
     <string name="err_session_corrupt">该对话已损坏（缺少创建凭据），无法在此挪动或删除。</string>
     <string name="err_set_key">请先在设置中填写 API 密钥</string>
     <string name="err_desktop_only">%1$s 无法在手机上使用（需要桌面界面）。</string>
@@ -133,8 +135,6 @@
     <string name="unset_default">取消默认项目</string>
     <string name="archive">归档</string>
     <string name="unarchive">取消归档</string>
-    <string name="archived">已归档</string>
-    <string name="auto_group">自动（按文件夹）</string>
     <string name="delete_project">删除项目</string>
     <string name="delete_project_folder">同时删除项目文件夹及其全部内容</string>
     <string name="delete_project_q">删除项目“%1$s”？</string>
@@ -197,7 +197,6 @@
     <string name="vdisplay">PC Agent 虚拟屏</string>
     <string name="vd_unavailable">不可用（请更新 PC 中继）</string>
     <string name="vd_no_driver">未安装虚拟屏驱动——请在 PC 托盘菜单中安装</string>
-    <string name="vd_agent">Agent 屏</string>
     <string name="vd_agent_chat">Agent 屏幕（此会话：%1$s）</string>
     <string name="queue">排队：本轮结束后发送</string>
     <string name="queued">已排队：%1$s</string>
@@ -205,14 +204,12 @@
     <string name="vd_hint">Agent 需要界面时会自己打开虚拟屏（在右侧），不抢焦点；用完自己关闭，手机和 PC 都退出该会话时也会关闭。</string>
     <string name="vd_close">关闭</string>
     <string name="vd_none">未开启</string>
-    <string name="vd_screen_off">关闭 PC 屏幕</string>
     <string name="vd_screen_off_hint">主屏息屏，你的窗口挪到单独的虚拟屏。在 PC 上按任意键或动鼠标即恢复。</string>
     <string name="vd_screen_off_need_driver">需要第二块虚拟屏：请在 PC 托盘菜单中重新安装驱动。</string>
     <string name="elevate_title">PC 提权请求</string>
     <string name="elevate_body">Agent 想在你的电脑上以管理员身份运行此程序：</string>
     <string name="elevate_publisher">发布者：%1$s</string>
     <string name="elevate_allow">批准</string>
-    <string name="screens">屏幕</string>
     <string name="screens_pc">PC 屏幕</string>
     <string name="screens_agent">Agent 屏幕</string>
     <string name="screens_no_agent">当前没有 Agent 打开屏幕。</string>
@@ -225,7 +222,6 @@
     <string name="screen_refresh">刷新截图</string>
     <string name="sessions">会话</string>
     <string name="ctx_title">上下文</string>
-    <string name="ctx_pct">上下文 %1$d%%</string>
     <string name="ctx_comp_model">压缩模型</string>
     <string name="ctx_comp_provider">压缩模型提供方</string>
     <string name="ctx_length">上下文长度（tokens）</string>
@@ -233,12 +229,10 @@
     <string name="ctx_target">压缩目标（0–1）</string>
     <string name="ctx_keep_last">保留最近对话条数</string>
     <string name="ctx_all_profiles">所有档案共用一套。保存到 PC，PC 确认后才在这里显示。</string>
-    <string name="ctx_edit">修改上下文设置</string>
     <string name="vd_wake_all">点亮所有屏幕</string>
     <string name="vd_screen_off_this">关闭此屏幕</string>
     <string name="vd_screen_on_this">点亮此屏幕</string>
     <string name="connection">连接</string>
-    <string name="chat_defaults">聊天与上下文</string>
     <string name="about">关于</string>
     <string name="appearance_summary">主题、图标、字号、语言</string>
     <string name="about_text">PC 上 Hermes Agent 的手机客户端。开源。</string>
@@ -261,4 +255,10 @@
     <string name="select_multiple">多选</string>
     <string name="n_selected">已选 %1$d 项</string>
     <string name="delete_n_sessions_q">删除 %1$d 个会话？</string>
+    <string name="task_subagent">子代理</string>
+    <string name="task_background">后台任务</string>
+    <string name="task_running">运行中</string>
+    <string name="task_done">已完成</string>
+    <string name="task_failed">失败</string>
+    <string name="task_readonly">只读任务记录 · 无输入框</string>
 </resources>

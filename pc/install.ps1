@@ -4,7 +4,10 @@
     install.cmd               install / repair everything, then pair the phone
     install.cmd -PairOnly     only show the pairing page / pair a USB-connected phone again
     install.cmd -NoAdb        don't use adb even if a phone is connected (always show the QR page)
-    install.cmd -Uninstall    remove the relay, task, skill and update folder (keys in .env are kept)
+    install.cmd -Profiles default,work   install the skills only into these profiles (no questions asked)
+    install.cmd -AllProfiles   install the skills into every profile (no questions asked)
+    install.cmd -Uninstall    remove the relay, tasks, tray, both skills (from ALL profiles), the virtual display
+                              driver (install-vdd.ps1 -Uninstall, one UAC prompt) and the update folder (keys in .env are kept)
 
   What it does (safe to re-run):
     1. Finds Hermes (%LOCALAPPDATA%\hermes) and its venv Python.
@@ -13,12 +16,15 @@
     3. Copies the phone relay to launchers\ and registers the "Hermes_PhoneRelay" scheduled task
        (at logon, on wake from sleep/hibernate, every 5 min). Starts the relay and checks /health.
     4. Creates the in-app update folder and seeds it with the latest APK.
-    5. Installs the "hermes-android" skill into every Hermes profile so the local Hermes can use, fix and improve this setup.
+    5. Installs the skills "hermes-android" and "hermes-agent-screen" so the local Hermes can use, fix and improve
+       this setup. For each skill you pick the profiles (all pre-selected: Enter = all, "1,3" or names = those,
+       "none" = skip; Out-GridView when available). With -Profiles / -AllProfiles, or when there is no console
+       (hidden / redirected), every profile gets both skills. The choice is not remembered. "default" = the root profile.
     6. Pairs the phone: over USB/adb if a phone is connected (installs the app and pairs it, no typing), otherwise
        opens a page with two QR codes (download the app, then pair). Also copies the key to the clipboard.
   The key is never printed.
 #>
-param([switch]$Uninstall, [switch]$PairOnly, [switch]$NoAdb, [string]$Apk = "")
+param([switch]$Uninstall, [switch]$PairOnly, [switch]$NoAdb, [string]$Apk = "", [string[]]$Profiles = @(), [switch]$AllProfiles)
 $ErrorActionPreference = "Stop"
 $Repo     = "o12r/HermesAndroid"
 $Here     = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -45,6 +51,40 @@ function Profile-Dirs {
     # Real profiles only: skip ".deleted" and other dot/hidden folders.
     @($HH) + @(Get-ChildItem (Join-Path $HH "profiles") -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match '^[a-z0-9][a-z0-9_-]*$' } | ForEach-Object { $_.FullName })
+}
+
+function Profile-Name($d) { if ($d -eq $HH) { "default" } else { Split-Path $d -Leaf } }
+
+# Pick profiles for one skill. Returns the chosen profile dirs. All are pre-selected.
+#   -Profiles / -AllProfiles given, or no interactive console -> all (or the named ones) without asking.
+#   Out-GridView when available, else a console prompt: Enter = all, "1,3" / names = those, "none" = skip.
+function Select-Profiles([string]$Skill, [string[]]$Dirs, [string[]]$Names = @(), [switch]$All, [switch]$NonInteractive) {
+    if ($Names.Count) {
+        $want = @($Names | ForEach-Object { $_.Split(",") } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+        $sel = @($Dirs | Where-Object { $want -contains (Profile-Name $_).ToLower() })
+        foreach ($w in $want) { if (-not ($Dirs | Where-Object { (Profile-Name $_).ToLower() -eq $w })) { Warn "unknown profile '$w' (ignored)" } }
+        return $sel
+    }
+    if ($All -or $NonInteractive) { return $Dirs }
+    $names = @($Dirs | ForEach-Object { Profile-Name $_ })
+    $ogv = Get-Command Out-GridView -ErrorAction SilentlyContinue
+    if ($ogv -and -not $env:HERMES_INSTALL_NO_GRID) {
+        $rows = @($names | ForEach-Object { [pscustomobject]@{ Profile = $_ } })
+        $pick = @($rows | Out-GridView -Title "Install skill '$Skill' into which profiles? (all selected; Cancel = skip)" -PassThru)
+        return @($Dirs | Where-Object { $pick.Profile -contains (Profile-Name $_) })
+    }
+    Write-Host "   Install skill '$Skill' into which profiles?" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $names.Count; $i++) { Write-Host ("     [{0}] {1}" -f ($i + 1), $names[$i]) }
+    $ans = (Read-Host "   Enter = all, numbers/names separated by commas = those, none = skip").Trim()
+    if (-not $ans) { return $Dirs }
+    if ($ans -ieq "none") { return @() }
+    $out = @()
+    foreach ($tok in ($ans -split '[,\s]+' | Where-Object { $_ })) {
+        if ($tok -match '^\d+$' -and [int]$tok -ge 1 -and [int]$tok -le $Dirs.Count) { $out += $Dirs[[int]$tok - 1] }
+        elseif ($names -contains $tok.ToLower()) { $out += $Dirs[[array]::IndexOf(@($names | ForEach-Object { $_.ToLower() }), $tok.ToLower())] }
+        else { Warn "ignored '$tok'" }
+    }
+    return @($out | Select-Object -Unique)
 }
 
 function Get-Key {
@@ -107,13 +147,23 @@ if ($Uninstall) {
     foreach ($l in $Lnks) { Remove-Item $l -ErrorAction SilentlyContinue }
     Ok "tray app removed"
     Stop-Relay; Ok "relay stopped"
+    # virtual display driver + its elevated daemon task (install-vdd.ps1 self-elevates: one UAC prompt)
+    $vdd = Join-Path $Launch "install-vdd.ps1"
+    if (Test-Path $vdd) {
+        Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$vdd`"", "-Uninstall" -Wait
+        Ok "virtual display driver uninstall finished"
+    } else { Warn "install-vdd.ps1 not found in ${Launch}: virtual display driver not removed (use the tray menu or run pc\vdisplay\install-vdd.ps1 -Uninstall)" }
+    if (Get-ScheduledTask -TaskName "HermesVDisplayGuard" -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName "HermesVDisplayGuard" -Confirm:$false -ErrorAction SilentlyContinue
+        if (Get-ScheduledTask -TaskName "HermesVDisplayGuard" -ErrorAction SilentlyContinue) { Warn "task HermesVDisplayGuard still present (needs admin: delete it with schtasks /Delete /TN HermesVDisplayGuard /F)" } else { Ok "task HermesVDisplayGuard removed" }
+    }
     Remove-Item (Join-Path $Launch "phone-outbox") -Recurse -ErrorAction SilentlyContinue
-    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install-tray-task.ps1", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "install-vdd.ps1", "hermes-elevate.py", "install-elevate.ps1") {
+    foreach ($f in "hermes-phone-relay.py", "ensure-phone-relay.ps1", "ensure-phone-relay.vbs", "send-to-phone.py", "pair_page.py", "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "install-tray-task.ps1", "install.ps1", "hermes-android-pair.html", "hermes-vdisplay.py", "live_sessions.py", "install-vdd.ps1", "hermes-elevate.py", "install-elevate.ps1") {
         Remove-Item (Join-Path $Launch $f) -ErrorAction SilentlyContinue }
     Remove-Item (Join-Path $Launch "sudovda") -Recurse -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
     Remove-Item $PyLib -Recurse -ErrorAction SilentlyContinue
-    foreach ($d in Profile-Dirs) { Remove-Item (Join-Path $d "skills\software-development\hermes-android") -Recurse -ErrorAction SilentlyContinue }
+    foreach ($d in Profile-Dirs) { foreach ($sk in "hermes-android", "hermes-agent-screen") { Remove-Item (Join-Path $d "skills\software-development\$sk") -Recurse -ErrorAction SilentlyContinue } }
     Ok "files and skill removed (API_SERVER_KEY in .env files kept; delete those lines yourself if unwanted)"
     exit 0
 }
@@ -198,12 +248,17 @@ if (-not $PairOnly) {
 
     # ------------------------------------------------------------ 5. skill for the local Hermes
     Step "Hermes skill"
-    foreach ($d in Profile-Dirs) {
-        $dst = Join-Path $d "skills\software-development\hermes-android"
-        New-Item -ItemType Directory -Force $dst | Out-Null
-        Copy-Item (Join-Path $Here "skill\hermes-android\SKILL.md") $dst -Force
+    $allDirs = @(Profile-Dirs)
+    $noAsk = $AllProfiles -or ($Profiles.Count -gt 0) -or [Console]::IsInputRedirected -or -not [Environment]::UserInteractive
+    foreach ($sk in "hermes-android", "hermes-agent-screen") {
+        $chosen = @(Select-Profiles $sk $allDirs -Names $Profiles -All:$AllProfiles -NonInteractive:$noAsk)
+        foreach ($d in $chosen) {
+            $dst = Join-Path $d "skills\software-development\$sk"
+            New-Item -ItemType Directory -Force $dst | Out-Null
+            Copy-Item (Join-Path $Here "skill\$sk\SKILL.md") $dst -Force
+        }
+        Ok "skill '$sk' installed in $($chosen.Count) of $($allDirs.Count) profile(s)"
     }
-    Ok "skill 'hermes-android' installed in $((Profile-Dirs).Count) profile(s)"
 
     # ------------------------------------------- tray app (admin: owns relay + gateway + Tailscale + vdisplay host)
     Step "Tray app"

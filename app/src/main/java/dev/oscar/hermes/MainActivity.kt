@@ -74,7 +74,6 @@ import io.noties.markwon.Markwon
 import io.noties.markwon.SoftBreakAddsNewLinePlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
-import java.text.DateFormat
 import java.util.Date
 
 class MainActivity : ComponentActivity() {
@@ -370,7 +369,6 @@ fun SessionsScreen(vm: ChatViewModel) {
     androidx.activity.compose.BackHandler(selMode || reordering) { selMode = false; sel = emptySet(); reordering = false }
     // Collapsed state per project; the active project (or Home) starts open.
     val open = remember { mutableStateMapOf<String, Boolean>() }
-    val fmt = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT) }
     val busy by remember { derivedStateOf { vm.busyIds() } }
     // Group sessions; anything the tree doesn't know about goes to Home.
     fun buildGroups(sessions: List<Session>, projects: List<Project>, activeProject: String?): List<Pair<Project, List<Session>>> {
@@ -435,7 +433,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                             style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                     }
                     Spacer(Modifier.weight(1f))
-                    if (vm.cur.profile == prof || !vm.liveKeys[prof].isNullOrEmpty()) Text("●", Modifier.padding(end = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
+                    if (!vm.liveKeys[prof].isNullOrEmpty()) Text("●", Modifier.padding(end = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
                     Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
@@ -467,7 +465,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(list.size.toString(), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                         }
-                        if (list.any { x -> x.id in vm.liveKeys[prof].orEmpty() || (vm.cur.profile == prof && x.id == vm.cur.id) }) Text("●", Modifier.padding(end = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
+                        if (list.any { x -> x.id in vm.liveKeys[prof].orEmpty() }) Text("●", Modifier.padding(end = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
                         Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
@@ -484,21 +482,24 @@ fun SessionsScreen(vm: ChatViewModel) {
                 }
                 if (isOpen) items(list, key = { okey + ":" + it.id }, contentType = { "sess" }) { s ->
                     var menu by remember { mutableStateOf(false) }
-                    val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
+                    val time = remember(s.lastActive, Formats.clock) { s.lastActive?.let { Formats.fmtTime((it * 1000).toLong()) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
                     val isSel = isCur && s.id in sel
-                    val isActiveSess = s.id in vm.liveKeys[prof].orEmpty() || (vm.cur.profile == prof && vm.cur.id != null && vm.cur.id == s.id)
+                    val isActiveSess = s.id in vm.liveKeys[prof].orEmpty()
                     Row(Modifier.fillMaxWidth().heightIn(min = 36.dp)
-                        .then(if (isSel) Modifier.background(cs.primaryContainer) else if (isActiveSess) Modifier.background(cs.tertiaryContainer.copy(alpha = 0.6f)) else Modifier)
+                        .then(if (isSel) Modifier.background(cs.primaryContainer) else Modifier)
                         .combinedClickable(onLongClick = { if (selMode) { if (isCur) toggleSel(s.id) } else menu = true },
                             onDoubleClick = { if (!selMode) { vm.enterProfile(prof); renaming = s } }) {
                             if (selMode) { if (isCur) toggleSel(s.id) }
                             else { if (!isCur) vm.enterProfile(prof); if (p.id != "__all") vm.lastProject = p; vm.open(s) } }
-                        .padding(start = if (p.isHome) 24.dp else 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        .padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        // context used/max sits in the indent column (left of the title), under profile > project
+                        Box(Modifier.width(if (p.isHome) 56.dp else 72.dp).padding(end = 6.dp), contentAlignment = Alignment.CenterEnd) {
                             if (ctxRow != null) Text(fmtTok(ctxRow.first) + "/" + fmtTok(ctxRow.second),
-                                Modifier.padding(end = 6.dp), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), maxLines = 1, softWrap = false,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), maxLines = 1, softWrap = false,
                                 color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
+                        }
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                             Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
@@ -672,6 +673,9 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
         }
         vm.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (chat.readOnly) Text("🔒 " + stringResource(R.string.task_readonly), Modifier.fillMaxWidth().padding(12.dp),
+            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else {
         SlashSuggestions(vm, chat.draft) { chat.draft = it }
         RuntimeChips(vm, onOpenContextSettings, onOpenModelSettings)
         if (chat.queue.isNotEmpty()) Column(Modifier.padding(horizontal = 8.dp)) {
@@ -736,10 +740,11 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                     IconButton(onClick = { vm.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
                 }
                 // While Hermes works, Send steers the running turn instead of waiting (only when expanded).
-                if (!vm.streaming || (focused && chat.draft.isNotBlank())) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
+                if (!vm.streaming || chat.draft.isNotBlank()) IconButton(onClick = { vm.send(chat.draft); chat.draft = "" }, small,
                     enabled = chat.draft.isNotBlank() || (!vm.streaming && vm.attachments.isNotEmpty())) {
                     Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.streaming) R.string.steer else R.string.send)) }
             }
+        }
         }
     }
 }
@@ -827,10 +832,10 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
         items(vm.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
             val sel = !onList && c === vm.cur
             val label = buildString {
+                if (c.readOnly) append("🔒 ")
                 if (c.streaming) append("⏳ ")
                 if (c.id != null && c.id in vm.vdAgents) append("🖥 ")
                 if (c.approval != null || c.clarify != null) append("❓ ")
-                if (c.profile != vm.profile) append(c.profile).append(" · ")
                 append(c.title ?: newChat)
                 if (!sel && c.draft.isNotBlank()) append(" ✎")
             }
@@ -838,6 +843,8 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val dragging = dragKey == System.identityHashCode(c)
             Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
             InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
+                leadingIcon = { Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                    Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } },
                 modifier = Modifier
                     .pointerInput(c) {
                         detectDragGesturesAfterLongPress(
@@ -862,7 +869,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
                     },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 110.dp)) },
                 trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.closeTab(c) }) })
-            if (!sel && c.unread) Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 2.dp).size(10.dp)
+            if (!sel && c.unread) Box(Modifier.align(Alignment.BottomEnd).padding(bottom = 1.dp, end = 1.dp).size(16.dp)
                 .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
             }
         }
@@ -899,6 +906,7 @@ fun Bubble(m: UiMsg, vm: ChatViewModel, live: Boolean = false) {
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
         return
     }
+    if (m.role == "task" && m.task != null) { TaskCard(m.task) { vm.openTask(m.task) }; return }
     if (m.role == "file") {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file, vm.fileProgress[m.text]) { vm.saveInbox(m.text, m.session) } }
         return
@@ -912,6 +920,30 @@ fun Bubble(m: UiMsg, vm: ChatViewModel, live: Boolean = false) {
                 if (user) Text(m.text) else AssistantBody(m, live)
                 if (m.failed) FailedActions(m, vm) else MessageActions(m, vm)
             }
+        }
+    }
+}
+
+/** Notice card for a sub-agent / background task; tap opens its read-only tab. */
+@Composable
+fun TaskCard(t: TaskInfo, onOpen: () -> Unit) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    if (t.status == "running") LaunchedEffect(t) { while (true) { kotlinx.coroutines.delay(1000); now = System.currentTimeMillis() } }
+    val secs = ((if (t.status == "running") now else t.endedAt) - t.startedAt).coerceAtLeast(0) / 1000
+    val status = stringResource(when (t.status) { "running" -> R.string.task_running; "failed" -> R.string.task_failed; else -> R.string.task_done })
+    val goal = t.chat.title.orEmpty()
+    Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).clickable(onClick = onOpen)) {
+        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (t.kind == "bg") "⚙" else "🤖", Modifier.padding(end = 8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(if (t.kind == "bg") R.string.task_background else R.string.task_subagent) + if (goal.isNotBlank() && t.kind != "bg") " · $goal" else "",
+                    style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(status + if (secs > 0 || t.status == "running") " · " + (if (secs >= 60) "${secs / 60}m ${secs % 60}s" else "${secs}s") else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (t.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSecondaryContainer)
+            }
+            Text("🔒", Modifier.padding(start = 6.dp))
         }
     }
 }
@@ -942,7 +974,7 @@ fun StepsView(steps: List<Step>, live: Boolean = false) {
         Text(" " + summary + if (!open && tools > 0) "  ·  " + steps.filter { it.kind == "tool" }.joinToString(", ") { it.name }.take(80) else "",
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
-    if (open) Column(Modifier.padding(start = 6.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (open) androidx.compose.foundation.text.selection.SelectionContainer { Column(Modifier.padding(start = 6.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         steps.forEach { st ->
             if (st.kind == "thinking") Text("💭 " + st.detail.take(4000), style = MaterialTheme.typography.bodySmall, fontStyle = FontStyle.Italic,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -964,7 +996,7 @@ fun StepsView(steps: List<Step>, live: Boolean = false) {
                 }
             }
         }
-    }
+    } }
 }
 
 /** Unsent message: red ! with resend / edit / delete. */
@@ -995,16 +1027,7 @@ fun ColumnScope.FailedActions(m: UiMsg, vm: ChatViewModel) {
     }
 }
 
-/** Send time: HH:mm today, MM-dd HH:mm this year, else yyyy-MM-dd HH:mm. */
-fun fmtMsgTime(ms: Long): String {
-    val t = java.util.Calendar.getInstance().apply { timeInMillis = ms }; val n = java.util.Calendar.getInstance()
-    val f = when {
-        t.get(java.util.Calendar.YEAR) != n.get(java.util.Calendar.YEAR) -> "yyyy-MM-dd HH:mm"
-        t.get(java.util.Calendar.DAY_OF_YEAR) != n.get(java.util.Calendar.DAY_OF_YEAR) -> "MM-dd HH:mm"
-        else -> "HH:mm"
-    }
-    return java.text.SimpleDateFormat(f, java.util.Locale.getDefault()).format(java.util.Date(ms))
-}
+/** Send time: see [Formats.fmtTime]. */
 
 /** Copy / edit (own messages) / branch from here. Edit and branch need the stored row id. */
 @Composable
@@ -1015,7 +1038,7 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
     val copied = stringResource(R.string.copied)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         val mod = Modifier.size(32.dp)
-        if (m.ts > 0) Text(fmtMsgTime(m.ts), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
+        if (m.ts > 0) Text(Formats.fmtTime(m.ts), maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
         if (m.tokIn != null || m.tokOut != null) Text(
             listOfNotNull(m.prefillTps?.let { "prefill " + fmtSpeed(it) }, m.genTps?.let { "generation " + fmtSpeed(it) },
@@ -1162,6 +1185,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             "look" -> {
             ChoiceRow(listOf("system" to stringResource(R.string.theme_system), "light" to stringResource(R.string.theme_light),
                 "dark" to stringResource(R.string.theme_dark), "black" to stringResource(R.string.theme_black)), vm.theme) { vm.chooseTheme(it) }
+            Text(stringResource(R.string.clock_format))
+            ChoiceRow(listOf("system" to stringResource(R.string.clock_system), "12" to stringResource(R.string.clock_12), "24" to stringResource(R.string.clock_24)), vm.clock) { vm.chooseClock(it) }
             Text(stringResource(R.string.power_mode))
             ChoiceRow(listOf("balanced" to stringResource(R.string.power_balanced), "saver" to stringResource(R.string.power_saver)), vm.powerMode) { vm.choosePower(it) }
             Text(stringResource(if (vm.powerMode == "saver") R.string.power_saver_hint else R.string.power_balanced_hint), style = MaterialTheme.typography.bodySmall)

@@ -50,7 +50,11 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Speeds measured on the phone for this reply: prompt tokens / time-to-first-token, output tokens / generation time (tok/s). */
     val prefillTps: Float? = null, val genTps: Float? = null,
     /** Send time (epoch ms): stored timestamp for history, creation time for live messages; 0 = unknown. */
-    val ts: Long = System.currentTimeMillis())
+    val ts: Long = System.currentTimeMillis(),
+    /** Sub-agent / background task card (role "task"). */
+    val task: TaskInfo? = null)
+/** Notice card for a sub-agent / background task: [chat] is its read-only transcript tab. */
+data class TaskInfo(val key: String, val kind: String, val status: String, val startedAt: Long, val endedAt: Long, val chat: Chat)
 data class Attachment(val name: String, val isImage: Boolean, val payload: String)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
@@ -99,6 +103,8 @@ class Chat(val profile: String, id: String?, title: String?) {
     var firstTokenAt = 0L
     var totOut: Long? = null
     var loaded = false
+    /** Transcript of a sub-agent / background task: no input box, never sent to. */
+    var readOnly by mutableStateOf(false)
     /** Unsent text in the input box; survives leaving and re-opening the chat. */
     var draft by mutableStateOf("")
     /** A reply finished while this chat wasn't on screen; shown as a red dot on its tab. */
@@ -145,6 +151,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val fabProject: Project? get() = lastProject?.let { l -> projects.find { it.id == l.id } ?: l } ?: projects.find { it.id == activeProject }
     /** Folder for the next new chat (project primary path), null = Hermes default. */
     private var newChatCwd: String? = null
+    private var newChatNone = false
     /** All open chats (any profile); [cur] is the one on screen. */
     private val chats = mutableListOf<Chat>()
     var cur by mutableStateOf(Chat(store.profile, null, null).apply { model = store.modelFor(profile); effort = store.effortFor(profile) })
@@ -173,7 +180,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (c.id != null) viewModelScope.launch {
             if (!c.streaming && !c.loaded) loadMessagesInto(c)
             runCatching { ensureLive(gatewayFor(c.profile), c) }
+            loadChatCtx(c)
         }
+    }
+
+    /** Context used/max of a chat from the PC (session.stats), on first entry and on refresh. */
+    private suspend fun loadChatCtx(c: Chat) {
+        val sid = c.liveId ?: return
+        runCatching { withTimeout(8000) { val g = gatewayFor(c.profile)
+            val r = g.call("session.stats", JSONObject().put("session_id", sid))
+            applyUsage(c, r)
+            // A new chat has no session id yet, and an agent not built yet reports no context; the
+            // resume snapshot can still carry stored figures if the stats path came up empty.
+            if (c.ctxMax <= 0 && c.id != null) {
+                val rr = g.call("session.resume", JSONObject().put("session_id", c.id).put("omit_messages", true))
+                (rr.optJSONObject("usage") ?: rr).let { applyUsage(c, it) }
+            }
+        } }
     }
 
     /** Close a tab; a running turn keeps going on the PC. Closing the current tab moves to its neighbour. */
@@ -255,6 +278,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         checkUpdates(manual = false)
     }
 
+    var clock by mutableStateOf(store.clock.also { Formats.clock = it; Formats.appCtx = app.applicationContext })
+    fun chooseClock(v: String) { clock = v; store.clock = v; Formats.clock = v }
     fun chooseTheme(t: String) { theme = t; store.theme = t }
     var powerMode by mutableStateOf(store.powerMode.also { GatewayWs.pingSec = if (it == "saver") 60L else 30L })
     fun choosePower(m: String) {
@@ -585,11 +610,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Context bar + reply token baseline from a PC usage object. Returns (input, output) totals. */
     private fun applyUsage(c: Chat, u: JSONObject): Pair<Long, Long>? {
-        u.optLong("context_used", -1).takeIf { it >= 0 }?.let { c.ctxUsed = it }
-        u.optLong("context_max", 0).takeIf { it > 0 }?.let { c.ctxMax = it }
-        if (!u.has("input") && !u.has("output")) return null
+        // The gateway renamed these: session.stats (and session.usage event frames) now carry
+        // context_tokens/context_length. Keep reading the legacy names too for older frames.
+        val used = u.optLong("context_used", -1).takeIf { it >= 0 } ?: u.optLong("context_tokens", -1)
+        val max = u.optLong("context_max", 0).takeIf { it > 0 } ?: u.optLong("context_length", 0)
+        used.takeIf { it >= 0 }?.let { c.ctxUsed = it }
+        max.takeIf { it > 0 }?.let { c.ctxMax = it }
+        // session.stats (and the flat part of session.usage frames) names the counters input_tokens/output_tokens/prompt_tokens;
+        // the nested TUI "usage" view (message.complete) uses input/output/prompt. Read both, or the reply baseline never gets set.
+        if (!u.has("input") && !u.has("output") && !u.has("input_tokens") && !u.has("output_tokens") && !u.has("prompt_tokens")) return null
         // "input" counts only uncached tokens (often just a few); "prompt" = input + cache reads/writes = what was really sent.
-        val t = (u.optLong("prompt", 0).takeIf { it > 0 } ?: u.optLong("input")) to u.optLong("output")
+        val inp = u.optLong("prompt", 0).takeIf { it > 0 } ?: u.optLong("prompt_tokens", 0).takeIf { it > 0 }
+            ?: u.optLong("input", 0).takeIf { it > 0 } ?: u.optLong("input_tokens", 0)
+        val t = inp to (u.optLong("output", 0).takeIf { it > 0 } ?: u.optLong("output_tokens", 0).takeIf { it > 0 } ?: u.optLong("completion_tokens", 0))
         if (c.totIn == null) { c.totIn = t.first; c.totOut = t.second }
         return t
     }
@@ -675,7 +708,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } else (r.optString("note").ifBlank { r.optString("warning") }).ifBlank { null }?.let { c.messages.add(UiMsg("system", it)) }
             syncFromPc(g, c, sid)
             if (op == "model" && modelConfirm == null) runCatching {
-                applyUsage(c, g.call("session.usage", JSONObject().put("session_id", sid)))
+                applyUsage(c, g.call("session.stats", JSONObject().put("session_id", sid)))
                 if (c.ctxMax > 0 && c.ctxUsed > c.ctxMax) compressAsk = c
             }
         } catch (e: CancellationException) { throw e
@@ -718,14 +751,44 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Stored session ids that are open in some client (phone, desktop, CLI) per profile, from the gateway's session.active_list. */
     var liveKeys by mutableStateOf<Map<String, Set<String>>>(emptyMap())
+
+    private val deviceId: String by lazy { android.provider.Settings.Secure.getString(getApplication<Application>().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone" }
+    private fun relayJson(method: String, path: String, body: String?): String? {
+        val key = store.apiKey ?: return null
+        val rb = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + path).header("Authorization", "Bearer $key")
+        if (method == "POST") rb.post((body ?: "{}").toRequestBody("application/json".toMediaType()))
+        return okhttp3.OkHttpClient.Builder().readTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build().newCall(rb.build()).execute().use { r -> if (r.isSuccessful) r.body?.string() else null }
+    }
+    /** Tell the PC relay which chats this phone has open as tabs (re-sent on every change and every minute), so other devices can mark them active. */
+    private val tabReporter = viewModelScope.launch {
+        delay(1500)
+        launch { while (true) { delay(60_000); reportTabs() } }
+        androidx.compose.runtime.snapshotFlow { tabs.map { it.profile to it.id } }.collect { reportTabs() }
+    }
+    private suspend fun reportTabs() = withContext(Dispatchers.IO) {
+        runCatching {
+            val arr = JSONArray(); tabs.toList().forEach { c -> c.id?.let { arr.put(JSONObject().put("profile", c.profile).put("id", it)) } }
+            relayJson("POST", "/tabs", JSONObject().put("device", deviceId).put("tabs", arr).toString())
+        }
+    }
+
     private fun loadLive() = viewModelScope.launch {
+        val remote: Map<String, Set<String>> = withContext(Dispatchers.IO) {
+            runCatching {
+                val a = JSONArray(relayJson("GET", "/tabs", null) ?: "[]")
+                (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { it.optString("device") != deviceId }
+                    .groupBy({ it.optString("profile") }, { it.optString("id") }).mapValues { it.value.toSet() }
+            }.getOrDefault(emptyMap())
+        }
         val profs = (expandedProfiles + profile).toList()
         val res = profs.map { p -> async {
             p to runCatching { withTimeout(8000) {
                 val a = gatewayFor(p).call("session.active_list", JSONObject()).optJSONArray("sessions") ?: JSONArray()
-                (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("session_key")?.ifBlank { null } }.toSet()
+                (0 until a.length()).mapNotNull { a.optJSONObject(it)?.takeIf { o -> o.optString("status") != "idle" }?.optString("session_key")?.ifBlank { null } }.toSet()  // idle = merely kept alive (e.g. by context probes), not in use
             } }.getOrNull() } }.awaitAll()
-        liveKeys = liveKeys + res.mapNotNull { (p, s) -> s?.let { p to it } }
+        val own = tabs.toList().filter { it.id != null }.groupBy({ it.profile }, { it.id!! }).mapValues { it.value.toSet() }
+        val gw = res.mapNotNull { (p, s) -> s?.let { p to it } }.toMap()
+        liveKeys = (gw.keys + remote.keys + own.keys).associateWith { p -> gw[p].orEmpty() + remote[p].orEmpty() + own[p].orEmpty() }
     }
 
     fun refreshSessions() = viewModelScope.launch {
@@ -757,6 +820,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val c = cur
             if (c.id != null && !c.streaming) loadMessagesInto(c)
+            if (c.id != null) { runCatching { ensureLive(gatewayFor(c.profile), c) }; loadChatCtx(c) }
             refreshSessions().join()
         } finally { chatRefreshing = false }
     }
@@ -878,7 +942,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** New chat whose working folder is the project's folder (so it lands in that project). */
-    fun newChatIn(p: Project?) { newChatCwd = p?.path ?: p?.homeCwd; newChat() }
+    fun newChatIn(p: Project?) {
+        // null = "uncategorised": the Home project (no project), never the current/default one.
+        val t = p ?: projects.find { it.isHome }
+        newChatNone = p == null && t == null
+        newChatCwd = t?.path ?: t?.homeCwd; newChat()
+    }
 
     /** Re-home a stored session into a project by switching its working folder (what the desktop does). */
     fun moveToProject(s: Session, p: Project) = viewModelScope.launch {
@@ -1117,7 +1186,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) { modelError = e.message ?: e.javaClass.simpleName } finally { modelBusy = false }
     }
 
-    /** Per-session context window (used to max tokens) from session.usage; only sessions with a known max are listed. */
+    /** Per-session context window (used to max tokens) from session.stats (older gateways: session.usage); only sessions with a known max are listed. */
     var sessionCtx by mutableStateOf<Map<String, Pair<Long, Long>>>(emptyMap())
     /** lastActive each session had when its context was last fetched: unchanged sessions are not asked again (a refresh used to fire ~100 RPCs). */
     private var lastCtxProf = ""
@@ -1154,14 +1223,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val stale = all.withIndex().filter { (_, x) -> x.id in busyNow || ctxStamp[x.id] != (x.lastActive ?: 0.0) }
         val jobs = stale.map { (idx, x) -> val id = x.id; launch {
             sem.withPermit {
-                // session.usage only knows live sessions; for stored ones resume (no messages) returns the same usage.
+                // session.stats only knows live sessions; for stored ones resume (no messages) returns the same figures.
                 fun pick(r: JSONObject?): Boolean {
                     val u = r?.optJSONObject("usage") ?: r ?: return false
-                    val max = u.optLong("context_max", 0)
+                    val max = u.optLong("context_max", 0).takeIf { it > 0 } ?: u.optLong("context_length", 0)
                     if (max <= 0) return false
-                    out[id] = u.optLong("context_used", 0).coerceAtLeast(0) to max; return true
+                    val used = u.optLong("context_used", -1).takeIf { it >= 0 } ?: u.optLong("context_tokens", 0)
+                    out[id] = used.coerceAtLeast(0) to max; return true
                 }
-                val ok = pick(runCatching { g.call("session.usage", JSONObject().put("session_id", id)) }.getOrNull())
+                val ok = pick(runCatching { g.call("session.stats", JSONObject().put("session_id", id)) }.getOrNull())
                 if (!ok && idx < 30) {
                     val rr = runCatching { g.call("session.resume", JSONObject().put("session_id", id).put("omit_messages", true)) }
                         .onFailure { android.util.Log.w("HermesRpc", "ctx $id: $it") }.getOrNull()
@@ -1171,7 +1241,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (lid != null && liveNow != null && id !in liveNow && chats.none { it.id == id }) runCatching { g.call("session.close", JSONObject().put("session_id", lid)) }
                 }
                 ctxStamp[id] = x.lastActive ?: 0.0
-                if (prof == profile) sessionCtx = out.toMap()
+                if (prof == profile) { sessionCtx = out.toMap(); out[id]?.let { (u, m) -> chats.find { it.profile == prof && it.id == id }?.let { c -> c.ctxUsed = u; c.ctxMax = m } } }
             }
         } }
         jobs.forEach { it.join() }
@@ -1251,12 +1321,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (s.title != null) c.title = s.title
         c.projectId = projects.find { s.id in it.sessionIds }?.id ?: c.projectId
         cur = c; addTab(c); screen = Screen.Chat; seen()
+        if (c.ctxMax <= 0) sessionCtx[s.id]?.let { (u, m) -> c.ctxUsed = u; c.ctxMax = m }  // instant figure from the list, refined below
         viewModelScope.launch {
             // A chat that is still streaming keeps its live transcript; otherwise load the stored one.
             if (!c.streaming || !c.loaded) loadMessagesInto(c)
             // Subscribe right away so Hermes's questions, approvals and replies from a turn
             // started elsewhere (e.g. the desktop) show up live.
             runCatching { val g = gatewayFor(c.profile); ensureLive(g, c) }.onFailure { if (cur === c) fail(it) }
+            loadChatCtx(c)
         }
     }
 
@@ -1315,12 +1387,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun newChat() {
-        val project = newChatCwd?.let { cwd -> projects.find { it.path == cwd || it.homeCwd == cwd } } ?: fabProject
+        val project = newChatCwd?.let { cwd -> projects.find { it.path == cwd || it.homeCwd == cwd } } ?: (if (newChatNone) null else fabProject)
         val c = Chat(profile, null, null).initModel()
         c.newCwd = newChatCwd ?: project?.let { p -> p.path ?: p.homeCwd }
         c.projectId = project?.id
         cur = c; chats.add(c); addTab(c)
-        newChatCwd = null; attachments.clear(); screen = Screen.Chat
+        newChatCwd = null; newChatNone = false; attachments.clear(); screen = Screen.Chat
     }
 
     private fun apiFor(prof: String) = ApiClient(store.relayBase(), prof, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
@@ -1351,7 +1423,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val t = text.trim()
         if (t.startsWith("/") && attachments.isEmpty()) { slash(t); return }
-        if (streaming && liveId != null && t.isNotEmpty()) { steer(t); return }
+        if (streaming && t.isNotEmpty()) { steer(t); return }
         sendMessage(text, attachments.toList()); attachments.clear()
     }
 
@@ -1529,7 +1601,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val away = !Notify.visible || c !== cur          // not looking at this chat
         val name = c.title ?: s(R.string.chat)
         when (type) {
-            "session.usage" -> p.optJSONObject("usage")?.let { u -> applyUsage(c, u) }
+            "session.usage" -> (p.optJSONObject("usage") ?: p).let { u -> applyUsage(c, u) }
             "session.info", "session.control.update", "session.updated" -> {
                 if (p.has("execution_generation")) c.generation = p.optInt("execution_generation", c.generation)
                 if (p.has("revision")) c.revision = p.optInt("revision", c.revision)
@@ -1563,7 +1635,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val text = p.str("text").ifBlank { p.str("content") }
                 if (text.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
                     steps = if (m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
-                p.optJSONObject("usage")?.let { u ->
+                (p.optJSONObject("usage")?.takeIf { it.length() > 0 }).let { u -> if (u == null) return@let
                     val i0 = c.totIn; val o0 = c.totOut
                     applyUsage(c, u)?.let { (i, o) ->
                         if (i0 != null && o0 != null && (i > i0 || o > o0)) {
@@ -1599,6 +1671,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // Answered here or on the PC: the question's notification is stale either way.
             "approval.settled" -> { if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null; Notify.clear(app, c.id, "approval") }
             "clarify.settled" -> { if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null; Notify.clear(app, c.id, "clarify") }
+            "subagent.spawn_requested", "subagent.start", "subagent.thinking", "subagent.text", "subagent.tool",
+            "subagent.progress", "subagent.complete", "background.complete" -> taskEvent(c, type, p)
             "session.title" -> p.optString("title").ifBlank { null }?.let { c.title = it }
             "error" -> { val msg = p.optString("message").ifBlank { "Hermes error" }
                 c.streaming = false; c.status = null; dropEmpty(c); c.messages.add(UiMsg("system", "⚠ $msg"))
@@ -1606,6 +1680,60 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (away) Notify.alert(app, s(R.string.n_error) + " · " + name, msg, force = c !== cur, profile = c.profile, session = c.id) }
         }
     }
+
+    /** Read-only transcripts, keyed by parent chat + task key. */
+    private val taskChats = HashMap<String, Chat>()
+
+    private fun roAppend(ro: Chat, f: (UiMsg) -> UiMsg) {
+        val i = ro.messages.lastIndex
+        if (i >= 0 && ro.messages[i].role == "assistant") ro.messages[i] = f(ro.messages[i]) else ro.messages.add(f(UiMsg("assistant", "")))
+    }
+
+    /** subagent.* / background.complete on the parent session: keep a card in the stream and a read-only transcript behind it. */
+    private fun taskEvent(c: Chat, type: String, p: JSONObject) {
+        val bg = type == "background.complete"
+        val key = if (bg) "bg:" + p.str("task_id") else "sa:" + p.str("subagent_id").ifBlank { p.str("child_session_id") }.ifBlank { p.optInt("task_index", 0).toString() }
+        val now = System.currentTimeMillis()
+        val ro = taskChats.getOrPut(System.identityHashCode(c).toString() + key) {
+            Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true
+                it.title = s(if (bg) R.string.task_background else R.string.task_subagent) } }
+        val goal = p.str("goal").ifBlank { p.str("preview") }
+        var status = c.messages.firstOrNull { it.task?.key == key && it.task.chat === ro }?.task?.status ?: "running"
+        var started = c.messages.firstOrNull { it.task?.key == key && it.task.chat === ro }?.task?.startedAt ?: now
+        var ended = 0L
+        when (type) {
+            "subagent.spawn_requested", "subagent.start" -> {
+                if (goal.isNotBlank() && ro.messages.none { it.role == "system" }) {
+                    ro.messages.add(0, UiMsg("system", goal)); ro.title = goal.replace('\n', ' ').take(40) }
+                ro.streaming = true; status = "running" }
+            "subagent.thinking" -> p.str("text").takeIf { it.isNotEmpty() }?.let { t -> roAppend(ro) { m ->
+                val l = m.steps.lastOrNull()
+                m.copy(steps = if (l?.kind == "thinking") m.steps.dropLast(1) + l.copy(detail = l.detail + t) else m.steps + Step("thinking", "", t)) } }
+            "subagent.text", "subagent.progress" -> p.str("text").ifBlank { goal }.takeIf { it.isNotEmpty() }?.let { t -> roAppend(ro) { m ->
+                m.copy(text = m.text + t + "\n", steps = m.steps + Step("text", "", t)) } }
+            "subagent.tool" -> { val n = p.str("tool_name").ifBlank { "tool" }
+                roAppend(ro) { m -> m.copy(tools = m.tools + n, steps = m.steps + Step("tool", n, p.str("tool_preview").ifBlank { p.str("text") }, "")) } }
+            "subagent.complete", "background.complete" -> {
+                val body = if (bg) p.str("text") else p.str("summary").ifBlank { p.str("text") }.ifBlank { goal }
+                val st = p.str("status")
+                status = if ((bg && body.startsWith("error:")) || p.has("failure_reason") || st in setOf("failed", "error", "timeout", "timed_out", "interrupted")) "failed" else "done"
+                val dur = p.optDouble("duration_seconds", 0.0)
+                if (dur > 0) started = now - (dur * 1000).toLong()
+                ended = now
+                if (bg && ro.messages.none { it.role == "system" }) ro.messages.add(0, UiMsg("system", p.str("task_id")))
+                if (body.isNotBlank()) roAppend(ro) { m -> m.copy(text = body, steps = m.steps + Step("text", "", body)) }
+                ro.streaming = false
+                if (ro !== cur) ro.unread = true }
+        }
+        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, if (bg) "bg" else "sa", status, started, ended, ro))
+        val i = c.messages.indexOfFirst { it.uid == card.uid }
+        if (i >= 0) c.messages[i] = card
+        else { val last = c.messages.lastIndex   // keep the streaming assistant message last
+            if (last >= 0 && c.messages[last].role == "assistant" && c.streaming) c.messages.add(last, card) else c.messages.add(card) }
+    }
+
+    /** Open a task card's read-only transcript as a tab. */
+    fun openTask(t: TaskInfo) { addTab(t.chat); switchTo(t.chat) }
 
     private fun onServerRequest(g: GatewayWs, id: String, method: String, p: JSONObject) {
         when (method) {
@@ -1645,7 +1773,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Inject text into the running turn (Hermes sees it with the next tool result) without interrupting. */
     private fun steer(t: String) {
         val c = cur
-        val sid = c.liveId ?: return
         // Mid-turn note: appears where it was sent (after what the agent has said so far); later output continues in a new reply below it.
         c.messages.add(UiMsg("user", t))
         c.messages.add(UiMsg("assistant", ""))
@@ -1653,6 +1780,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var generation by object { operator fun getValue(a: Any?, b: Any?) = c.generation; operator fun setValue(a: Any?, b: Any?, v: Int) { c.generation = v } }
             try {
                 val g = gatewayFor(c.profile)
+                val sid = c.liveId ?: ensureLive(g, c)
                 var r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
                 if (r.isFailure) {  // generation moved on: refresh once and retry
                     val info = g.call("session.info", JSONObject().put("session_id", sid))

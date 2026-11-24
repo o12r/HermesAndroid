@@ -325,6 +325,34 @@ async def _elevate_cli(*args):
     return json.loads(out.decode("utf-8", "replace") or "null")
 
 
+_TABS: dict = {}   # device -> (last report time, [{"profile","id"}]): chats each phone currently has open as tabs
+_TABS_TTL = 180
+
+
+async def tabs_report(req: web.Request):
+    """POST /tabs {device, tabs:[{profile,id}]}: a phone reports its open tabs (also an empty list when it closes them)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    import time
+    try:
+        body = await req.json()
+        _TABS[str(body["device"])] = (time.time(), [t for t in body.get("tabs", []) if t.get("id")])
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+    return web.json_response({"ok": True})
+
+
+async def tabs_list(req: web.Request):
+    """GET /tabs: every phone's open tabs (reports older than the TTL are dropped)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    import time
+    now = time.time()
+    for d in [d for d, (t, _) in _TABS.items() if now - t > _TABS_TTL]:
+        _TABS.pop(d, None)
+    return web.json_response([{"device": d, "profile": t.get("profile"), "id": t["id"]} for d, (_, tabs) in _TABS.items() for t in tabs])
+
+
 async def elevate_pending(req: web.Request):
     """GET /elevate/pending: elevation requests the agent made, waiting for the phone's decision."""
     if not _authed(req):
@@ -977,6 +1005,8 @@ def main():
     app.router.add_post("/vdisplay/shot", vdisplay_shot)
     app.router.add_post("/vdisplay/{op}", vdisplay_op)
     app.router.add_get("/elevate/pending", elevate_pending)
+    app.router.add_post("/tabs", tabs_report)
+    app.router.add_get("/tabs", tabs_list)
     app.router.add_post("/elevate/{op}/{id}", elevate_decide)
     app.router.add_get("/outbox", outbox_list)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
@@ -1003,6 +1033,8 @@ def main():
             app.router.add_post("/vdisplay/shot", vdisplay_shot)
             app.router.add_post("/vdisplay/{op}", vdisplay_op)
             app.router.add_get("/elevate/pending", elevate_pending)
+            app.router.add_post("/tabs", tabs_report)
+            app.router.add_get("/tabs", tabs_list)
             app.router.add_post("/elevate/{op}/{id}", elevate_decide)
             app.router.add_get("/outbox", outbox_list)
             app.router.add_route("*", "/outbox/{name}", outbox_item)

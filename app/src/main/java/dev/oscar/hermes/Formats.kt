@@ -1,5 +1,7 @@
 package dev.oscar.hermes
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -16,6 +18,41 @@ sealed class Seg {
  * streaming), a whole reply that is bare JSON/XML, and bare XML/JSON runs between paragraphs.
  */
 object Formats {
+    /** Clock preference: "system" | "12" | "24". Compose state so visible times refresh when changed. */
+    var clock by androidx.compose.runtime.mutableStateOf("system")
+    var appCtx: android.content.Context? = null
+
+    private fun use24(): Boolean = when (clock) {
+        "12" -> false
+        "24" -> true
+        else -> appCtx?.let { android.text.format.DateFormat.is24HourFormat(it) } ?: true
+    }
+
+    /**
+     * Unified time display: today -> time; within 10 days -> "N days ago + time"; within a year -> month/day
+     * ("Last year" prefix when not this year); older -> year + month.
+     */
+    fun fmtTime(ms: Long): String {
+        val zh = java.util.Locale.getDefault().language == "zh"
+        val loc = java.util.Locale.getDefault()
+        fun sdf(p: String) = java.text.SimpleDateFormat(p, loc)
+        val d = java.util.Date(ms)
+        val time = sdf(if (use24()) "HH:mm" else if (zh) "ah:mm" else "h:mm a").format(d)
+        val now = java.util.Calendar.getInstance()
+        val t = java.util.Calendar.getInstance().apply { timeInMillis = ms }
+        fun dayStart(c: java.util.Calendar) = (c.clone() as java.util.Calendar).apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0); set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0) }
+        val days = Math.round((dayStart(now).timeInMillis - dayStart(t).timeInMillis) / 86_400_000.0).toInt()
+        val yearGap = now.get(java.util.Calendar.YEAR) - t.get(java.util.Calendar.YEAR)
+        return when {
+            days <= 0 -> time
+            days <= 10 -> (if (zh) "$days 天前 " else if (days == 1) "1 day ago " else "$days days ago ") + time
+            days <= 365 -> if (yearGap <= 0) sdf(if (zh) "M月d日" else "MMM d").format(d)
+                else (if (zh) "去年" else "Last year ") + sdf(if (zh) "M月d日" else "MMM d").format(d)
+            else -> sdf(if (zh) "yyyy年M月" else "MMM yyyy").format(d)
+        }
+    }
+
     private val fence = Regex("^ {0,3}(`{3,}|~{3,})\\s*([\\w+#.-]*).*$")
 
     fun split(src: String): List<Seg> {

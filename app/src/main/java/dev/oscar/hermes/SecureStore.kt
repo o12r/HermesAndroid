@@ -18,6 +18,9 @@ class SecureStore(ctx: Context) {
         get() = prefs.getString("relayUrl", null) ?: hotfixRelay ?: DEFAULT_RELAY
         set(v) = prefs.edit().putString("relayUrl", v.trim().trimEnd('/')).apply()
     /** "system" | "light" | "dark" | "black" */
+    var clock: String
+        get() = prefs.getString("clock", "system")!!
+        set(v) = prefs.edit().putString("clock", v).apply()
     var theme: String
         get() = prefs.getString("theme", "system")!!
         set(v) = prefs.edit().putString("theme", v).apply()

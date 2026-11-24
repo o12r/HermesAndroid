@@ -18,7 +18,7 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 |---|---|
 | Relay | `%LOCALAPPDATA%\hermes\launchers\hermes-phone-relay.py` (run with the Hermes venv `pythonw.exe -I`) |
 | Relay log | `%LOCALAPPDATA%\hermes\launchers\phone-relay.log` (never contains keys or tickets) |
-| Tray app | `launchers\hermes-tray.ps1`, run **as administrator** by the scheduled task `HermesAndroidTray` (logon trigger, highest privilege; `install-tray-task.ps1` registers it, self-elevates silently since the user has UAC elevate-without-prompt). Green/yellow/red icon for relay / gateway / Tailscale. The tray owns the relay, gateway (`hermes gateway ensure`), Tailscale and vdisplay host as children, starts/monitors/restarts them, and notifies on failure. On exit it stops its own children, and stops the gateway too only if no other Hermes process (desktop `Hermes.exe`, a `hermes` CLI session) is left running |
+| Tray app | `launchers\hermes-tray.ps1`, run **as administrator** by the scheduled task `HermesAndroidTray` (logon trigger, highest privilege; `install-tray-task.ps1` registers it, self-elevates silently since the user has UAC elevate-without-prompt). Green/yellow/red icon for relay / gateway / Tailscale. The tray owns the relay, gateway (`hermes gateway ensure`), Tailscale and the vdisplay daemon (if wanted but not running) as children, starts/monitors/restarts them, and notifies on failure. On exit it stops its own children, and stops the gateway too only if no other Hermes process (desktop `Hermes.exe`, a `hermes` CLI session) is left running |
 | Keep-alive (removed) | the installer unregisters the old `Hermes_PhoneRelay` task and the HKCU `HermesAndroidTray` Run key — the tray is the single owner of the relay, so there is no double start |
 | Key | `API_SERVER_KEY=` in `%LOCALAPPDATA%\hermes\.env`, the same value in every profile's `.env` |
 | App updates | `%LOCALAPPDATA%\hermes\launchers\app-updates\hermes-android\` (`latest.json`, `app.apk`, `hotfix.json`) |
@@ -61,36 +61,9 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 - Hotfix without a release: edit `hotfix.json` (banner text, `min_version_code`, feature flags), then `python scripts/release.py --hotfix`.
 - Updates must be signed with the same key as the installed app: the debug keystore of the PC that built it.
 
-## Agent virtual screen (work without taking the user's screen)
+## Agent virtual screen
 
-An open-source IddCx virtual monitor (VirtualDrivers/Virtual-Display-Driver, MIT; never Parsec) gives the agent its
-own screen. CLI: `python -I "%LOCALAPPDATA%\hermes\launchers\hermes-vdisplay.py" <cmd>` (JSON output). Driver
-install/uninstall: tray menu → Agent virtual screen, or `install-vdd.ps1 [-Uninstall]` (one UAC; also registers the
-elevated guard task `HermesVDisplayGuard`).
-
-| Command | Effect |
-|---|---|
-| `status` | installed / `agent` / `screen_off` / geometry |
-| `on` / `off` | agent screen on (right of the other screens, starts the guard) / off; screen-off state is not touched |
-| `screen off` / `screen on` | main screen dark + user windows moved to the user screen (2nd virtual monitor) / restored. Works whether the agent screen is on or off |
-| `launch -- <cmd...>` | start an app on the virtual screen (registered as an agent window) |
-| `move <hwnd\|title> virtual\|main` | move a window; `virtual` registers it, `main` unregisters it |
-| `allow` / `disallow <hwnd\|title>` | edit the agent-window list without moving |
-| `windows` | list top-level windows with their display |
-| `bg-click <hwnd> x y` | click inside a window without focus/cursor (PostMessage/UIA, real input only as fallback) |
-
-Phone app: Settings → PC agent screen (relay `POST /vdisplay/status|on|off|screen-off|screen-on`: two separate switches).
-
-Rules for the agent:
-- Do GUI work on the virtual screen: `on`, then `launch` the app there. Never steal the user's focus or cursor; use
-  `bg-click`/UIA first.
-- Only windows on the agent list may stay on the virtual screen. The guard moves every other window (including ones
-  the user drags there) back to the main screen without activating it, and keeps the user's mouse off the virtual
-  screen (it is only released during an agent fallback click).
-- **When the user needs to see something, bring it to them:** `move <window> main` (that also takes it off the list).
-- Turn it `off` when the task is done, unless the user asked to keep it.
-- `screen off` blanks the user's main screen: only use it when the user asked for it. The user's windows go to the user screen
-  (never the agent screen); `screen on` or any real input puts them back. Agent on/off is a separate switch.
+GUI work on a private virtual monitor (agent screen, screen off): use the `hermes-agent-screen` skill.
 
 ## Model defaults + PC stats from the phone
 - Relay `GET|POST /config/models`: default models shared by every profile. `main` → `model.default` / `model.provider`,

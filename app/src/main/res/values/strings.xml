@@ -12,7 +12,6 @@
     <string name="cancel">Cancel</string>
     <string name="retry">Retry</string>
     <string name="delete_session_q">Delete session?</string>
-    <string name="msgs">%1$d msgs</string>
     <string name="approve_q">Approve command?</string>
     <string name="approve_once">Approve once</string>
     <string name="approve_session">This session</string>
@@ -51,6 +50,10 @@
     <string name="theme_system">System</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
+    <string name="clock_format">Time format</string>
+    <string name="clock_system">Follow system</string>
+    <string name="clock_12">12-hour</string>
+    <string name="clock_24">24-hour</string>
     <string name="theme_black">True black</string>
     <string name="power_mode">Background power use</string>
     <string name="power_balanced">Balanced</string>
@@ -83,7 +86,6 @@
     <string name="network_changed">Network changed…</string>
     <string name="stopping">Stopping…</string>
     <string name="thinking_status">💭 thinking…</string>
-    <string name="err_unreachable">Can\'t reach the PC relay. Is Tailscale on (phone and PC) and Hermes running?</string>
     <string name="err_session_corrupt">This conversation is damaged (its creation record is missing), so it can\'t be moved or deleted from here.</string>
     <string name="err_set_key">Set the API key in Settings</string>
     <string name="err_desktop_only">%1$s isn\'t available from the phone (it needs the desktop UI).</string>
@@ -133,8 +135,6 @@
     <string name="unset_default">Stop using for new chats</string>
     <string name="archive">Archive</string>
     <string name="unarchive">Unarchive</string>
-    <string name="archived">archived</string>
-    <string name="auto_group">auto (by folder)</string>
     <string name="delete_project">Delete project</string>
     <string name="delete_project_folder">Also delete the project folder and everything in it</string>
     <string name="delete_project_q">Delete project “%1$s”?</string>
@@ -197,7 +197,6 @@
     <string name="vdisplay">PC agent screen</string>
     <string name="vd_unavailable">Not available (update the PC relay)</string>
     <string name="vd_no_driver">Virtual display driver not installed — install it from the PC tray menu</string>
-    <string name="vd_agent">Agent screen</string>
     <string name="vd_agent_chat">Agent screen for: %1$s</string>
     <string name="queue">Queue: send when this turn ends</string>
     <string name="queued">Queued: %1$s</string>
@@ -205,14 +204,12 @@
     <string name="vd_hint">When the agent needs a UI it opens its own virtual screen (to the right) without stealing focus, and closes it when done or when this session is closed on both the phone and the PC.</string>
     <string name="vd_close">Close</string>
     <string name="vd_none">Not open</string>
-    <string name="vd_screen_off">Turn PC screen off</string>
     <string name="vd_screen_off_hint">The main screen goes dark and your windows move to a separate virtual screen. Any key or mouse move on the PC turns it back on.</string>
     <string name="vd_screen_off_need_driver">Needs the second virtual monitor: reinstall the driver from the PC tray menu.</string>
     <string name="elevate_title">PC elevation request</string>
     <string name="elevate_body">The agent wants to run this program as administrator on your PC:</string>
     <string name="elevate_publisher">Publisher: %1$s</string>
     <string name="elevate_allow">Approve</string>
-    <string name="screens">Screens</string>
     <string name="screens_pc">PC screens</string>
     <string name="screens_agent">Agent screens</string>
     <string name="screens_no_agent">No agent has a screen open.</string>
@@ -225,7 +222,6 @@
     <string name="screen_refresh">Refresh screenshot</string>
     <string name="sessions">Sessions</string>
     <string name="ctx_title">Context</string>
-    <string name="ctx_pct">Context %1$d%%</string>
     <string name="ctx_comp_model">Compression model</string>
     <string name="ctx_comp_provider">Compression provider</string>
     <string name="ctx_length">Context length (tokens)</string>
@@ -233,12 +229,10 @@
     <string name="ctx_target">Compression target (0–1)</string>
     <string name="ctx_keep_last">Keep last messages</string>
     <string name="ctx_all_profiles">One set for every profile. Saved on the PC; shown here once the PC confirms.</string>
-    <string name="ctx_edit">Edit context settings</string>
     <string name="vd_wake_all">Turn all screens back on</string>
     <string name="vd_screen_off_this">Screen off</string>
     <string name="vd_screen_on_this">Screen on</string>
     <string name="connection">Connection</string>
-    <string name="chat_defaults">Chat &amp; context</string>
     <string name="about">About</string>
     <string name="appearance_summary">Theme, icon, font size, language</string>
     <string name="about_text">Phone client for Hermes Agent on your PC. Open source.</string>
@@ -261,4 +255,10 @@
     <string name="select_multiple">Select multiple</string>
     <string name="n_selected">%1$d selected</string>
     <string name="delete_n_sessions_q">Delete %1$d sessions?</string>
+    <string name="task_subagent">Sub-agent</string>
+    <string name="task_background">Background task</string>
+    <string name="task_running">running</string>
+    <string name="task_done">done</string>
+    <string name="task_failed">failed</string>
+    <string name="task_readonly">Read-only task transcript · no input</string>
 </resources>
