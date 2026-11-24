@@ -39,5 +39,20 @@ Rules for the agent:
 - Turn it `off` when the task is done, unless the user asked to keep it.
 - `screen off` blanks the user's screens: only use it when the user asked for it. Their windows go to the user screen
   (never the agent screen); `screen on` or any real input puts them back.
-- Screens of sessions missing from the gateway's live list are reclaimed after ~2 minutes; a made-up session id is
+- Screens of sessions missing from the gateway's live list are reclaimed after ~10 minutes; a made-up session id is
   never live. Details: `launchers\hermes-vdisplay.py` docstring, repo `pc/vdisplay/README.md`.
+
+Pitfalls (seen when a sub-agent drove the screen):
+- **Sub-agents are not in the live list**, so their agent screen is reclaimed after ~10 minutes (`status` then shows
+  `agent:false`, `shot` fails with "agent screen is off"). Run a whole GUI step in ONE shell call (`on` -> `move` ->
+  `shot`/click), and re-run `on` at the start of every call; never assume it is still on from a previous call.
+- Use one stable id for all calls of a task: `HERMES_VDISPLAY_SESSION=<name>` (the same value every call); without it the
+  id comes from `HERMES_SESSION_ID` and differs per process.
+- **Elevated apps** (e.g. `vmconnect.exe`, Hyper-V Manager) cannot be launched or closed from a normal process: launch with
+  `powershell Start-Process <exe> -Verb RunAs` through `launch`, and close them from an elevated script (WM_CLOSE from a
+  normal process is ignored).
+- Windows can drift back to the main screen (the user's stand-in): check `windows`, `move <hwnd> virtual` again before
+  each `shot`; a flat grey/black capture means the window is not where you think.
+- `bg-key` needs the target window resolved to the right hwnd; verify with `windows` first.
+- `screen off` state is the daemon's: after a long-running daemon misbehaves (stand-in missing), `screen on` then
+  `screen off` rebuilds it.

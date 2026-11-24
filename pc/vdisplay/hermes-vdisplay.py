@@ -546,6 +546,21 @@ class Daemon:
         det_on = [b for b in self.base if b["name"] not in off and not (phys.get(b["name"]) or {}).get("attached")]
         _tlog(f"reassert check: off={sorted(off)} phys_att={[n for n, d in phys.items() if d['attached']]} "
               f"detached_but_wanted={[b['name'] for b in det_on]}")
+        lost = {}
+        if off and not getattr(self, "_healing", False):   # a stand-in that vanished (Windows dropped it) leaves no main screen
+            have = {d["name"] for d in svdas()}
+            lost = {p_: n_ for p_, n_ in (self.so.get("standins") or {}).items() if n_ not in have}
+            if not lost and not self.so.get("standins") and not have:
+                lost = {n_: "" for n_ in off}
+        if lost:
+            _tlog(f"reassert: stand-in lost {lost} -> rebuilding the screen-off layout")
+            self._healing = True
+            try:
+                self.extend()
+                self.setup_off(set(off))
+            finally:
+                self._healing = False
+            return
         if not att_off and not det_on:
             return
         for b in det_on:   # physical screen that lost its attachment -> bring it back where it was
@@ -905,7 +920,8 @@ class Daemon:
 
     def reaper_loop(self):
         """A session's screen is dropped once the session is open on neither the phone nor the PC (gone from the
-        gateway's live list on two consecutive 60 s polls)."""
+        gateway's live list on REAP_MISSES consecutive 60 s polls, i.e. ~10 min)."""
+        REAP_MISSES = 10
         missing = {}
         while True:
             time.sleep(60)
@@ -921,7 +937,7 @@ class Daemon:
                         continue
                     for sid in sids:
                         missing[sid] = missing.get(sid, 0) + 1 if sid not in live else 0
-                        if missing[sid] >= 2:
+                        if missing[sid] >= REAP_MISSES:
                             missing.pop(sid, None)
                             _tlog(f"reaper: session {sid} gone from the live list -> agent off")
                             self.handle({"cmd": "agent_off", "env": {"sid": sid}})
