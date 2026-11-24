@@ -37,6 +37,8 @@ class SecureStore(ctx: Context) {
         set(v) = prefs.edit().putString("profileCache", v.joinToString("\n") { it.first + "\t" + it.second.replace('\n', ' ') }).apply()
     /** Last session list + project tree per profile (JSON), so the session page opens instantly. */
     fun snap(profile: String): String? = prefs.getString("snap_$profile", null)
+    fun ctxCache(profile: String): String? = prefs.getString("ctx_$profile", null)
+    fun setCtxCache(profile: String, json: String) = prefs.edit().putString("ctx_$profile", json).apply()
     fun setSnap(profile: String, json: String) = prefs.edit().putString("snap_$profile", json).apply()
     /** Per-reply token/speed stats, kept per session (key = hash of the reply text) so history keeps showing them. */
     fun replyStat(sid: String, text: String): List<Float?>? = runCatching {

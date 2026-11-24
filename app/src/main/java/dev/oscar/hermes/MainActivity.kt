@@ -42,12 +42,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.flow.drop
@@ -204,6 +206,12 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
             text = { Text(msg) },
             confirmButton = { TextButton({ vm.confirmModel(true) }) { Text(stringResource(R.string.switch_anyway)) } },
             dismissButton = { TextButton({ vm.confirmModel(false) }) { Text(stringResource(android.R.string.cancel)) } })
+    }
+    vm.compressAsk?.let { c ->
+        AlertDialog(onDismissRequest = { vm.answerCompress(false) }, title = { Text(stringResource(R.string.compress_ask_title)) },
+            text = { Text(stringResource(R.string.compress_ask_msg, c.ctxUsed, c.ctxMax)) },
+            confirmButton = { TextButton({ vm.answerCompress(true) }) { Text(stringResource(R.string.compress_now)) } },
+            dismissButton = { TextButton({ vm.answerCompress(false) }) { Text(stringResource(android.R.string.cancel)) } })
     }
     vm.approval?.let { a ->
         AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.approve_q)) },
@@ -394,16 +402,18 @@ fun SessionsScreen(vm: ChatViewModel) {
                 IconButton(onClick = { deletingMany = true }, enabled = picked.isNotEmpty()) { Icon(Icons.Default.Delete, stringResource(R.string.delete)) }
             } else IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
         }, windowInsets = WindowInsets(0))
+            if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth()) else Spacer(Modifier.height(4.dp))
             ChatTabs(vm, onList = true) } },
         floatingActionButton = { if (!selMode && !reordering) ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
             text = { Text(vm.fabProject?.let { stringResource(R.string.new_chat_in, if (it.isHome) stringResource(R.string.home) else it.name) } ?: stringResource(R.string.new_chat)) }) },
         contentWindowInsets = WindowInsets(0)
     ) { pad ->
-        if (vm.loading && vm.sessions.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth().padding(pad))
         val cs = MaterialTheme.colorScheme
         // Compact rows (plain Row instead of ListItem: fewer slots/measure passes per row, fixed heights).
         if (reordering) ReorderProfiles(vm, Modifier.padding(pad).fillMaxSize()) else
-        LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+        PullToRefreshBox(isRefreshing = vm.loading, onRefresh = { vm.scanProfiles(); vm.refreshSessions() },
+            modifier = Modifier.padding(pad).fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize()) {
           vm.orderedProfiles.forEach { (prof, desc) ->
             val isCur = prof == vm.profile
             val profOpen = prof in vm.expandedProfiles
@@ -425,6 +435,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                             style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                     }
                     Spacer(Modifier.weight(1f))
+                    if (vm.cur.profile == prof || !vm.liveKeys[prof].isNullOrEmpty()) Text("●", Modifier.padding(end = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
                     Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                         DropdownMenu(menu, { menu = false }) {
                             DropdownMenuItem(text = { Text(stringResource(R.string.new_project)) }, leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
@@ -440,8 +451,8 @@ fun SessionsScreen(vm: ChatViewModel) {
             if (profOpen && !isCur && vm.otherData[prof] == null) item(key = "load:$prof") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (profOpen) groups.forEach { (p, list) ->
                 val okey = prof + ":" + p.id
-                val isOpen = p.id == "__all" || (open[okey] ?: (p.id == activeOf || (activeOf == null && p.isHome)))
-                if (p.id != "__all") item(key = "h:" + okey, contentType = "proj") {
+                val isOpen = p.id == "__all" || p.isHome || (open[okey] ?: false)
+                if (p.id != "__all" && !p.isHome) item(key = "h:" + okey, contentType = "proj") {
                     var menu by remember { mutableStateOf(false) }
                     val active = p.id == activeOf
                     val fabPicked = isCur && vm.fabProject?.id == p.id
@@ -452,10 +463,11 @@ fun SessionsScreen(vm: ChatViewModel) {
                         Box(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary))
                         Icon(if (isOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.padding(start = 4.dp, end = 6.dp).size(16.dp))
                         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (p.isHome) stringResource(R.string.home) else p.name, Modifier.weight(1f, fill = false),
+                            Text((if (p.isHome) stringResource(R.string.home) else p.name), Modifier.weight(1f, fill = false),
                                 style = MaterialTheme.typography.bodySmall, color = cs.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(list.size.toString(), Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
                         }
+                        if (list.any { x -> x.id in vm.liveKeys[prof].orEmpty() || (vm.cur.profile == prof && x.id == vm.cur.id) }) Text("●", Modifier.padding(end = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
                         Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
                                 p.path?.let { DropdownMenuItem(text = { Text(it, style = MaterialTheme.typography.labelSmall) }, enabled = false, onClick = {}) }
@@ -475,13 +487,14 @@ fun SessionsScreen(vm: ChatViewModel) {
                     val time = remember(s.lastActive) { s.lastActive?.let { fmt.format(Date((it * 1000).toLong())) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
                     val isSel = isCur && s.id in sel
+                    val isActiveSess = s.id in vm.liveKeys[prof].orEmpty() || (vm.cur.profile == prof && vm.cur.id != null && vm.cur.id == s.id)
                     Row(Modifier.fillMaxWidth().heightIn(min = 36.dp)
-                        .then(if (isSel) Modifier.background(cs.primaryContainer) else Modifier)
+                        .then(if (isSel) Modifier.background(cs.primaryContainer) else if (isActiveSess) Modifier.background(cs.tertiaryContainer.copy(alpha = 0.6f)) else Modifier)
                         .combinedClickable(onLongClick = { if (selMode) { if (isCur) toggleSel(s.id) } else menu = true },
                             onDoubleClick = { if (!selMode) { vm.enterProfile(prof); renaming = s } }) {
                             if (selMode) { if (isCur) toggleSel(s.id) }
                             else { if (!isCur) vm.enterProfile(prof); if (p.id != "__all") vm.lastProject = p; vm.open(s) } }
-                        .padding(start = 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        .padding(start = if (p.isHome) 24.dp else 49.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                             if (ctxRow != null) Text(fmtTok(ctxRow.first) + "/" + fmtTok(ctxRow.second),
                                 Modifier.padding(end = 6.dp), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), maxLines = 1, softWrap = false,
@@ -490,6 +503,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
+                        if (isActiveSess) Text("●", Modifier.padding(start = 4.dp), color = cs.tertiary, style = MaterialTheme.typography.labelMedium)
                         if (selMode) Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) { if (isSel) Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
                         else Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
@@ -508,6 +522,7 @@ fun SessionsScreen(vm: ChatViewModel) {
             }
           }
           item(key = "fab-space") { Spacer(Modifier.height(88.dp)) }
+        }
         }
     }
     if (deletingMany) AlertDialog(onDismissRequest = { deletingMany = false }, title = { Text(stringResource(R.string.delete_n_sessions_q, picked.size)) },
@@ -557,9 +572,17 @@ fun SessionsScreen(vm: ChatViewModel) {
             dismissButton = { TextButton(onClick = { vm.missingFolder = null }) { Text(stringResource(R.string.cancel)) } })
     }
     deletingProject?.let { p ->
+        var withFolder by remember(p.id) { mutableStateOf(false) }
         AlertDialog(onDismissRequest = { deletingProject = null }, title = { Text(stringResource(R.string.delete_project_q, p.name)) },
-            text = { Text(stringResource(R.string.delete_project_note)) },
-            confirmButton = { TextButton(onClick = { vm.deleteProject(p); deletingProject = null }) { Text(stringResource(R.string.delete)) } },
+            text = { Column {
+                Text(stringResource(R.string.delete_project_note))
+                if (p.path != null) Row(Modifier.fillMaxWidth().clickable { withFolder = !withFolder }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(withFolder, { withFolder = it })
+                    Column { Text(stringResource(R.string.delete_project_folder), color = if (withFolder) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified)
+                        Text(p.path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+            } },
+            confirmButton = { TextButton(onClick = { vm.deleteProject(p, withFolder); deletingProject = null }) { Text(stringResource(R.string.delete)) } },
             dismissButton = { TextButton(onClick = { deletingProject = null }) { Text(stringResource(R.string.cancel)) } })
     }
     renaming?.let { s ->
@@ -630,13 +653,16 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                 confirmButton = { TextButton(onClick = { vm.currentId?.let { vm.rename(Session(it, null, null, null, 0, null), t) }; renamingTitle = false }) { Text(stringResource(R.string.save)) } },
                 dismissButton = { TextButton(onClick = { renamingTitle = false }) { Text(stringResource(R.string.cancel)) } })
         }
+        if (vm.chatRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
         ChatTabs(vm)
         val jumpScope = rememberCoroutineScope()
         Box(Modifier.weight(1f).fillMaxWidth()) {
+        PullToRefreshBox(isRefreshing = vm.chatRefreshing, onRefresh = { vm.refreshChat() }, modifier = Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
             itemsIndexed(vm.messages, key = { _, m -> m.uid }) { i, m ->
                 if (i > 0) HorizontalDivider(thickness = 0.5.dp, color = androidx.compose.ui.graphics.Color(0xFF9E9E9E).copy(alpha = 0.45f))
                 Bubble(m, vm, live = vm.streaming && i == vm.messages.lastIndex) }
+        }
         }
         if (!follow && list.canScrollForward && vm.messages.isNotEmpty())
             SmallFloatingActionButton(onClick = { follow = true
@@ -794,6 +820,8 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
     val idx = vm.tabs.indexOfFirst { it === vm.cur }
     LaunchedEffect(idx) { if (idx >= 0) state.animateScrollToItem(idx) }
     val newChat = stringResource(R.string.new_chat)
+    var dragKey by remember { mutableStateOf<Int?>(null) }
+    var dragOff by remember { mutableStateOf(0f) }
     androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         items(vm.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
@@ -806,9 +834,37 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
                 append(c.title ?: newChat)
                 if (!sel && c.draft.isNotBlank()) append(" ✎")
             }
+            if (sel) LaunchedEffect(c.unread) { c.unread = false }
+            val dragging = dragKey == System.identityHashCode(c)
+            Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
             InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
-                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 200.dp)) },
+                modifier = Modifier
+                    .pointerInput(c) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { dragKey = System.identityHashCode(c); dragOff = 0f },
+                            onDragEnd = { dragKey = null; dragOff = 0f },
+                            onDragCancel = { dragKey = null; dragOff = 0f },
+                            onDrag = { ch, d ->
+                                ch.consume(); dragOff += d.x
+                                val i = vm.tabs.indexOfFirst { it === c }
+                                val items = state.layoutInfo.visibleItemsInfo
+                                val me = items.firstOrNull { it.key == System.identityHashCode(c) }
+                                if (i >= 0 && me != null) {
+                                    val center = me.offset + me.size / 2f + dragOff
+                                    val other = items.firstOrNull { it.index != i && it.index < vm.tabs.size && center >= it.offset && center <= it.offset + it.size }
+                                    if (other != null) {
+                                        val shift = other.size + 6.dp.toPx()
+                                        vm.tabs.add(other.index, vm.tabs.removeAt(i))
+                                        dragOff += if (other.index > i) -shift else shift
+                                    }
+                                }
+                            })
+                    },
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 110.dp)) },
                 trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.closeTab(c) }) })
+            if (!sel && c.unread) Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 2.dp).size(10.dp)
+                .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
+            }
         }
         if (!onList) item(key = "plus") {
             InputChip(selected = false, onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() },
@@ -1084,6 +1140,22 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 supportingText = { Text(stringResource(if (vm.store.hasKey) R.string.key_saved else R.string.key_new)) })
             Text(stringResource(R.string.profile)); ProfileMenu(vm)
             Button(onClick = { vm.saveSettings(relay, lan, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
+            OutlinedButton(onClick = { vm.testConnections(relay, lan) }, enabled = !vm.probing, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.test_paths)) }
+            if (vm.probing) LinearProgressIndicator(Modifier.fillMaxWidth())
+            vm.probes.forEach { p ->
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (p.ok) Icons.Default.CheckCircle else Icons.Default.Cancel, null,
+                            tint = if (p.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(p.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Text(if (p.ok) "${p.ms} ms" else stringResource(R.string.unreachable), style = MaterialTheme.typography.labelMedium)
+                    }
+                    Text(p.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (p.active) Text(stringResource(R.string.in_use), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    else if (!p.ok && p.error.isNotBlank()) Text(p.error, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                } }
+            }
             vm.status?.let { Text(it) }
 
             }
@@ -1166,6 +1238,8 @@ fun ScreensScreen(vm: ChatViewModel) {
         TopAppBar(title = { Text(stringResource(R.string.pc)) },
             actions = { IconButton(onClick = { vm.loadScreens() }, enabled = !vm.screensBusy) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) } },
             windowInsets = WindowInsets(0))
+        Spacer(Modifier.height(4.dp))
+        ChatTabs(vm, onList = true)
         PcStatsBar(vm)
         if (vm.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
         val pc = vm.pcScreens.filter { it.kind != "agent" }

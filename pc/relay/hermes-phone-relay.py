@@ -187,7 +187,9 @@ async def fs_op(req: web.Request):
     if not (auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)):
         return web.json_response({"error": "unauthorized"}, status=401)
     try:
-        raw = str((await req.json()).get("path", "")).strip()
+        body = await req.json()
+        raw = str(body.get("path", "")).strip()
+        keep = [str(k) for k in (body.get("keep") or []) if k]
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
     p = Path(os.path.expandvars(os.path.expanduser(raw)))
@@ -204,6 +206,39 @@ async def fs_op(req: web.Request):
             return web.json_response({"error": f"mkdir failed: {e.strerror or e}"}, status=400)
         log.info("phone created folder %s", p)
         return web.json_response({"exists": True, "dir": True})
+    if op == "rmdir":
+        # Delete a project's own folder. Refuses roots, the user's home, Hermes' own data and any folder that
+        # contains (or is) another project's folder (`keep`).
+        def _key(x: Path) -> str:
+            return os.path.normcase(os.path.abspath(str(x))).rstrip("\\/")
+        def _rm():
+            import shutil
+            if not p.exists():
+                return None
+            if not p.is_dir() or p.is_symlink():
+                return "not a plain folder"
+            k = _key(p)
+            if p.parent == p or len(Path(k).parts) < 3:
+                return "refusing to delete a drive root or top-level folder"
+            for guard in (Path.home(), HERMES_HOME, Path(os.environ.get("SystemRoot", "C:\\Windows")),
+                          Path(os.environ.get("ProgramFiles", "C:\\Program Files"))):
+                g = _key(guard)
+                if k == g or g.startswith(k + os.sep):
+                    return "refusing to delete a protected folder"
+            for o in keep:
+                ok = _key(Path(o))
+                if ok == k or ok.startswith(k + os.sep):
+                    return "folder contains another project's folder"
+            shutil.rmtree(p)
+            return None
+        try:
+            err = await _io(_rm)
+        except OSError as e:
+            return web.json_response({"error": f"delete failed: {e.strerror or e}"}, status=400)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        log.info("phone deleted folder %s", p)
+        return web.json_response({"exists": False, "dir": False})
     return web.json_response({"error": "not found"}, status=404)
 
 
