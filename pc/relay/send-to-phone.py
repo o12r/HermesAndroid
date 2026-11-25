@@ -13,8 +13,32 @@ import argparse, os, re, shutil, sys
 from pathlib import Path
 
 OUTBOX = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "hermes" / "launchers" / "phone-outbox"
-UNSAFE = re.compile(r"[^A-Za-z0-9._() \-]")
+UNSAFE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')   # keep Unicode (Chinese) names; drop only path/control characters
 MAX_BYTES = 500 * 1024 * 1024
+
+def root_session(sid, home):
+    """A sub-agent's session id -> the dispatching (root) session id, via parent_session_id in the profiles' state.db files.
+    Unknown ids and any error return the id unchanged."""
+    import sqlite3
+    dbs = [home / "state.db"] + sorted((home / "profiles").glob("*/state.db"))
+    for _ in range(8):
+        parent = None
+        for db in dbs:
+            try:
+                c = sqlite3.connect("file:" + str(db).replace("\\", "/") + "?mode=ro", uri=True, timeout=2)
+                try:
+                    row = c.execute("select parent_session_id from sessions where id = ?", (sid,)).fetchone()
+                finally:
+                    c.close()
+            except Exception:
+                continue
+            if row and row[0]:
+                parent = row[0]
+                break
+        if not parent or parent == sid:
+            break
+        sid = parent
+    return sid
 
 
 def main():
@@ -39,6 +63,8 @@ def main():
         n += 1
     shutil.copyfile(src, dst)
     sess = re.sub(r"[^A-Za-z0-9_\-]", "", a.session or "")
+    if sess:
+        sess = root_session(sess, OUTBOX.parent.parent)   # a sub-agent sends to its dispatcher's chat
     if sess:
         dst.with_name(dst.name + ".session").write_text(sess, encoding="utf-8")
     print(dst.name)

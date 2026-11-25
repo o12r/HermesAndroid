@@ -606,7 +606,31 @@ async def elevate_decide(req: web.Request):
 
 
 OUTBOX = HERMES_HOME / "launchers" / "phone-outbox"   # files the agent sends to the phone (send-to-phone.py)
-SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._() \-]{0,200}")
+SAFE_NAME = re.compile(r'[^\x00-\x1f<>:"/\\|?*\s.][^\x00-\x1f<>:"/\\|?*]{0,200}')   # Unicode names allowed
+
+def root_session(sid, home):
+    """A sub-agent's session id -> the dispatching (root) session id, via parent_session_id in the profiles' state.db files.
+    Unknown ids and any error return the id unchanged."""
+    import sqlite3
+    dbs = [home / "state.db"] + sorted((home / "profiles").glob("*/state.db"))
+    for _ in range(8):
+        parent = None
+        for db in dbs:
+            try:
+                c = sqlite3.connect("file:" + str(db).replace("\\", "/") + "?mode=ro", uri=True, timeout=2)
+                try:
+                    row = c.execute("select parent_session_id from sessions where id = ?", (sid,)).fetchone()
+                finally:
+                    c.close()
+            except Exception:
+                continue
+            if row and row[0]:
+                parent = row[0]
+                break
+        if not parent or parent == sid:
+            break
+        sid = parent
+    return sid
 
 
 def _authed(req):
@@ -622,6 +646,8 @@ def _outbox_files():
     for f in files:
         side = f.with_name(f.name + ".session")
         sess = re.sub(r"[^A-Za-z0-9_\-]", "", side.read_text(encoding="utf-8").strip()) if side.is_file() else ""
+        if sess:
+            sess = root_session(sess, HERMES_HOME)   # sub-agent session -> its dispatcher's chat
         out.append({"name": f.name, "size": f.stat().st_size, "time": int(f.stat().st_mtime), "session": sess})
     return out
 
@@ -667,7 +693,7 @@ async def outbox_send(req: web.Request):
         if src.stat().st_size > 500 * 1024 * 1024:
             return None, "file is over 500 MB"
         OUTBOX.mkdir(parents=True, exist_ok=True)
-        base = re.sub(r"[^A-Za-z0-9._() \-]", "_", src.name.strip())[:150].strip(" .") or "file"
+        base = re.sub(r'[\x00-\x1f<>:"/\\|?*]', "_", src.name.strip())[:150].strip(" .") or "file"
         if base.endswith(".session"):
             base += "_"
         stem, suf = os.path.splitext(base)

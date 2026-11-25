@@ -279,7 +279,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val i = c.messages.indexOfFirst { it.role == "file" && it.text == name && it.file == null }
             if (i >= 0) { c.messages[i] = c.messages[i].copy(file = u); found = true }
         }
-        val sid = session?.takeIf { it.isNotBlank() } ?: cur.id
+        val sid = outboxSession(session)
         if (!found) (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
             ?.messages?.add(UiMsg("file", name, file = u, session = sid))
         sid?.let { store.upsertSessionFile(it, name, u) }
@@ -291,8 +291,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try { saveInboxNow(name, session) } catch (e: Exception) { fail(e) }
     }
 
+    /** Chat a PC-sent file belongs to: its own session (kept in the store and shown when that chat is open), else the open chat. */
+    private fun outboxSession(s: String?): String? = s?.takeIf { it.isNotBlank() } ?: cur.id
+
     private fun showPendingFile(item: Inbox.Item) {
-        val sid = item.session.ifBlank { null } ?: cur.id
+        val sid = outboxSession(item.session)
         (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
             ?.messages?.add(UiMsg("file", item.name, file = null, session = sid))
         sid?.let { store.upsertSessionFile(it, item.name, "") }
