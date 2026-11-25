@@ -21,6 +21,9 @@ class SecureStore(ctx: Context) {
     var clock: String
         get() = prefs.getString("clock", "system")!!
         set(v) = prefs.edit().putString("clock", v).apply()
+    var allowLan: Boolean
+        get() = prefs.getBoolean("allow_lan_http", false)
+        set(v) { prefs.edit().putBoolean("allow_lan_http", v).apply(); ApiClient.allowLanHttp = v }
     var theme: String
         get() = prefs.getString("theme", "system")!!
         set(v) = prefs.edit().putString("theme", v).apply()
@@ -43,6 +46,11 @@ class SecureStore(ctx: Context) {
     fun ctxCache(profile: String): String? = prefs.getString("ctx_$profile", null)
     fun setCtxCache(profile: String, json: String) = prefs.edit().putString("ctx_$profile", json).apply()
     fun setSnap(profile: String, json: String) = prefs.edit().putString("snap_$profile", json).apply()
+    /** MEDIA:<path> lines already handed to the relay (key = session|path), so reloading history does not resend them. */
+    fun mediaDone(key: String): Boolean = prefs.getStringSet("media_done", emptySet())!!.contains(key)
+    fun markMedia(key: String) { val s = prefs.getStringSet("media_done", emptySet())!!.toMutableList(); s.add(key)
+        prefs.edit().putStringSet("media_done", s.takeLast(500).toSet()).apply() }
+    fun unmarkMedia(key: String) { prefs.edit().putStringSet("media_done", prefs.getStringSet("media_done", emptySet())!! - key).apply() }
     /** Per-reply token/speed stats, kept per session (key = hash of the reply text) so history keeps showing them. */
     fun replyStat(sid: String, text: String): List<Float?>? = runCatching {
         val a = org.json.JSONObject(prefs.getString("mstat_$sid", "{}")!!).optJSONArray(text.hashCode().toString()) ?: return null
@@ -87,16 +95,17 @@ class SecureStore(ctx: Context) {
     fun modelFor(profile: String): String = prefs.getString("model.$profile", "")!!
     fun setModelFor(profile: String, v: String) = prefs.edit().putString("model.$profile", v).apply()
     /** Files saved from the Inbox into a session: (name, content Uri). Kept so they show again when the chat reloads. */
-    fun sessionFiles(id: String): List<Pair<String, String>> = runCatching {
+    fun sessionFiles(id: String): List<Triple<String, String, Long>> = runCatching {
         val a = org.json.JSONArray(prefs.getString("files.$id", "[]")!!)
-        (0 until a.length()).map { a.getJSONObject(it).let { o -> o.getString("name") to o.getString("uri") } }
+        (0 until a.length()).map { a.getJSONObject(it).let { o -> Triple(o.getString("name"), o.getString("uri"), o.optLong("ts", 0L)) } }
     }.getOrDefault(emptyList())
     /** Add or replace (by name) a file in a session. An empty [uri] means the file is still on the PC. */
     fun upsertSessionFile(id: String, name: String, uri: String) {
         val a = runCatching { org.json.JSONArray(prefs.getString("files.$id", "[]")!!) }.getOrDefault(org.json.JSONArray())
         val out = org.json.JSONArray()
-        for (i in 0 until a.length()) a.getJSONObject(i).takeIf { it.getString("name") != name }?.let { out.put(it) }
-        out.put(org.json.JSONObject().put("name", name).put("uri", uri))
+        var ts = System.currentTimeMillis()   // when the file arrived; kept when the entry is replaced so the card stays where it was
+        for (i in 0 until a.length()) a.getJSONObject(i).let { if (it.getString("name") != name) out.put(it) else if (it.optLong("ts", 0L) > 0) ts = it.getLong("ts") }
+        out.put(org.json.JSONObject().put("name", name).put("uri", uri).put("ts", ts))
         prefs.edit().putString("files.$id", out.toString()).apply()
     }
     /** Outbox entries already handled on this phone, so a file is shown once. */

@@ -96,6 +96,11 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(Notify.EXTRA_SESSION)
     }
 
+    private val scanLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
+        r.data?.getStringExtra("text")?.let { handlePair(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(it))) }
+    }
+    fun scanPairCode() = scanLauncher.launch(android.content.Intent(this, ScanActivity::class.java))
+
     /** hermes://pair?url=&lan=&key= from the PC installer: save the connection and connect. */
     private fun handlePair(intent: android.content.Intent?) {
         val u = intent?.data ?: return
@@ -159,9 +164,8 @@ fun ChatViewModel.openModelSettings() { openSettingsSection("model") }
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.reconnect(); vm.checkUpdates(manual = false) }
     BackHandler(vm.screen != Screen.Sessions && vm.store.hasKey) {
-        if (vm.screen == Screen.Screens) vm.screen = vm.screensBack
-        else if (vm.screen == Screen.Settings && vm.settingsBack == Screen.Chat) { vm.screen = Screen.Chat; vm.settingsBack = Screen.Sessions }
-        else { vm.screen = Screen.Sessions; vm.refreshSessions() } }
+        if (vm.screen == Screen.Screens || vm.screen == Screen.Settings) vm.leavePage()
+        else vm.openPage("sessions") }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
         Banner(vm)
@@ -173,17 +177,6 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
                 onOpenModelSettings = { vm.openSettingsSection("model") })
             Screen.Screens -> ScreensScreen(vm)
         } }
-        // Bottom navigation: sessions / screens / settings. The chat is full-screen (its tabs lead back).
-        if (vm.screen != Screen.Chat && vm.store.hasKey && !(vm.screen == Screen.Settings && vm.settingsBack == Screen.Chat))
-            NavigationBar(windowInsets = WindowInsets(0)) {
-                NavigationBarItem(vm.screen == Screen.Sessions, { vm.screen = Screen.Sessions; vm.refreshSessions() },
-                    icon = { Icon(Icons.Default.Forum, null) }, label = { Text(stringResource(R.string.sessions)) })
-                NavigationBarItem(vm.screen == Screen.Screens, { if (vm.screen != Screen.Screens) vm.openScreens(Screen.Sessions) },
-                    icon = { Icon(Icons.Default.Monitor, null) }, label = { Text(stringResource(R.string.pc)) })
-                NavigationBarItem(vm.screen == Screen.Settings, { vm.settingsBack = Screen.Sessions; vm.screen = Screen.Settings },
-                    icon = { BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, null) } },
-                    label = { Text(stringResource(R.string.settings)) })
-            }
     }
     UpdateDialog(vm)
     LaunchedEffect(Unit) { vm.pollElevate() }
@@ -297,6 +290,10 @@ fun Banner(vm: ChatViewModel) {
     Row(Modifier.fillMaxWidth().background(c).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(if (vm.offline) Icons.Default.CloudOff else Icons.Default.ErrorOutline, null)
         Text(msg, Modifier.weight(1f).padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall)
+        val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+        val ctx = LocalContext.current
+        IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(msg)); android.widget.Toast.makeText(ctx, ctx.getString(R.string.copied), android.widget.Toast.LENGTH_SHORT).show() }, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), modifier = Modifier.size(18.dp)) }
         TextButton(onClick = { vm.error = null; vm.reconnect() }) { Text(stringResource(R.string.retry)) }
         TextButton(onClick = { vm.cancelRequest() }) { Text(stringResource(R.string.cancel)) }
     }
@@ -391,15 +388,18 @@ fun SessionsScreen(vm: ChatViewModel) {
         }
     }
     Scaffold(
-        topBar = { Column { TopAppBar(title = { Text(if (selMode) stringResource(R.string.n_selected, picked.size) else stringResource(R.string.app_name), maxLines = 1, softWrap = false) },
-            navigationIcon = { if (selMode) IconButton(onClick = { selMode = false; sel = emptySet() }) { Icon(Icons.Default.Close, null) } },
+        topBar = { Column { HermesTopBar(vm,
+            title = { Text(if (selMode) stringResource(R.string.n_selected, picked.size) else stringResource(R.string.app_name), maxLines = 1, softWrap = false, style = MaterialTheme.typography.titleMedium) },
+            nav = if (selMode) ({ IconButton(onClick = { selMode = false; sel = emptySet() }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Close, null) } }) else null,
+            onRefresh = { vm.scanProfiles(); vm.refreshSessions() },
             actions = {
             if (reordering) TextButton(onClick = { reordering = false }) { Text(stringResource(R.string.reorder_done)) }
             else if (selMode) {
                 IconButton(onClick = { movingMany = true }, enabled = picked.isNotEmpty()) { Icon(Icons.Default.Folder, stringResource(R.string.move_to_project)) }
                 IconButton(onClick = { deletingMany = true }, enabled = picked.isNotEmpty()) { Icon(Icons.Default.Delete, stringResource(R.string.delete)) }
-            } else IconButton(onClick = { vm.scanProfiles(); vm.refreshSessions() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-        }, windowInsets = WindowInsets(0))
+            } else {
+            }
+        })
             if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth()) else Spacer(Modifier.height(4.dp))
             ChatTabs(vm, onList = true) } },
         floatingActionButton = { if (!selMode && !reordering) ExtendedFloatingActionButton(onClick = { vm.newChat() }, icon = { Icon(Icons.Default.Add, null) },
@@ -633,19 +633,16 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
         }
     }
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Column {
-                Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, overflow = TextOverflow.Ellipsis,
+        HermesTopBar(vm, title = { Column(Modifier.horizontalScroll(rememberScrollState())) {
+                Text(vm.currentTitle ?: stringResource(if (vm.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, softWrap = false,
+                    style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.combinedClickable(onDoubleClick = { if (vm.currentId != null) renamingTitle = true }) {})
                 val proj = vm.projects.find { p ->
                     (chat.projectId != null && p.id == chat.projectId) || (vm.currentId != null && vm.currentId in p.sessionIds)
                 }?.let { p -> if (p.isHome) stringResource(R.string.home) else p.name }
                 Text(listOfNotNull(chat.profile, proj).joinToString(" › "), style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            } },
-            actions = {
-                IconButton(onClick = { vm.refreshChat() }) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-                IconButton(onClick = { vm.settingsBack = Screen.Chat; vm.screen = Screen.Settings }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
-            }, windowInsets = WindowInsets(0))
+                    color = MaterialTheme.colorScheme.primary, maxLines = 1, softWrap = false)
+            } }, onRefresh = { vm.refreshChat() })
         if (renamingTitle) {
             var t by remember { mutableStateOf(vm.currentTitle ?: "") }
             AlertDialog(onDismissRequest = { renamingTitle = false }, title = { Text(stringResource(R.string.rename)) },
@@ -829,22 +826,38 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
 }
 
 /** Open chats as tabs: ⏳ = Hermes working, ✎ = unsent draft, × closes (the PC session is kept). */
+/** Compact top bar shared by every page: [nav] title ... [extra actions] refresh | PC | settings (the last three always in the same place). */
+@Composable
+fun HermesTopBar(vm: ChatViewModel, title: @Composable () -> Unit, nav: (@Composable () -> Unit)? = null,
+                 onRefresh: () -> Unit, refreshEnabled: Boolean = true, actions: @Composable RowScope.() -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (nav != null) Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) { nav() }
+        Box(Modifier.weight(1f).padding(horizontal = if (nav == null) 10.dp else 4.dp)) { title() }
+        actions()
+        IconButton(onClick = onRefresh, enabled = refreshEnabled, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
+        IconButton(onClick = { vm.openPage("pc") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Monitor, stringResource(R.string.pc)) }
+        IconButton(onClick = { vm.openPage("settings") }, modifier = Modifier.size(40.dp)) {
+            BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } }
+    }
+}
+
 @Composable
 fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
     // Tabs replace the back button in a chat, so they show even for a single chat; ＋ goes to the session list.
     if (onList && vm.tabs.isEmpty()) return
-    val state = rememberLazyListState()
-    val idx = vm.tabs.indexOfFirst { it === vm.cur }
-    LaunchedEffect(idx) { if (idx >= 0) state.animateScrollToItem(idx) }
+    val state = vm.tabsState
+    val pageScreen = vm.screen != Screen.Chat
+    val idx = vm.tabs.indexOfFirst { it === (vm.activePage ?: vm.cur) }
+    LaunchedEffect(idx) { if (idx >= 0 && state.layoutInfo.visibleItemsInfo.none { it.index == idx }) state.animateScrollToItem(idx) }
     val newChat = stringResource(R.string.new_chat)
     var dragKey by remember { mutableStateOf<Int?>(null) }
     var dragOff by remember { mutableStateOf(0f) }
     androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
         items(vm.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
-            val sel = !onList && c === vm.cur
+            val sel = if (c.page != null) c === vm.activePage else !pageScreen && c === vm.cur
             val label = buildString {
-                if (c.readOnly) append("🔒 ")
+                if (c.readOnly && c.page == null) append("🔒 ")
                 if (c.streaming) append("⏳ ")
                 if (c.id != null && c.id in vm.vdAgents) append("🖥 ")
                 if (c.approval != null || c.clarify != null) append("❓ ")
@@ -855,8 +868,10 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val dragging = dragKey == System.identityHashCode(c)
             Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
             InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
-                leadingIcon = { Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
-                    Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } },
+                leadingIcon = if (c.page != null) ({ Icon(when (c.page) { "pc" -> Icons.Default.Monitor; "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                    Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } }),
+                colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer),
                 modifier = Modifier
                     .pointerInput(c) {
                         detectDragGesturesAfterLongPress(
@@ -885,8 +900,8 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
                 .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
             }
         }
-        if (!onList) item(key = "plus") {
-            InputChip(selected = false, onClick = { vm.screen = Screen.Sessions; vm.refreshSessions() },
+        item(key = "plus") {
+            InputChip(selected = false, onClick = { vm.openPage("sessions") },
                 label = { Icon(Icons.Default.Add, stringResource(R.string.sessions)) })
         }
     }
@@ -1146,10 +1161,11 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
     val titles = mapOf("conn" to R.string.connection, "look" to R.string.appearance, "chat" to R.string.ctx_title,
         "model" to R.string.default_models, "screens" to R.string.vdisplay, "upd" to R.string.updates, "about" to R.string.about)
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text(stringResource(titles[sub] ?: R.string.settings)) }, windowInsets = WindowInsets(0), navigationIcon = {
-            if (sub != "" && vm.store.hasKey) IconButton(onClick = { sub = "" }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) }
-            else if (vm.store.hasKey && vm.settingsBack == Screen.Chat) IconButton(onClick = { vm.screen = Screen.Chat; vm.settingsBack = Screen.Sessions }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } })
+        HermesTopBar(vm, title = { Text(stringResource(titles[sub] ?: R.string.settings), maxLines = 1, style = MaterialTheme.typography.titleMedium) },
+            nav = if (vm.store.hasKey) ({ IconButton(onClick = { if (sub != "") sub = "" else vm.leavePage() }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } }) else null,
+            onRefresh = { vm.scanProfiles(); vm.loadMeta() })
+        if (vm.store.hasKey) ChatTabs(vm, onList = true)
         Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
           when (sub) {
             "" -> {
@@ -1173,6 +1189,18 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 Group("about", Icons.Default.Info, "Hermes Android")
             }
             "conn" -> {
+            var lanOn by remember { mutableStateOf(vm.store.allowLan) }
+            var lanWarn by remember { mutableStateOf(false) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text(stringResource(R.string.allow_lan)); Text(stringResource(R.string.allow_lan_help), style = MaterialTheme.typography.labelSmall) }
+                Switch(lanOn, { if (it) lanWarn = true else { lanOn = false; vm.store.allowLan = false } })
+            }
+            if (lanWarn) AlertDialog(onDismissRequest = { lanWarn = false },
+                title = { Text(stringResource(R.string.allow_lan)) }, text = { Text(stringResource(R.string.allow_lan_warn)) },
+                confirmButton = { TextButton(onClick = { lanOn = true; vm.store.allowLan = true; lanWarn = false }) { Text(stringResource(R.string.allow_lan_ok)) } },
+                dismissButton = { TextButton(onClick = { lanWarn = false }) { Text(stringResource(R.string.cancel)) } })
+            val act = LocalContext.current as? MainActivity
+            Button(onClick = { act?.scanPairCode() }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.scan_pair)) }
             OutlinedTextField(relay, { relay = it }, label = { Text(stringResource(R.string.server_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 supportingText = { Text(stringResource(R.string.server_url_help, SecureStore.DEFAULT_RELAY)) })
             OutlinedTextField(lan, { lan = it }, label = { Text(stringResource(R.string.lan_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -1280,10 +1308,9 @@ fun ScreensScreen(vm: ChatViewModel) {
     fun toggle(sc: PcScreen) { open = if (sc.name in open) open - sc.name else open + sc.name }
     LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text(stringResource(R.string.pc)) },
-            actions = { IconButton(onClick = { vm.loadScreens() }, enabled = !vm.screensBusy) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) } },
-            windowInsets = WindowInsets(0))
-        Spacer(Modifier.height(4.dp))
+        HermesTopBar(vm, title = { Text(stringResource(R.string.pc), maxLines = 1, style = MaterialTheme.typography.titleMedium) },
+            nav = { IconButton(onClick = { vm.leavePage() }, modifier = Modifier.size(40.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
+            onRefresh = { vm.loadScreens() }, refreshEnabled = !vm.screensBusy)
         ChatTabs(vm, onList = true)
         PcStatsBar(vm)
         if (vm.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())

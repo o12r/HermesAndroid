@@ -2,7 +2,7 @@
 <!-- Cleartext only to the PC's Tailscale IP / tailnet names. The XML can't express a CIDR,
      so ApiClient additionally refuses http:// to anything outside 100.64.0.0/10. -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <base-config cleartextTrafficPermitted="true" />
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">100.92.121.115</domain>
         <domain includeSubdomains="true">ts.net</domain>

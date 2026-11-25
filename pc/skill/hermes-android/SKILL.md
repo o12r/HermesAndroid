@@ -95,6 +95,7 @@ When the user asks you to send, share or "put on my phone" a file (a report, ima
    The file appears **live in this chat** (the session it was sent from). Images are shown inline on the phone at once; other files appear as a card with a Save button.
    The session is picked up automatically from `$HERMES_SESSION_ID`; only pass `--session <id>` if that variable is empty.
 2. It prints the stored name. Tell the user: "Sent to your phone's Inbox: <name>. Open Hermes → Inbox icon (top bar) → Save; it lands in Downloads."
+   Do NOT just write `MEDIA:<path>` in the reply and stop there: that is Hermes desktop's own syntax. The phone app converts a `MEDIA:` line into an Inbox file too (needs the relay of v0.3.27+), but the sender above is the reliable path and the one to use.
 3. Limits: files up to 500 MB; a file that doesn't exist makes the command exit with an error. Re-run after fixing the path.
 
 Rules:

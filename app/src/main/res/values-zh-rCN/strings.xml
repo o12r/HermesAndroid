@@ -38,6 +38,12 @@
     <string name="server_url">服务器地址（PC 中继）</string>
     <string name="server_url_help">PC 中继（hermes-phone-relay.py），例如 %1$s</string>
     <string name="api_key">API 密钥</string>
+    <string name="allow_lan">允许在局域网使用明文 HTTP</string>
+    <string name="allow_lan_help">连接局域网 / USB 网络共享 / 虚拟机地址（10.x、172.16-31.x、192.168.x）时需要。Tailscale 不需要。</string>
+    <string name="allow_lan_warn">API 密钥和聊天内容将在局域网中以明文传输，同一网络内的人（或恶意热点）可以读取或篡改。请仅在可信网络中开启。</string>
+    <string name="allow_lan_ok">我已了解，开启</string>
+    <string name="scan_pair">扫码配对</string>
+    <string name="scan_hint">将相机对准电脑上的配对二维码</string>
     <string name="key_saved">已保存密钥（由 Android Keystore 加密）。留空则保持不变。</string>
     <string name="key_new">将由 Android Keystore 加密保存。</string>
     <string name="profile">配置档</string>

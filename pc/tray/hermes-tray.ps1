@@ -287,6 +287,22 @@ $menu.Items.Add((T "Restart gateway" "重启 Gateway")).add_Click({
 $menu.Items.Add((T "Open log" "打开日志")).add_Click({ if (Test-Path $Log) { Start-Process notepad.exe $Log } })
 $menu.Items.Add((T "Show pairing QR code" "显示配对二维码")).add_Click({
     Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$Install`"", "-PairOnly", "-NoAdb" -WindowStyle Hidden })
+$menu.Items.Add((T "Check for updates" "检查更新")).add_Click({
+    $res = Join-Path $Launch "update-result.txt"
+    Remove-Item $res -Force -ErrorAction SilentlyContinue
+    $tray.ShowBalloonTip(3000, "Hermes", (T "Checking for updates…" "正在检查更新…"), "Info")
+    Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $Launch 'update-pc.ps1')`"" -WindowStyle Hidden
+    $script:updTimer = New-Object System.Windows.Forms.Timer; $script:updTimer.Interval = 1500; $script:updTries = 0
+    $script:updTimer.add_Tick({
+        $script:updTries++
+        if (Test-Path $res) {
+            $script:updTimer.Stop(); $r = (Get-Content $res -Raw).Trim()
+            if ($r -like "updated*") { $tray.ShowBalloonTip(10000, "Hermes", (T "Updated to $($r.Substring(8)). Restart the tray and the relay to apply." "已更新到 $($r.Substring(8))。请重启托盘和中继使其生效。"), "Info") }
+            elseif ($r -like "uptodate*") { $tray.ShowBalloonTip(4000, "Hermes", (T "Already up to date ($($r.Substring(9)))." "已是最新版（$($r.Substring(9))）。"), "Info") }
+            else { $tray.ShowBalloonTip(8000, "Hermes", (T "Update failed: " "更新失败：") + $r.Substring([Math]::Min(5, $r.Length)), "Warning") }
+        } elseif ($script:updTries -gt 240) { $script:updTimer.Stop(); $tray.ShowBalloonTip(5000, "Hermes", (T "Update timed out." "更新超时。"), "Warning") }
+    })
+    $script:updTimer.Start() })
 # ---- agent virtual screen (hermes-vdisplay.py; driver installed by install.ps1)
 $VdPy  = Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe"
 function Vd([string[]]$a) {

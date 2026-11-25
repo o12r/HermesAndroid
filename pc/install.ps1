@@ -281,7 +281,7 @@ if (-not $PairOnly) {
 
     # ------------------------------------------- tray app (admin: owns relay + gateway + Tailscale + vdisplay host)
     Step "Tray app"
-    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "hotspot.ps1", "install-tray-task.ps1") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
+    foreach ($f in "hermes-tray.ps1", "hermes-tray.vbs", "tailscale-connect.ps1", "hotspot.ps1", "install-tray-task.ps1", "update-pc.ps1") { Copy-Item (Join-Path $Here "tray\$f") $Launch -Force }
     # virtual display (agent screen) CLI + driver installer; the driver is installed by the next step
     foreach ($f in "hermes-vdisplay.py", "live_sessions.py", "install-vdd.ps1") { Copy-Item (Join-Path $Here "vdisplay\$f") $Launch -Force }
     Copy-Item (Join-Path $Here "vdisplay\sudovda") $Launch -Recurse -Force   # on-demand agent + screen-off monitors

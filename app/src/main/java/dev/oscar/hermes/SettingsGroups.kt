@@ -33,13 +33,15 @@ fun ContextSettingsGroup(vm: ChatViewModel) {
     val edit = remember(cur) { mutableStateMapOf<String, String>().apply {
         CTX_FIELDS.forEach { (k, _) -> put(k, cur?.opt(k)?.takeIf { it != JSONObject.NULL }?.toString().orEmpty()) } } }
     var saving by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { vm.loadCtxSettings() }
+    LaunchedEffect(Unit) { vm.loadCtxSettings(); if (vm.modelOptions == null) vm.loadMeta() }
     LaunchedEffect(vm.ctxBusy) { if (saving && !vm.ctxBusy) saving = false }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(stringResource(R.string.ctx_all_profiles), style = MaterialTheme.typography.bodySmall)
         if (vm.ctxBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
         vm.ctxError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        if (cur != null) CTX_FIELDS.forEach { (k, label) ->
+        if (cur != null) ModelPickerField(vm, edit["compression_provider"]?.takeIf { it.isNotBlank() }.let { it to edit["compression_model"]?.takeIf { m -> m.isNotBlank() } },
+            stringResource(R.string.ctx_comp_model)) { p, m -> edit["compression_provider"] = p.orEmpty(); edit["compression_model"] = m.orEmpty() }
+        if (cur != null) CTX_FIELDS.filter { it.first != "compression_model" && it.first != "compression_provider" }.forEach { (k, label) ->
             OutlinedTextField(edit[k].orEmpty(), { edit[k] = it }, label = { Text(stringResource(label)) }, singleLine = true,
                 enabled = !vm.ctxBusy, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = if (k.startsWith("compression_")) KeyboardOptions.Default
@@ -68,7 +70,12 @@ private fun entryOf(o: JSONObject?): Pair<String?, String?> = o?.let {
 @Composable
 fun ModelSettingsGroup(vm: ChatViewModel) {
     val cur = vm.modelSettings
-    LaunchedEffect(Unit) { vm.loadModelSettings(); if (vm.modelOptions == null) vm.loadMeta() }
+    LaunchedEffect(Unit) { vm.loadModelSettings(); vm.loadCtxSettings(); if (vm.modelOptions == null) vm.loadMeta() }
+    // Compression model lives in the context settings; shown here too (unless the PC already lists it as an auxiliary task).
+    val ctx = vm.ctxSettings
+    fun ctxStr(k: String) = ctx?.opt(k)?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() }
+    var comp by remember(ctx) { mutableStateOf(ctxStr("compression_provider") to ctxStr("compression_model")) }
+    val compInAux = cur?.optJSONObject("auxiliary")?.has("compression") == true
     // Local editable entries keyed by slot ("main", "delegation", "aux:<task>"), value = (provider, model).
     val slots = remember(cur) { mutableStateMapOf<String, Pair<String?, String?>>().apply {
         put("main", entryOf(cur?.optJSONObject("main")))
@@ -86,6 +93,7 @@ fun ModelSettingsGroup(vm: ChatViewModel) {
         if (cur != null) {
             ModelPickerField(vm, slots["main"], stringResource(R.string.model_main)) { p, m -> slots["main"] = p to m }
             ModelPickerField(vm, slots["delegation"], stringResource(R.string.model_delegation)) { p, m -> slots["delegation"] = p to m }
+            if (ctx != null && !compInAux) ModelPickerField(vm, comp, stringResource(R.string.ctx_comp_model)) { p, m -> comp = p to m }
             val auxKeys = slots.keys.filter { it.startsWith("aux:") }.sorted()
             if (auxKeys.isNotEmpty()) Text(stringResource(R.string.model_auxiliary), style = MaterialTheme.typography.titleSmall)
             auxKeys.forEach { k ->
@@ -105,6 +113,8 @@ fun ModelSettingsGroup(vm: ChatViewModel) {
                 slots.keys.filter { it.startsWith("aux:") }.forEach { k -> aux.put(k.removePrefix("aux:"), putEntry(k, slots[k]).getJSONObject(k)) }
                 o.put("auxiliary", aux)
                 saving = true; vm.loadModelSettings(o)
+                if (ctx != null && !compInAux && (comp.first != ctxStr("compression_provider") || comp.second != ctxStr("compression_model")))
+                    vm.loadCtxSettings(JSONObject().put("compression_provider", comp.first ?: JSONObject.NULL).put("compression_model", comp.second ?: JSONObject.NULL))
             }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save)) }
         }
     }

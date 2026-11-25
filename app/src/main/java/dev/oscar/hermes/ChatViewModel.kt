@@ -72,6 +72,8 @@ data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: In
 
 /** State of one conversation. Kept per chat so several can run at once and events never land in the wrong one. */
 class Chat(val profile: String, id: String?, title: String?) {
+    /** Non-null for a page tab ("settings" / "pc"), not a conversation. */
+    var page: String? = null
     var id by mutableStateOf(id)                 // stored session id (null until a new chat is created)
     var title by mutableStateOf(title)
     val messages = mutableStateListOf<UiMsg>()
@@ -121,7 +123,8 @@ class Chat(val profile: String, id: String?, title: String?) {
  */
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val store = SecureStore(app)
-    var screen by mutableStateOf(if (store.hasKey) Screen.Sessions else Screen.Settings)
+    /** What is on screen is the active tab: a page tab (sessions / pc / settings) or, when [activePage] is null, the chat [cur]. */
+    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "pc" -> Screen.Screens; else -> Screen.Settings }
     var profile by mutableStateOf(store.profile)
     var sessions by mutableStateOf<List<Session>>(emptyList())
     /** Profiles found on the PC (name to description); cached so the menu works offline. */
@@ -147,7 +150,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Project groups from projects.tree (Home = sessions outside any project). */
     var projects by mutableStateOf<List<Project>>(emptyList())
     var activeProject by mutableStateOf<String?>(null)
-    init { loadSnap(store.profile)?.let { sessions = it.first; projects = it.second; activeProject = it.third } }
+    init { ApiClient.allowLanHttp = store.allowLan; loadSnap(store.profile)?.let { sessions = it.first; projects = it.second; activeProject = it.third } }
     /** Project the user last tapped on the session list; the "New chat" button uses it before the default project. */
     var lastProject by mutableStateOf<Project?>(null)
     val fabProject: Project? get() = lastProject?.let { l -> projects.find { it.id == l.id } ?: l } ?: projects.find { it.id == activeProject }
@@ -170,15 +173,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var loading by mutableStateOf(false)
     /** Open chats shown as tabs at the top of the chat screen (any profile). */
     val tabs = mutableStateListOf<Chat>()
+    /** Scroll state of the tab row, shared by every screen so switching pages does not rebuild it (and re-scroll from the start). */
+    val tabsState = androidx.compose.foundation.lazy.LazyListState()
     private fun addTab(c: Chat) { if (tabs.none { it === c }) tabs.add(c) }
+    /** The page tab being shown (null = the chat [cur] is shown). */
+    var activePage by mutableStateOf<Chat?>(null)
+    init { openPage(if (store.hasKey) "sessions" else "settings", refresh = false) }
 
     /** Switch to an open tab (switches profile too if the tab belongs to another one). */
     fun switchTo(c: Chat) {
+        if (c.page != null) { activePage = c; pageEntered(c.page!!, true); return }
         if (c.profile != profile) {
             profile = c.profile; store.profile = c.profile
             serverCommands = emptyList(); projects = emptyList(); refreshSessions(); loadMeta()
         }
-        cur = c; c.unread = false; screen = Screen.Chat; seen()
+        cur = c; c.unread = false; activePage = null; seen()
         if (c.id != null) viewModelScope.launch {
             if (!c.streaming && !c.loaded) loadMessagesInto(c)
             runCatching { ensureLive(gatewayFor(c.profile), c) }
@@ -202,25 +211,42 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } }
     }
 
-    /** Close a tab; a running turn keeps going on the PC. Closing the current tab moves to its neighbour. */
+    /** Entering a page tab: PC refreshes its screens, the session list reloads. */
+    private fun pageEntered(kind: String, refresh: Boolean) {
+        if (!refresh) return
+        when (kind) { "pc" -> loadScreens(); "sessions" -> refreshSessions() }
+    }
+    /** Open (or switch to) a page tab - "sessions" (the start page), "pc" or "settings" - in the same row as the chats. */
+    fun openPage(kind: String, refresh: Boolean = true) {
+        val t = tabs.firstOrNull { it.page == kind } ?: Chat(profile, null, null).also {
+            it.page = kind; it.readOnly = true; it.loaded = true
+            it.title = s(when (kind) { "pc" -> R.string.pc; "sessions" -> R.string.sessions; else -> R.string.settings }); tabs.add(it) }
+        activePage = t
+        pageEntered(kind, refresh)
+    }
+    /** Back from Settings / PC: the chat that was open, else the session list. */
+    fun leavePage() {
+        if (tabs.any { it === cur }) { activePage = null; seen() } else openPage("sessions")
+    }
+    /** Close a tab; a running turn keeps going on the PC. Closing the shown tab moves to its neighbour; closing the last one opens the session list (start page). */
     fun closeTab(c: Chat) {
         val i = tabs.indexOfFirst { it === c }; if (i < 0) return
         tabs.removeAt(i)
-        if (c === cur) {
-            val next = tabs.getOrNull(i) ?: tabs.getOrNull(i - 1)
-            if (next != null) switchTo(next) else { cur = Chat(profile, null, null).initModel(); screen = Screen.Sessions; refreshSessions() }
-        }
+        val shown = if (c.page != null) activePage === c else activePage == null && c === cur
+        if (c.page == null && c === cur && !shown) { cur = Chat(profile, null, null).initModel(); return }
+        if (!shown) return
+        val next = tabs.getOrNull(i) ?: tabs.getOrNull(i - 1)
+        if (c.page == null && (next == null || next.page != null)) cur = Chat(profile, null, null).initModel()
+        if (next != null) switchTo(next) else openPage("sessions")
     }
 
     /** The open chat is on screen: its notifications are read. */
     fun seen() { if (screen == Screen.Chat && Notify.visible) Notify.clear(getApplication(), cur.id) }
 
-    /** Where Settings' back button goes (Settings can be opened from the session list or from a chat). */
-    var settingsBack = Screen.Sessions
     /** Settings group to open when Settings shows (e.g. "chat" = context, "model" = model defaults); read & cleared by SettingsScreen. */
     var settingsTarget by mutableStateOf<String?>(null)
     /** Open Settings from a chat, targeting a group. */
-    fun openSettingsSection(target: String?) { settingsBack = Screen.Chat; settingsTarget = target; screen = Screen.Settings }
+    fun openSettingsSection(target: String?) { settingsTarget = target; openPage("settings") }
 
     /** Queue [text] in the current chat: sent when the running turn ends. */
     fun queueMsg(text: String) { val t = text.trim(); if (t.isNotEmpty()) cur.queue.add(t) }
@@ -755,7 +781,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         serverCommands = emptyList()
         profile = p; store.profile = p
         cur = Chat(p, null, null).initModel(); projects = emptyList(); sessions = emptyList()
-        screen = Screen.Sessions; refreshSessions(); loadMeta()
+        openPage("sessions"); loadMeta()
     }
 
     /** Stored session ids that are open in some client (phone, desktop, CLI) per profile, from the gateway's session.active_list. */
@@ -1050,7 +1076,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---- screen manager (relay /vdisplay/screens, /vdisplay/shot, /vdisplay/off)
     var pcScreens by mutableStateOf<List<PcScreen>>(emptyList())
     var screensBusy by mutableStateOf(false)
-    var screensBack = Screen.Sessions
 
     private fun relayRequest(path: String, body: JSONObject): okhttp3.Request {
         val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
@@ -1060,7 +1085,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val relayHttp by lazy { okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build() }
 
-    fun openScreens(from: Screen) { screensBack = from; screen = Screen.Screens; loadScreens() }
+    fun openScreens(from: Screen) { openPage("pc") }
 
     fun loadScreens() = viewModelScope.launch {
         screensBusy = true
@@ -1329,7 +1354,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val c = chatFor(profile, s.id, s.title)
         if (s.title != null) c.title = s.title
         c.projectId = projects.find { s.id in it.sessionIds }?.id ?: c.projectId
-        cur = c; addTab(c); screen = Screen.Chat; seen()
+        cur = c; addTab(c); activePage = null; seen()
         if (c.ctxMax <= 0) sessionCtx[s.id]?.let { (u, m) -> c.ctxUsed = u; c.ctxMax = m }  // instant figure from the list, refined below
         viewModelScope.launch {
             // A chat that is still streaming keeps its live transcript; otherwise load the stored one.
@@ -1401,7 +1426,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         c.newCwd = newChatCwd ?: project?.let { p -> p.path ?: p.homeCwd }
         c.projectId = project?.id
         cur = c; chats.add(c); addTab(c)
-        newChatCwd = null; newChatNone = false; attachments.clear(); screen = Screen.Chat
+        newChatCwd = null; newChatNone = false; attachments.clear(); activePage = null
     }
 
     private fun apiFor(prof: String) = ApiClient(store.relayBase(), prof, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
@@ -1409,17 +1434,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadMessages(id: String) { if (cur.id == id) loadMessagesInto(cur) }
 
     /** Reload [c]'s stored transcript; keeps unsent (failed) messages at the end. */
+    /** "MEDIA:<path>" in an agent reply: have the relay copy that PC file to the phone Inbox (once per session+path); it then shows in the chat. */
+    private fun sendMedia(c: Chat, text: String, sid: String? = c.id) {
+        if (!text.contains("MEDIA:")) return
+        for (path in Internal.mediaPaths(text)) {
+            val key = "${sid.orEmpty()}|$path"
+            if (store.mediaDone(key)) continue
+            store.markMedia(key)
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { relayJson("POST", "/outbox/send", JSONObject().put("path", path).put("session", sid.orEmpty()).toString()) }
+                    .onFailure { store.unmarkMedia(key) }
+                    .onSuccess { if (it == null) store.unmarkMedia(key) }
+            }
+        }
+    }
+
     private suspend fun loadMessagesInto(c: Chat) {
         val id = c.id ?: return
         try {
             val m = apiFor(c.profile).messages(id)
+            m.filter { it.role == "assistant" }.forEach { sendMedia(c, it.content, id) }
             val failed = c.messages.filter { it.failed }
             val cards = c.messages.filter { it.task != null }   // sub-agent / background / process cards are not in the server history
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
                 (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { t -> val st = if (r.role == "assistant") store.replyStat(id, t) else null
                     UiMsg(r.role, t, id = r.id, steps = r.steps, ts = r.ts, tokIn = st?.get(0)?.toLong(), tokOut = st?.get(1)?.toLong(), prefillTps = st?.get(2), genTps = st?.get(3)) } })
-            c.messages.addAll(store.sessionFiles(id).map { (n, u) -> UiMsg("file", n, file = u.ifBlank { null }, session = id) })
-            c.messages.addAll(failed); c.messages.addAll(cards); c.loaded = true
+            val files = store.sessionFiles(id)
+            files.forEach { (n, u, t) -> placeByTime(c, UiMsg("file", n, file = u.ifBlank { null }, session = id, ts = if (t > 0) t else legacyFileTime(u))) }
+            c.messages.addAll(failed); cards.forEach { placeCard(c, it) }; c.loaded = true
             if (c === cur) { offline = false; error = null }
         } catch (e: Exception) { if (c === cur) fail(e) }
     }
@@ -1456,12 +1498,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             "stop" -> stop()
             "profile" -> if (arg in profileNames()) setProfileTo(arg) else note(s(R.string.note_profiles, profileNames().joinToString(", ")))
-            "sessions" -> { screen = Screen.Sessions; refreshSessions() }
+            "sessions" -> { openPage("sessions") }
             "delete" -> {
                 val id = currentId
                 if (id == null) note(s(R.string.note_no_delete))
                 else if (arg != "confirm") note(s(R.string.note_delete_confirm))
-                else viewModelScope.launch { try { api().delete(id); newChat(); screen = Screen.Sessions; refreshSessions() } catch (e: Exception) { fail(e) } }
+                else viewModelScope.launch { try { api().delete(id); newChat(); openPage("sessions") } catch (e: Exception) { fail(e) } }
             }
             "new" -> { newChat(); if (arg.isNotBlank()) sendMessage(arg, emptyList()) }
             "retry" -> { val l = lastSent; if (l == null) note(s(R.string.note_nothing_retry)) else {
@@ -1645,9 +1687,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val raw = p.str("result_text").ifBlank { p.str("summary") }.ifBlank { p.opt("result")?.takeUnless { it == JSONObject.NULL }?.toString().orEmpty() }
                 updateLast(c) { m -> m.copy(steps = m.steps.map { s -> if (s.kind == "tool" && (s.toolId == tid || (tid.isEmpty() && s.output == null && s.name == n))) s.copy(output = Steps.outputText(s.name, raw)) else s }) } }
             "message.complete" -> {
-                val text = p.str("text").ifBlank { p.str("content") }
-                if (text.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
-                    steps = if (m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
+                val rawText = p.str("text").ifBlank { p.str("content") }
+                sendMedia(c, rawText)
+                val text = Internal.stripMedia(rawText)
+                if (rawText.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
+                    steps = if (text.isBlank() || m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
                 (p.optJSONObject("usage")?.takeIf { it.length() > 0 }).let { u -> if (u == null) return@let
                     val i0 = c.totIn; val o0 = c.totOut
                     applyUsage(c, u)?.let { (i, o) ->
@@ -1741,8 +1785,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, if (bg) "bg" else "sa", status, started, ended, ro))
         val i = c.messages.indexOfFirst { it.uid == card.uid }
         if (i >= 0) c.messages[i] = card
-        else { val last = c.messages.lastIndex   // keep the streaming assistant message last
-            if (last >= 0 && c.messages[last].role == "assistant" && c.streaming) c.messages.add(last, card) else c.messages.add(card) }
+        else placeCard(c, card)   // at its start time; keeps the streaming assistant message last
     }
 
     // ---- background terminal processes: progress cards -------------------------------------------------------------
@@ -1809,8 +1852,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, "proc", status, started, ended, ro, pct, last))
         val i = c.messages.indexOfFirst { it.uid == card.uid }
         if (i >= 0) { if (c.messages[i].task != card.task) c.messages[i] = card }
-        else { val l = c.messages.lastIndex
-            if (l >= 0 && c.messages[l].role == "assistant" && c.streaming) c.messages.add(l, card) else c.messages.add(card) }
+        else placeCard(c, card)
+    }
+
+    /** Put a task card where it started: before the first message sent after its start (not always at the bottom, e.g. after a restart). */
+    /** Insert [m] before the first user/assistant message that is newer than it (files without a known time go last). */
+    /** Files saved before arrival times were recorded: use the saved file's own modified/added time (MAX = unknown, goes last). */
+    private fun legacyFileTime(uri: String): Long = runCatching {
+        if (uri.isBlank()) return Long.MAX_VALUE
+        val u = android.net.Uri.parse(uri)
+        getApplication<Application>().contentResolver.query(u, null, null, null, null)?.use { q ->
+            if (!q.moveToFirst()) return@use null
+            val ms = q.getColumnIndex("last_modified").takeIf { it >= 0 }?.let { q.getLong(it) }?.takeIf { it > 0 }
+            val sec = listOf("date_modified", "date_added").map { q.getColumnIndex(it) }.firstOrNull { it >= 0 }?.let { q.getLong(it) * 1000 }?.takeIf { it > 0 }
+            ms ?: sec
+        }
+    }.getOrNull() ?: Long.MAX_VALUE
+
+    private fun placeByTime(c: Chat, m: UiMsg) {
+        val i = c.messages.indexOfFirst { (it.role == "user" || it.role == "assistant" || it.role == "file") && it.ts > m.ts }
+        if (i >= 0) c.messages.add(i, m) else c.messages.add(m)
+    }
+
+    private fun placeCard(c: Chat, card: UiMsg) {
+        val started = card.task?.startedAt ?: 0L
+        val i = if (started > 0) c.messages.indexOfFirst { it.task == null && it.ts > started && (it.role == "user" || it.role == "assistant") } else -1
+        if (i >= 0) { c.messages.add(i, card); return }
+        val l = c.messages.lastIndex
+        if (l >= 0 && c.messages[l].role == "assistant" && c.streaming) c.messages.add(l, card) else c.messages.add(card)
     }
 
     /** Open a task card's read-only transcript as a tab. */
@@ -1999,7 +2068,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 pickRelay(); api().health(); api().sessions()
                 gateway(); status = s(R.string.connected_relay)
-                error = null; offline = false; screen = Screen.Sessions; refreshSessions(); loadMeta()
+                error = null; offline = false; openPage("sessions"); loadMeta()
             } catch (e: Exception) { fail(e) }
         }
     }
@@ -2026,9 +2095,13 @@ object Internal {
     private val HIDE = listOf("[IMPORTANT: Background process", "[IMPORTANT: Background", "[INTERNAL NOTIFICATION",
         "[System note:", "[CONTEXT COMPACTION", "[PRIOR CONTEXT", "[Context from the interrupted", "[SYSTEM:")
     private val OOB = Regex("""\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*([\s\S]*?)\s*\[/OUT-OF-BAND USER MESSAGE\]""")
+    /** Hermes' own file syntax: a line "MEDIA:<pc path>". The phone shows it as an Inbox file instead of raw text. */
+    private val MEDIA = Regex("""(?m)^[ \t]*MEDIA:[ \t]*(.+?)[ \t]*$""")
+    fun mediaPaths(text: String): List<String> = MEDIA.findAll(text).map { it.groupValues[1].trim().trim('"', '\'', '`') }.filter { it.isNotBlank() }.distinct().toList()
+    fun stripMedia(text: String): String = if (text.contains("MEDIA:")) MEDIA.replace(text, "").replace(Regex("\n{3,}"), "\n\n").trim() else text
     fun clean(role: String, text: String): String? {
         if (role == "tool") return null
-        if (role != "user") return text.takeUnless { it.trim() == "[SILENT]" }
+        if (role != "user") return stripMedia(text).takeUnless { it.trim() == "[SILENT]" || (it.isBlank() && text.isNotBlank()) }
         val t = text.trimStart()
         OOB.find(t)?.let { return it.groupValues[1].trim().ifBlank { null } }
         if (HIDE.any { t.startsWith(it) } || t.contains("[INTERNAL NOTIFICATION")) return null

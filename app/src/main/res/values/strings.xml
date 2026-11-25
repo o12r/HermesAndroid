@@ -38,6 +38,12 @@
     <string name="server_url">Server URL (PC relay)</string>
     <string name="server_url_help">The PC relay (hermes-phone-relay.py), e.g. %1$s</string>
     <string name="api_key">API key</string>
+    <string name="allow_lan">Allow plain HTTP on the local network</string>
+    <string name="allow_lan_help">Needed for LAN / USB-tethering / VM addresses (10.x, 172.16-31.x, 192.168.x). Tailscale works without it.</string>
+    <string name="allow_lan_warn">Your API key and chats will travel unencrypted over the local network. Anyone on the same network (or a rogue hotspot) could read or tamper with them. Only turn this on on a network you trust.</string>
+    <string name="allow_lan_ok">I understand, enable</string>
+    <string name="scan_pair">Scan pairing QR code</string>
+    <string name="scan_hint">Point the camera at the pairing QR code on your PC</string>
     <string name="key_saved">A key is saved (encrypted with Android Keystore). Leave blank to keep it.</string>
     <string name="key_new">Stored encrypted with Android Keystore.</string>
     <string name="profile">Profile</string>

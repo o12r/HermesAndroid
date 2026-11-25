@@ -425,6 +425,44 @@ async def outbox_list(req: web.Request):
     return web.json_response({"files": files})
 
 
+async def outbox_send(req: web.Request):
+    """POST /outbox/send {path, session}: an agent reply said "MEDIA:<path>": copy that PC file into the outbox
+    (same as send-to-phone.py) so the phone shows it in the chat."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await req.json()
+        src = Path(str(body.get("path", ""))).expanduser()
+        sess = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session", "")))
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+
+    def work():
+        import shutil
+        if not src.is_file():
+            return None, "not a file"
+        if src.stat().st_size > 500 * 1024 * 1024:
+            return None, "file is over 500 MB"
+        OUTBOX.mkdir(parents=True, exist_ok=True)
+        base = re.sub(r"[^A-Za-z0-9._() \-]", "_", src.name.strip())[:150].strip(" .") or "file"
+        if base.endswith(".session"):
+            base += "_"
+        stem, suf = os.path.splitext(base)
+        dst, n = OUTBOX / base, 2
+        while dst.exists():
+            dst = OUTBOX / f"{stem} ({n}){suf}"
+            n += 1
+        shutil.copyfile(src, dst)
+        if sess:
+            dst.with_name(dst.name + ".session").write_text(sess, encoding="utf-8")
+        return dst.name, None
+
+    name, err = await _io(work)
+    if err:
+        return web.json_response({"error": err}, status=404)
+    return web.json_response({"ok": True, "name": name})
+
+
 async def outbox_item(req: web.Request):
     """GET /outbox/<name> downloads a file; DELETE removes it once the phone has saved it."""
     if not _authed(req):
@@ -1238,6 +1276,7 @@ def main():
     app.router.add_get("/tabs", tabs_list)
     app.router.add_post("/elevate/{op}/{id}", elevate_decide)
     app.router.add_get("/outbox", outbox_list)
+    app.router.add_post("/outbox/send", outbox_send)
     app.router.add_route("*", "/outbox/{name}", outbox_item)
     app.router.add_post("/upload/init", upload_init)
     app.router.add_post("/upload/{id}/done", upload_done)
@@ -1270,6 +1309,7 @@ def main():
             app.router.add_get("/tabs", tabs_list)
             app.router.add_post("/elevate/{op}/{id}", elevate_decide)
             app.router.add_get("/outbox", outbox_list)
+            app.router.add_post("/outbox/send", outbox_send)
             app.router.add_route("*", "/outbox/{name}", outbox_item)
             app.router.add_post("/upload/init", upload_init)
             app.router.add_post("/upload/{id}/done", upload_done)

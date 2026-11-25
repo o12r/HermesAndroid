@@ -192,11 +192,15 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
 
     companion object {
         /** Plain http is only allowed to Tailscale (100.64.0.0/10, *.ts.net) and private LAN addresses. */
+        /** User opt-in (Settings > Connection): also allow plain http to private LAN addresses. Off by default. */
+        @Volatile var allowLanHttp = false
         fun isTailscaleHost(h: String): Boolean {
-            if (h.endsWith(".ts.net") || h.endsWith(".local")) return true
+            if (h.endsWith(".ts.net")) return true
             val p = h.split(".").mapNotNull { it.toIntOrNull() }
-            if (p.size != 4) return false
-            return (p[0] == 100 && p[1] in 64..127) || p[0] == 10 || (p[0] == 172 && p[1] in 16..31) || (p[0] == 192 && p[1] == 168)
+            if (p.size == 4 && p[0] == 100 && p[1] in 64..127) return true
+            if (!allowLanHttp) return false
+            if (h.endsWith(".local")) return true
+            return p.size == 4 && (p[0] == 10 || (p[0] == 172 && p[1] in 16..31) || (p[0] == 192 && p[1] == 168))
         }
         fun contentText(c: Any?): String = when (c) {
             null, JSONObject.NULL -> ""
