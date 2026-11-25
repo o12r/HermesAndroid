@@ -197,6 +197,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         override fun elapsedMs() = android.os.SystemClock.elapsedRealtime()
         override fun log(tag: String, msg: String) { android.util.Log.w(tag, msg) }
     }
+    private val engine: ChatEngine by lazy { ChatEngine(object : EngineHost {
+        override val chats get() = this@ChatViewModel.chats
+        override val cur get() = this@ChatViewModel.cur
+        override val screen get() = this@ChatViewModel.screen
+        override var error: String? get() = this@ChatViewModel.error; set(v) { this@ChatViewModel.error = v }
+        override val platform get() = this@ChatViewModel.platform
+        override val relay get() = this@ChatViewModel.relay
+        override val hasKey get() = store.hasKey
+        override fun s(key: String, vararg a: Any) = this@ChatViewModel.s(key, *a)
+        override fun alert(title: String, text: String, force: Boolean, profile: String?, session: String?, kind: String) =
+            Notify.alert(getApplication<Application>(), title, text, force = force, profile = profile, session = session, kind = kind)
+        override suspend fun refreshIds(c: Chat) = this@ChatViewModel.refreshIds(c)
+        override fun refreshSessions() { this@ChatViewModel.refreshSessions() }
+        override fun drainQueue(c: Chat) = this@ChatViewModel.drainQueue(c)
+        override fun sendMedia(c: Chat, rawText: String) = this@ChatViewModel.sendMedia(c, rawText)
+        override fun adoptServerModel(c: Chat, info: JSONObject) = this@ChatViewModel.adoptServerModel(c, info)
+        override fun saveReplyStat(sid: String, text: String, v: List<Float?>) { store.setReplyStat(sid, text, v); pushReplyStats(sid) }
+        override suspend fun gatewayCall(profile: String, method: String, params: JSONObject) = gatewayFor(profile).call(method, params)
+    }, viewModelScope) }
     private val res get() = L10n.wrap(getApplication(), store.lang)
     fun s(id: Int, vararg a: Any): String = res.getString(id, *a)
     /** String by resource name (see [Str]); resolved against the user's chosen app language. */
@@ -505,7 +524,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         chats.filter { it.profile == prof }.forEach { it.liveId = null }
         lateinit var g: GatewayWs
         g = GatewayWs(store.relayBase(), prof, store.apiKey ?: throw ApiException("Set the API key in Settings"),
-            onEvent = { t, sid, p -> viewModelScope.launch(Dispatchers.Main) { onEvent(prof, t, sid, p) } },
+            onEvent = { t, sid, p -> viewModelScope.launch(Dispatchers.Main) { engine.onEvent(prof, t, sid, p) } },
             onServerRequest = { id, m, p -> viewModelScope.launch(Dispatchers.Main) { onServerRequest(g, id, m, p) } },
             onClosed = { why -> viewModelScope.launch(Dispatchers.Main) {
                 if (gws[prof] !== g) return@launch      // replaced or closed on purpose
@@ -548,7 +567,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         snap.optJSONObject("info")?.let { adoptServerModel(c, it) }
         val live = snap.getString("session_id").also { c.liveId = it }
         snap.optJSONArray("prompts")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { pr ->
-            viewModelScope.launch(Dispatchers.Main) { onEvent(c.profile, pr.optString("kind") + ".request", live, pr) } } }
+            viewModelScope.launch(Dispatchers.Main) { engine.onEvent(c.profile, pr.optString("kind") + ".request", live, pr) } } }
         val running = snap.optBoolean("running")
         if (running) viewModelScope.launch(Dispatchers.Main) { c.streaming = true }
         return running
@@ -570,23 +589,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Context bar + reply token baseline from a PC usage object. Returns (input, output) totals. */
-    private fun applyUsage(c: Chat, u: JSONObject): Pair<Long, Long>? {
-        // The gateway renamed these: session.stats (and session.usage event frames) now carry
-        // context_tokens/context_length. Keep reading the legacy names too for older frames.
-        val used = u.optLong("context_used", -1).takeIf { it >= 0 } ?: u.optLong("context_tokens", -1)
-        val max = u.optLong("context_max", 0).takeIf { it > 0 } ?: u.optLong("context_length", 0)
-        used.takeIf { it >= 0 }?.let { c.ctxUsed = it }
-        max.takeIf { it > 0 }?.let { c.ctxMax = it }
-        // session.stats (and the flat part of session.usage frames) names the counters input_tokens/output_tokens/prompt_tokens;
-        // the nested TUI "usage" view (message.complete) uses input/output/prompt. Read both, or the reply baseline never gets set.
-        if (!u.has("input") && !u.has("output") && !u.has("input_tokens") && !u.has("output_tokens") && !u.has("prompt_tokens")) return null
-        // "input" counts only uncached tokens (often just a few); "prompt" = input + cache reads/writes = what was really sent.
-        val inp = u.optLong("prompt", 0).takeIf { it > 0 } ?: u.optLong("prompt_tokens", 0).takeIf { it > 0 }
-            ?: u.optLong("input", 0).takeIf { it > 0 } ?: u.optLong("input_tokens", 0)
-        val t = inp to (u.optLong("output", 0).takeIf { it > 0 } ?: u.optLong("output_tokens", 0).takeIf { it > 0 } ?: u.optLong("completion_tokens", 0))
-        if (c.totIn == null) { c.totIn = t.first; c.totOut = t.second }
-        return t
-    }
+    private fun applyUsage(c: Chat, u: JSONObject): Pair<Long, Long>? = engine.applyUsage(c, u)
 
     /** Live id for [c] on its profile's connection. */
     private suspend fun ensureLive(g: GatewayWs, c: Chat = cur): String { c.liveId?.let { return it }; attach(g, c); return c.liveId!! }
@@ -1651,228 +1654,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) { c.streaming = false; dropEmpty(c); throw e }
     }
 
-    private fun dropEmpty(c: Chat = cur) {
-        val messages = c.messages
-        if (messages.lastOrNull()?.let { it.role == "assistant" && it.text.isEmpty() && it.steps.isEmpty() } == true) messages.removeAt(messages.lastIndex)
-    }
+    private fun dropEmpty(c: Chat = cur) = engine.dropEmpty(c)
+    private fun updateLast(c: Chat, f: (UiMsg) -> UiMsg) = engine.updateLast(c, f)
 
-    private fun updateLast(c: Chat, f: (UiMsg) -> UiMsg) {
-        val messages = c.messages
-        val i = messages.lastIndex
-        if (i >= 0 && messages[i].role == "assistant") messages[i] = f(messages[i]) else messages.add(f(UiMsg("assistant", "")))
-    }
-
-    /** Route an event to the chat whose live session it belongs to (any profile, on screen or not). */
-    private fun onEvent(prof: String, type: String, sid: String, p: JSONObject) {
-        val c = if (sid.isEmpty()) (if (cur.profile == prof) cur else return)
-            else chats.find { it.profile == prof && (it.liveId == sid || it.id == sid) } ?: return
-        val app = getApplication<Application>()
-        val away = !platform.visible || c !== cur          // not looking at this chat
-        val name = c.title ?: s(Str.chat)
-        if (type == "tool.complete" || type == "message.complete") kickProcPoll(c)   // a command may have started a background process
-        when (type) {
-            "session.usage" -> (p.optJSONObject("usage") ?: p).let { u -> applyUsage(c, u) }
-            "session.info", "session.control.update", "session.updated" -> {
-                if (p.has("execution_generation")) c.generation = p.optInt("execution_generation", c.generation)
-                if (p.has("revision")) c.revision = p.optInt("revision", c.revision)
-                if (type == "session.info") adoptServerModel(c, p)
-            }
-            "message.start" -> { c.streaming = true; c.status = null
-                c.turnStartAt = platform.elapsedMs(); c.firstTokenAt = 0L
-                platform.clearAlerts(c.id, "reply")       // a new turn (from the phone or the PC): the last reply was seen
-                if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
-            "message.delta" -> { c.status = null; val t = p.str("text")
-                if (c.firstTokenAt == 0L && t.isNotEmpty()) c.firstTokenAt = platform.elapsedMs()
-                updateLast(c) { m ->
-                    val closed = m.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }
-                    val steps = if (t.isEmpty()) closed
-                        else if (closed.lastOrNull()?.kind == "text") closed.dropLast(1) + closed.last().copy(detail = closed.last().detail + t)
-                        else closed + Step("text", "", t)
-                    m.copy(text = m.text + t, steps = steps) } }
-            "thinking.delta", "reasoning.delta" -> { c.status = s(Str.thinking_status)
-                if (c.firstTokenAt == 0L && p.str("text").isNotEmpty()) c.firstTokenAt = platform.elapsedMs()
-                val t = p.str("text"); if (t.isNotEmpty()) updateLast(c) { m ->
-                    val last = m.steps.lastOrNull()
-                    m.copy(steps = if (last?.kind == "thinking" && last.output == null) m.steps.dropLast(1) + last.copy(detail = last.detail + t) else m.steps + Step("thinking", "", t)) } }
-            "tool.start" -> { val n = p.str("name").ifBlank { p.str("tool_name") }.ifBlank { "tool" }; c.status = "🔧 $n"
-                val detail = p.str("args_text").ifBlank { Steps.argsText(n, p.optJSONObject("args")) }.ifBlank { p.str("context").ifBlank { p.str("preview") } }
-                updateLast(c) { it.copy(tools = it.tools + n, steps = it.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s } +
-                    Step("tool", n, detail, null, p.str("tool_id"))) } }
-            "tool.complete" -> { val tid = p.str("tool_id"); val n = p.str("name")
-                val raw = p.str("result_text").ifBlank { p.str("summary") }.ifBlank { p.opt("result")?.takeUnless { it == JSONObject.NULL }?.toString().orEmpty() }
-                updateLast(c) { m -> m.copy(steps = m.steps.map { s -> if (s.kind == "tool" && (s.toolId == tid || (tid.isEmpty() && s.output == null && s.name == n))) s.copy(output = Steps.outputText(s.name, raw)) else s }) } }
-            "message.complete" -> {
-                val rawText = p.str("text").ifBlank { p.str("content") }
-                sendMedia(c, rawText)
-                val text = Internal.stripMedia(rawText)
-                if (rawText.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
-                    steps = if (text.isBlank() || m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
-                (p.optJSONObject("usage")?.takeIf { it.length() > 0 }).let { u -> if (u == null) return@let
-                    // No baseline yet (first reply of a fresh chat): count from zero. Counters that went down (compression / new
-                    // counters) restart from the new value instead of dropping the stats.
-                    val fresh = c.totIn == null && c.messages.count { it.role == "assistant" } <= 1
-                    val i0 = c.totIn ?: if (fresh) 0L else null; val o0 = c.totOut ?: if (fresh) 0L else null
-                    applyUsage(c, u)?.let { (i, o) ->
-                        if (i0 != null && o0 != null && (i != i0 || o != o0)) {
-                            val di = if (i >= i0) i - i0 else i; val dO = if (o >= o0) o - o0 else o
-                            val end = platform.elapsedMs()
-                            val ttft = if (c.firstTokenAt > 0 && c.turnStartAt > 0) (c.firstTokenAt - c.turnStartAt) / 1000f else 0f
-                            val gen = if (c.firstTokenAt > 0) (end - c.firstTokenAt) / 1000f else 0f
-                            val pre = if (ttft > 0f && di > 0) di / ttft else null
-                            val gt = if (gen >= 0.2f && dO > 0) dO / gen else null
-                            updateLast(c) { it.copy(tokIn = di, tokOut = dO, prefillTps = pre, genTps = gt) }
-                            c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)).also { pushReplyStats(sid) } } }
-                        }
-                        c.totIn = i; c.totOut = o } }
-                if (away && text.isNotBlank()) Notify.alert(app, s(Str.n_reply_done, name), text, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
-                c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
-                if (c !== cur || screen != Screen.Chat) c.unread = true
-                viewModelScope.launch { refreshIds(c) }
-                if (p.optString("outcome") !in setOf("", "completed") && c === cur) error = "Turn ended: ${p.optString("outcome")}"
-                if (c.title == null) refreshSessions()
-                if (p.optString("outcome") in setOf("", "completed")) drainQueue(c)   // stopped: keep the queue
-            }
-            "approval.request" -> {
-                val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: listOf("once", "deny")
-                c.approval = Approval(p.optString("prompt_id"), p.optString("command"), p.optString("description"), ch,
-                    p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(Str.n_approval) + " · " + name, p.optString("command"), force = c !== cur, profile = c.profile, session = c.id, kind = "approval")
-            }
-            "clarify.request" -> {
-                val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
-                c.clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch, p.optBoolean("multi_select") && ch.isNotEmpty())),
-                    p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(Str.n_clarify) + " · " + name, p.optString("question"), force = c !== cur, profile = c.profile, session = c.id, kind = "clarify")
-            }
-            // Answered here or on the PC: the question's notification is stale either way.
-            "approval.settled" -> { if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null; platform.clearAlerts(c.id, "approval") }
-            "clarify.settled" -> { if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null; platform.clearAlerts(c.id, "clarify") }
-            "subagent.spawn_requested", "subagent.start", "subagent.thinking", "subagent.text", "subagent.tool",
-            "subagent.progress", "subagent.complete", "background.complete" -> taskEvent(c, type, p)
-            "session.title" -> p.optString("title").ifBlank { null }?.let { c.title = it }
-            "error" -> { val msg = p.optString("message").ifBlank { "Hermes error" }
-                c.streaming = false; c.status = null; dropEmpty(c); c.messages.add(UiMsg("system", "⚠ $msg"))
-                if (c === cur) error = msg
-                if (away) Notify.alert(app, s(Str.n_error) + " · " + name, msg, force = c !== cur, profile = c.profile, session = c.id) }
-        }
-    }
-
-    /** Read-only transcripts, keyed by parent chat + task key. */
-    private val taskChats = HashMap<String, Chat>()
-
-    private fun roAppend(ro: Chat, f: (UiMsg) -> UiMsg) {
-        val i = ro.messages.lastIndex
-        if (i >= 0 && ro.messages[i].role == "assistant") ro.messages[i] = f(ro.messages[i]) else ro.messages.add(f(UiMsg("assistant", "")))
-    }
-
-    /** subagent.* / background.complete on the parent session: keep a card in the stream and a read-only transcript behind it. */
-    private fun taskEvent(c: Chat, type: String, p: JSONObject) {
-        val bg = type == "background.complete"
-        val key = if (bg) "bg:" + p.str("task_id") else "sa:" + p.str("subagent_id").ifBlank { p.str("child_session_id") }.ifBlank { p.optInt("task_index", 0).toString() }
-        val now = System.currentTimeMillis()
-        val ro = taskChats.getOrPut(System.identityHashCode(c).toString() + key) {
-            Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true
-                it.title = s(if (bg) Str.task_background else Str.task_subagent) } }
-        val goal = p.str("goal").ifBlank { p.str("preview") }
-        var status = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.status ?: "running"
-        var started = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.startedAt ?: now
-        var ended = 0L
-        when (type) {
-            "subagent.spawn_requested", "subagent.start" -> {
-                if (goal.isNotBlank() && ro.messages.none { it.role == "system" }) {
-                    ro.messages.add(0, UiMsg("system", goal)); ro.title = goal.replace('\n', ' ').take(40) }
-                ro.streaming = true; status = "running" }
-            "subagent.thinking" -> p.str("text").takeIf { it.isNotEmpty() }?.let { t -> roAppend(ro) { m ->
-                val l = m.steps.lastOrNull()
-                m.copy(steps = if (l?.kind == "thinking") m.steps.dropLast(1) + l.copy(detail = l.detail + t) else m.steps + Step("thinking", "", t)) } }
-            "subagent.text", "subagent.progress" -> p.str("text").ifBlank { goal }.takeIf { it.isNotEmpty() }?.let { t -> roAppend(ro) { m ->
-                m.copy(text = m.text + t + "\n", steps = m.steps + Step("text", "", t)) } }
-            "subagent.tool" -> { val n = p.str("tool_name").ifBlank { "tool" }
-                roAppend(ro) { m -> m.copy(tools = m.tools + n, steps = m.steps + Step("tool", n, p.str("tool_preview").ifBlank { p.str("text") }, "")) } }
-            "subagent.complete", "background.complete" -> {
-                val body = if (bg) p.str("text") else p.str("summary").ifBlank { p.str("text") }.ifBlank { goal }
-                val st = p.str("status")
-                status = if ((bg && body.startsWith("error:")) || p.has("failure_reason") || st in setOf("failed", "error", "timeout", "timed_out", "interrupted")) "failed" else "done"
-                val dur = p.optDouble("duration_seconds", 0.0)
-                if (dur > 0) started = now - (dur * 1000).toLong()
-                ended = now
-                if (bg && ro.messages.none { it.role == "system" }) ro.messages.add(0, UiMsg("system", p.str("task_id")))
-                if (body.isNotBlank()) roAppend(ro) { m -> m.copy(text = body, steps = m.steps + Step("text", "", body)) }
-                ro.streaming = false
-                if (ro !== cur) ro.unread = true }
-        }
-        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, if (bg) "bg" else "sa", status, started, ended, ro))
-        val i = c.messages.indexOfFirst { it.uid == card.uid }
-        if (i >= 0) c.messages[i] = card
-        else placeCard(c, card)   // at its start time; keeps the streaming assistant message last
-    }
-
-    // ---- background terminal processes: progress cards -------------------------------------------------------------
-    // The gateway lists a session's processes (RPC process.list); the relay (POST /bgtasks) parses progress from their output.
-    // Polled every 3s only while the app is in the foreground, the chat is the open one and a process is still running.
-    private val procJobs = HashMap<Chat, kotlinx.coroutines.Job>()
-
-    fun kickProcPoll(c: Chat = cur) {
-        if (c.readOnly || c.liveId == null || !store.hasKey || procJobs[c]?.isActive == true) return
-        procJobs[c] = viewModelScope.launch {
-            while (platform.visible && c === cur) {
-                val sid = c.liveId ?: break
-                if (!runCatching { pollProcs(c, sid) }.getOrDefault(false) && !c.streaming) break   // keep looking while a turn runs: the process may not exist yet
-                delay(3000)
-            }
-        }
-    }
-
-    /** One poll; true while any process of the session is still running. */
-    private suspend fun pollProcs(c: Chat, sid: String): Boolean {
-        val r = withTimeout(8000) { gatewayFor(c.profile).call("process.list", JSONObject().put("session_id", sid)) }
-        val arr = r.optJSONArray("processes") ?: return false
-        val rows = (0 until arr.length()).map { arr.getJSONObject(it) }.filter { row ->
-            row.str("status") == "running" || c.messages.any { it.task?.key == "proc:" + row.str("session_id") } }
-        if (rows.isEmpty()) return false
-        val prog = fetchBgProgress(rows)
-        rows.forEach { applyProc(c, it, prog[it.str("session_id")]) }
-        return rows.any { it.str("status") == "running" }
-    }
-
-    private suspend fun fetchBgProgress(rows: List<JSONObject>): Map<String, JSONObject> = withContext(Dispatchers.IO) {
-        runCatching {
-            val body = JSONObject().put("processes", JSONArray().also { a -> rows.forEach { a.put(it) } })
-            relayHttp.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build().newCall(relayRequest("/bgtasks", body)).execute().use { r ->
-                if (!r.isSuccessful) return@use emptyMap<String, JSONObject>()
-                val a = JSONObject(r.body!!.string()).optJSONArray("tasks") ?: JSONArray()
-                (0 until a.length()).map { a.getJSONObject(it) }.associateBy { it.str("id") }
-            }
-        }.getOrDefault(emptyMap())
-    }
-
-    private fun applyProc(c: Chat, row: JSONObject, pr: JSONObject?) {
-        val pid = row.str("session_id"); val key = "proc:$pid"
-        val now = System.currentTimeMillis()
-        val cmd = row.str("command").replace('\n', ' ').trim()
-        val ro = taskChats.getOrPut(System.identityHashCode(c).toString() + key) {
-            Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true; it.title = cmd.take(40).ifBlank { pid } } }
-        val old = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task
-        val running = row.str("status") == "running"
-        val failed = !running && !row.isNull("exit_code") && row.optInt("exit_code", 0) != 0
-        val status = if (running) "running" else if (failed) "failed" else "done"
-        val started = old?.startedAt ?: (now - row.optLong("uptime_seconds", 0) * 1000)
-        val ended = if (running) 0L else old?.endedAt?.takeIf { it > 0 } ?: now
-        val tail = pr?.optJSONArray("tail")?.let { a -> (0 until a.length()).map { a.optString(it) } }
-            ?: row.str("output_tail").split(Regex("[\r\n]+")).filter { it.isNotBlank() }.takeLast(30)
-        val pct = pr?.optDoubleOrNull("percent")
-        val last = pr?.str("detail").orEmpty().ifBlank { pr?.str("last").orEmpty() }.ifBlank { tail.lastOrNull().orEmpty() }.take(160)
-        if (ro.messages.none { it.role == "system" }) ro.messages.add(0, UiMsg("system", cmd.ifBlank { pid }))
-        val text = "```\n" + tail.joinToString("\n") + "\n```"
-        if (tail.isNotEmpty() && ro.messages.lastOrNull()?.takeIf { it.role == "assistant" }?.text != text) {
-            if (ro.messages.lastOrNull()?.role == "assistant") ro.messages[ro.messages.lastIndex] = ro.messages.last().copy(text = text)
-            else ro.messages.add(UiMsg("assistant", text)) }
-        ro.streaming = running
-        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, "proc", status, started, ended, ro, pct, last))
-        val i = c.messages.indexOfFirst { it.uid == card.uid }
-        if (i >= 0) { if (c.messages[i].task != card.task) c.messages[i] = card }
-        else placeCard(c, card)
-    }
+    fun kickProcPoll(c: Chat = cur) = engine.kickProcPoll(c)
 
     /** Put a task card where it started: before the first message sent after its start (not always at the bottom, e.g. after a restart). */
     /** Insert [m] before the first user/assistant message that is newer than it (files without a known time go last). */
@@ -1888,18 +1673,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.getOrNull() ?: Long.MAX_VALUE
 
-    private fun placeByTime(c: Chat, m: UiMsg) {
-        val i = c.messages.indexOfFirst { (it.role == "user" || it.role == "assistant" || it.role == "file") && it.ts > m.ts }
-        if (i >= 0) c.messages.add(i, m) else c.messages.add(m)
-    }
-
-    private fun placeCard(c: Chat, card: UiMsg) {
-        val started = card.task?.startedAt ?: 0L
-        val i = if (started > 0) c.messages.indexOfFirst { it.task == null && it.ts > started && (it.role == "user" || it.role == "assistant") } else -1
-        if (i >= 0) { c.messages.add(i, card); return }
-        val l = c.messages.lastIndex
-        if (l >= 0 && c.messages[l].role == "assistant" && c.streaming) c.messages.add(l, card) else c.messages.add(card)
-    }
+    private fun placeByTime(c: Chat, m: UiMsg) = engine.placeByTime(c, m)
+    private fun placeCard(c: Chat, card: UiMsg) = engine.placeCard(c, card)
 
     /** Open a task card's read-only transcript as a tab. */
     fun openTask(t: TaskInfo) { addTab(t.chat); switchTo(t.chat) }
