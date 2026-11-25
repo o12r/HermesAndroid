@@ -214,7 +214,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                 }
                 if (isOpen) items(list, key = { okey + ":" + it.id }, contentType = { "sess" }) { s ->
                     var menu by remember { mutableStateOf(false) }
-                    val time = remember(s.lastActive, Formats.clock) { s.lastActive?.let { Formats.fmtTime((it * 1000).toLong()) } ?: "" }
+                    val time = remember(s.lastActive, vm.clock) { s.lastActive?.let { Formats.fmtTime((it * 1000).toLong()) } ?: "" }
                     val ctxRow = vm.sessionCtx[s.id]
                     val isSel = isCur && s.id in sel
                     val isActiveSess = s.id in vm.liveKeys[prof].orEmpty()

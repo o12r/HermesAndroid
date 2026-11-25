@@ -1,7 +1,5 @@
 package dev.oscar.hermes
 
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -18,14 +16,15 @@ sealed class Seg {
  * streaming), a whole reply that is bare JSON/XML, and bare XML/JSON runs between paragraphs.
  */
 object Formats {
-    /** Clock preference: "system" | "12" | "24". Compose state so visible times refresh when changed. */
-    var clock by androidx.compose.runtime.mutableStateOf("system")
-    var appCtx: android.content.Context? = null
+    /** Clock preference: "system" | "12" | "24". Plain var: UI keys recomposition on its own state. */
+    var clock: String = "system"
+    /** Platform hook for the "system" clock setting; null = 24h. */
+    var is24h: (() -> Boolean)? = null
 
     private fun use24(): Boolean = when (clock) {
         "12" -> false
         "24" -> true
-        else -> appCtx?.let { android.text.format.DateFormat.is24HourFormat(it) } ?: true
+        else -> is24h?.invoke() ?: true
     }
 
     /**

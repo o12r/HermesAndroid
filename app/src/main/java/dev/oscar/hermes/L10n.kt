@@ -6,13 +6,9 @@ import java.util.Locale
 
 /** In-app language override: "system", "en" or "zh". */
 object L10n {
-    val LANGS = listOf("system", "en", "zh")
+    val LANGS = L10nCore.LANGS
 
-    fun locale(lang: String): Locale? = when (lang) {
-        "en" -> Locale.ENGLISH
-        "zh" -> Locale.SIMPLIFIED_CHINESE
-        else -> null
-    }
+    fun locale(lang: String): Locale? = L10nCore.locale(lang)
 
     /** A context whose resources use [lang] (unchanged for "system"). */
     fun wrap(base: Context, lang: String): Context {

@@ -307,7 +307,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         checkUpdates(manual = false)
     }
 
-    var clock by mutableStateOf(store.clock.also { Formats.clock = it; Formats.appCtx = app.applicationContext })
+    var clock by mutableStateOf(store.clock.also { Formats.clock = it; Formats.is24h = { android.text.format.DateFormat.is24HourFormat(app.applicationContext) } })
     fun chooseClock(v: String) { clock = v; store.clock = v; Formats.clock = v }
     fun chooseTheme(t: String) { theme = t; store.theme = t }
     var powerMode by mutableStateOf(store.powerMode.also { GatewayWs.pingSec = if (KeepAliveService.isSaver(getApplication())) 60L else 30L })
