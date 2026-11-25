@@ -70,9 +70,66 @@ function Profile-Dirs {
 
 function Profile-Name($d) { if ($d -eq $HH) { "default" } else { Split-Path $d -Leaf } }
 
+# What each skill does - shown in the picker.
+$SkillInfo = @{
+    "hermes-android" = @{
+        en = "Lets your local Hermes diagnose, fix and improve this phone setup: it knows the app, the phone relay, the tray menu, updates / hotfixes and the logs, so you can ask it to repair a broken connection or add a feature."
+        zh = "让本机 Hermes 能诊断、修复和改进这套手机连接：了解手机 App、手机中继、托盘菜单、更新/热修复与日志，连接出问题或想加功能时可以直接让它处理。"
+    }
+    "hermes-agent-screen" = @{
+        en = "Lets Hermes do GUI work on a separate agent virtual screen without taking over yours: background click / type / key, window placement, screen off / dim. Needs the virtual display driver."
+        zh = "让 Hermes 在独立的agent 虚拟屏上操作图形界面而不抢你的屏幕：后台点击/输入/按键、窗口摆放、关屏/调暗。需要虚拟显示器驱动。"
+    }
+}
+function Skill-Info([string]$Skill) { $k = if ($PSUICulture -like "zh*") { "zh" } else { "en" }; $SkillInfo[$Skill][$k] }
+
+# One window for both skills: a description + a profile checklist (all pre-checked) per skill.
+# Returns @{ skill = @(profile dirs) }, or $null when the window cannot be shown (-> console fallback) / is closed with Skip.
+function Show-SkillPicker([string[]]$Skills, [string[]]$Dirs) {
+    try { Add-Type -AssemblyName System.Windows.Forms, System.Drawing -ErrorAction Stop } catch { return $null }
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    $zh = $PSUICulture -like "zh*"
+    $names = @($Dirs | ForEach-Object { Profile-Name $_ })
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = if ($zh) { "Hermes Android - 安装 skill" } else { "Hermes Android - install skills" }
+    $f.StartPosition = "CenterScreen"; $f.TopMost = $true; $f.FormBorderStyle = "FixedDialog"; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+    $f.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    $w = 600; $y = 12; $lists = @{}
+    $hint = New-Object System.Windows.Forms.Label
+    $hint.Text = if ($zh) { "为每个 skill 勾选要安装到的档案（默认全选）。" } else { "Tick the profiles each skill is installed into (all ticked by default)." }
+    $hint.SetBounds(14, $y, $w - 28, 22); $f.Controls.Add($hint); $y += 28
+    $rows = [Math]::Min([Math]::Max($names.Count, 2), 6)
+    foreach ($sk in $Skills) {
+        $g = New-Object System.Windows.Forms.GroupBox
+        $g.Text = $sk; $g.SetBounds(12, $y, $w - 24, 70 + 20 * $rows + 26)
+        $d = New-Object System.Windows.Forms.Label
+        $d.Text = Skill-Info $sk; $d.SetBounds(12, 22, $w - 52, 66)
+        $l = New-Object System.Windows.Forms.CheckedListBox
+        $l.CheckOnClick = $true; $l.SetBounds(12, 92, $w - 52, 20 * $rows + 8)
+        foreach ($n in $names) { [void]$l.Items.Add($n, $true) }
+        $all = New-Object System.Windows.Forms.CheckBox
+        $all.Text = if ($zh) { "全选" } else { "Select all" }; $all.Checked = $true
+        $all.SetBounds(12, 92 + 20 * $rows + 12, 160, 24)
+        $all.Add_CheckedChanged({ param($s, $e) $lb = $s.Tag; for ($i = 0; $i -lt $lb.Items.Count; $i++) { $lb.SetItemChecked($i, $s.Checked) } })
+        $all.Tag = $l
+        $g.Controls.AddRange(@($d, $l, $all)); $f.Controls.Add($g); $lists[$sk] = $l
+        $y += $g.Height + 8
+    }
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = if ($zh) { "安装" } else { "Install" }; $ok.DialogResult = "OK"; $ok.SetBounds($w - 220, $y + 4, 100, 30)
+    $no = New-Object System.Windows.Forms.Button; $no.Text = if ($zh) { "跳过" } else { "Skip" }; $no.DialogResult = "Cancel"; $no.SetBounds($w - 112, $y + 4, 100, 30)
+    $f.Controls.AddRange(@($ok, $no)); $f.AcceptButton = $ok; $f.CancelButton = $no
+    $f.ClientSize = New-Object System.Drawing.Size($w, ($y + 46))
+    if ($f.ShowDialog() -ne "OK") { return @{} }
+    $res = @{}
+    foreach ($sk in $Skills) {
+        $res[$sk] = @(for ($i = 0; $i -lt $Dirs.Count; $i++) { if ($lists[$sk].GetItemChecked($i)) { $Dirs[$i] } })
+    }
+    return $res
+}
+
 # Pick profiles for one skill. Returns the chosen profile dirs. All are pre-selected.
 #   -Profiles / -AllProfiles given, or no interactive console -> all (or the named ones) without asking.
-#   Out-GridView when available, else a console prompt: Enter = all, "1,3" / names = those, "none" = skip.
+#   a small window (checklist + what each skill does), else a console prompt: Enter = all, "1,3" / names = those, "none" = skip.
 function Select-Profiles([string]$Skill, [string[]]$Dirs, [string[]]$Names = @(), [switch]$All, [switch]$NonInteractive) {
     if ($Names.Count) {
         $want = @($Names | ForEach-Object { $_.Split(",") } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
@@ -82,13 +139,8 @@ function Select-Profiles([string]$Skill, [string[]]$Dirs, [string[]]$Names = @()
     }
     if ($All -or $NonInteractive) { return $Dirs }
     $names = @($Dirs | ForEach-Object { Profile-Name $_ })
-    $ogv = Get-Command Out-GridView -ErrorAction SilentlyContinue
-    if ($ogv -and -not $env:HERMES_INSTALL_NO_GRID) {
-        $rows = @($names | ForEach-Object { [pscustomobject]@{ Profile = $_ } })
-        $pick = @($rows | Out-GridView -Title "Install skill '$Skill' into which profiles? (all selected; Cancel = skip)" -PassThru)
-        return @($Dirs | Where-Object { $pick.Profile -contains (Profile-Name $_) })
-    }
     Write-Host "   Install skill '$Skill' into which profiles?" -ForegroundColor Cyan
+    Write-Host ("   " + (Skill-Info $Skill)) -ForegroundColor DarkGray
     for ($i = 0; $i -lt $names.Count; $i++) { Write-Host ("     [{0}] {1}" -f ($i + 1), $names[$i]) }
     $ans = (Read-Host "   Enter = all, numbers/names separated by commas = those, none = skip").Trim()
     if (-not $ans) { return $Dirs }
@@ -269,8 +321,11 @@ if (-not $PairOnly) {
     Step "Hermes skill"
     $allDirs = @(Profile-Dirs)
     $noAsk = $AllProfiles -or ($Profiles.Count -gt 0) -or [Console]::IsInputRedirected -or -not [Environment]::UserInteractive
-    foreach ($sk in "hermes-android", "hermes-agent-screen") {
-        $chosen = @(Select-Profiles $sk $allDirs -Names $Profiles -All:$AllProfiles -NonInteractive:$noAsk)
+    $skills = @("hermes-android", "hermes-agent-screen")
+    $picked = $null
+    if (-not $noAsk -and -not $env:HERMES_INSTALL_NO_GUI) { $picked = Show-SkillPicker $skills $allDirs }
+    foreach ($sk in $skills) {
+        $chosen = if ($picked -ne $null) { @($picked[$sk]) } else { @(Select-Profiles $sk $allDirs -Names $Profiles -All:$AllProfiles -NonInteractive:$noAsk) }
         foreach ($d in $chosen) {
             $dst = Join-Path $d "skills\software-development\$sk"
             New-Item -ItemType Directory -Force $dst | Out-Null

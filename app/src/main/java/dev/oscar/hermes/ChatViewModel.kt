@@ -1315,7 +1315,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rb = body.toString().toRequestBody("application/json".toMediaType())
         okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/fs/" + op).header("Authorization", "Bearer $key").post(rb).build()).execute().use { r ->
             val o = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
-            if (!r.isSuccessful) throw ApiException(o.optString("error").ifBlank { if (r.code == 404) s(R.string.pf_old_relay) else "HTTP ${r.code}" })
+            if (!r.isSuccessful) throw ApiException(if (r.code == 404 && o.optString("error").lowercase().let { it.isBlank() || it == "not found" }) s(R.string.pf_old_relay) else o.optString("error").ifBlank { "HTTP ${r.code}" })
             o
         }
     }

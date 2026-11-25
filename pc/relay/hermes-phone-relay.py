@@ -306,13 +306,23 @@ def _fs_quick() -> list:
 
 
 def _fs_pin(p: Path, pin: bool) -> str | None:
-    """Pin / unpin a folder in Windows Quick access through the shell verbs; returns an error text or None."""
-    ps = ("$f=(New-Object -ComObject Shell.Application).Namespace($env:HFS_P); if(-not $f){exit 2}; "
-          "$f.Self.InvokeVerb($env:HFS_V)")
-    env = dict(os.environ, HFS_P=str(p), HFS_V="pintohome" if pin else "unpinfromhome")
-    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=15,
+    """Pin / unpin a folder in Windows Quick access through the shell verbs; returns an error text or None.
+    Unpin must be invoked on the item as listed *inside* Quick access (pinned -> unpinfromhome, frequent -> removefromhome)."""
+    if pin:
+        ps = ("$f=(New-Object -ComObject Shell.Application).Namespace($env:HFS_P); if(-not $f){exit 2}; $f.Self.InvokeVerb('pintohome')")
+    else:
+        ps = ("$n=(New-Object -ComObject Shell.Application).Namespace('shell:::{679F85CB-0220-4080-B29B-5540CC05AAB6}'); "
+              "$t=$env:HFS_P.TrimEnd('\\').ToLower(); $hit=$null; "
+              "foreach($i in $n.Items()){ if($i.Path -and $i.Path.TrimEnd('\\').ToLower() -eq $t){ $hit=$i; break } }; "
+              "if(-not $hit){exit 3}; $names=@($hit.Verbs()|%{ $_.Name.Replace('&','') }); "
+              "foreach($v in $hit.Verbs()){ $nm=$v.Name.Replace('&',''); if($nm -match 'Unpin from Quick access|取消固定|从“快速访问”取消固定|Remove from Quick access|从“快速访问”删除'){ $v.DoIt(); exit 0 } }; "
+              "try{ $hit.InvokeVerb('unpinfromhome'); exit 0 }catch{}; try{ $hit.InvokeVerb('removefromhome'); exit 0 }catch{}; exit 4")
+    env = dict(os.environ, HFS_P=str(p))
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=20,
                        env=env, creationflags=0x08000000)
     _QA["t"] = 0.0
+    if r.returncode == 3:
+        return "not in Quick access"
     return None if r.returncode == 0 else "could not pin/unpin this folder"
 
 
