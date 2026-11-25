@@ -1693,19 +1693,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (rawText.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
                     steps = if (text.isBlank() || m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
                 (p.optJSONObject("usage")?.takeIf { it.length() > 0 }).let { u -> if (u == null) return@let
-                    val i0 = c.totIn; val o0 = c.totOut
+                    // No baseline yet (first reply of a fresh chat): count from zero. Counters that went down (compression / new
+                    // counters) restart from the new value instead of dropping the stats.
+                    val fresh = c.totIn == null && c.messages.count { it.role == "assistant" } <= 1
+                    val i0 = c.totIn ?: if (fresh) 0L else null; val o0 = c.totOut ?: if (fresh) 0L else null
                     applyUsage(c, u)?.let { (i, o) ->
-                        if (i0 != null && o0 != null && (i > i0 || o > o0)) {
+                        if (i0 != null && o0 != null && (i != i0 || o != o0)) {
+                            val di = if (i >= i0) i - i0 else i; val dO = if (o >= o0) o - o0 else o
                             val end = android.os.SystemClock.elapsedRealtime()
                             val ttft = if (c.firstTokenAt > 0 && c.turnStartAt > 0) (c.firstTokenAt - c.turnStartAt) / 1000f else 0f
                             val gen = if (c.firstTokenAt > 0) (end - c.firstTokenAt) / 1000f else 0f
-                            val pre = if (ttft >= 0.05f && i - i0 > 0) (i - i0) / ttft else null
-                            val gt = if (gen >= 0.2f && o - o0 > 0) (o - o0) / gen else null
-                            updateLast(c) { it.copy(tokIn = i - i0, tokOut = o - o0, prefillTps = pre, genTps = gt) }
-                            c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf((i - i0).toFloat(), (o - o0).toFloat(), pre, gt)) } }
+                            val pre = if (ttft >= 0.05f && di > 0) di / ttft else null
+                            val gt = if (gen >= 0.2f && dO > 0) dO / gen else null
+                            updateLast(c) { it.copy(tokIn = di, tokOut = dO, prefillTps = pre, genTps = gt) }
+                            c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)) } }
                         }
                         c.totIn = i; c.totOut = o } }
-                if (away) Notify.alert(app, s(R.string.n_reply_done, name), text.ifBlank { "…" }, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
+                if (away && text.isNotBlank()) Notify.alert(app, s(R.string.n_reply_done, name), text, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
                 if (c !== cur || screen != Screen.Chat) c.unread = true
                 viewModelScope.launch { refreshIds(c) }
