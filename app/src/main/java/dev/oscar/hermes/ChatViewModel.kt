@@ -706,12 +706,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var liveKeys by mutableStateOf<Map<String, Set<String>>>(emptyMap())
 
     private val deviceId: String by lazy { android.provider.Settings.Secure.getString(getApplication<Application>().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone" }
-    private fun relayJson(method: String, path: String, body: String?): String? {
-        val key = store.apiKey ?: return null
-        val rb = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + path).header("Authorization", "Bearer $key")
-        if (method == "POST") rb.post((body ?: "{}").toRequestBody("application/json".toMediaType()))
-        return okhttp3.OkHttpClient.Builder().readTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build().newCall(rb.build()).execute().use { r -> if (r.isSuccessful) r.body?.string() else null }
-    }
+    private val relay = RelayClient({ store.relayBase() }, { store.apiKey }, { s(R.string.err_set_key) })
+    private fun relayJson(method: String, path: String, body: String?): String? = relay.json(method, path, body)
     /** Tell the PC relay which chats this phone has open as tabs (re-sent on every change and every minute), so other devices can mark them active. */
     private val tabReporter = viewModelScope.launch {
         delay(1500)
@@ -958,13 +954,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Elevation requests from the PC agent (phone-approved, no UAC prompt on the PC). */
     var elevate by mutableStateOf<List<JSONObject>>(emptyList())
 
-    private fun relayCall(method: String, path: String): String? {
-        val key = store.apiKey ?: return null
-        val rb = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + path).header("Authorization", "Bearer $key")
-        if (method == "POST") rb.post("{}".toRequestBody("application/json".toMediaType()))
-        return okhttp3.OkHttpClient.Builder().readTimeout(30, java.util.concurrent.TimeUnit.SECONDS).build()
-            .newCall(rb.build()).execute().use { r -> if (r.isSuccessful) r.body?.string() else null }
-    }
+    private fun relayCall(method: String, path: String): String? = relay.call(method, path)
 
     suspend fun pollElevate() {
         while (true) {
@@ -995,13 +985,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var pcScreens by mutableStateOf<List<PcScreen>>(emptyList())
     var screensBusy by mutableStateOf(false)
 
-    private fun relayRequest(path: String, body: JSONObject): okhttp3.Request {
-        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
-        return okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + path).header("Authorization", "Bearer $key")
-            .post(body.toString().toRequestBody("application/json".toMediaType())).build()
-    }
+    private fun relayRequest(path: String, body: JSONObject): okhttp3.Request = relay.request(path, body)
 
-    private val relayHttp by lazy { okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build() }
+    private val relayHttp get() = relay.http
 
     fun openScreens(from: Screen) { openPage("pc") }
 
