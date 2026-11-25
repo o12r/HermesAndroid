@@ -63,7 +63,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 o.optString("name") to o.str("display_name").ifBlank { o.str("description") }
             }.filter { it.first.isNotBlank() }
             if (found.isNotEmpty()) { profiles = found; store.profileCache = found }
-        }.onFailure { android.util.Log.w("HermesRpc", "profiles.list: $it") }
+        }.onFailure { platform.log("HermesRpc", "profiles.list: $it") }
     }
     /** Project groups from projects.tree (Home = sessions outside any project). */
     var projects by mutableStateOf<List<Project>>(emptyList())
@@ -138,7 +138,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun openPage(kind: String, refresh: Boolean = true) {
         val t = tabs.firstOrNull { it.page == kind } ?: Chat(profile, null, null).also {
             it.page = kind; it.readOnly = true; it.loaded = true
-            it.title = s(when (kind) { "pc" -> R.string.pc; "files" -> R.string.pf_title; "sessions" -> R.string.sessions; else -> R.string.settings }); tabs.add(it) }
+            it.title = s(when (kind) { "pc" -> Str.pc; "files" -> Str.pf_title; "sessions" -> Str.sessions; else -> Str.settings }); tabs.add(it) }
         activePage = t
         pageEntered(kind, refresh)
     }
@@ -159,7 +159,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** The open chat is on screen: its notifications are read. */
-    fun seen() { if (screen == Screen.Chat && Notify.visible) Notify.clear(getApplication(), cur.id) }
+    fun seen() { if (screen == Screen.Chat && platform.visible) platform.clearAlerts(cur.id) }
 
     /** Settings group to open when Settings shows (e.g. "chat" = context, "model" = model defaults); read & cleared by SettingsScreen. */
     var settingsTarget by mutableStateOf<String?>(null)
@@ -191,8 +191,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var lastSent: Pair<String, List<Attachment>>? = null
 
     // ---- localisation / appearance / updates ----
+    private val platform: Platform = object : Platform {
+        override val visible get() = Notify.visible
+        override fun clearAlerts(session: String?, vararg kinds: String) = Notify.clear(getApplication(), session, *kinds)
+        override fun elapsedMs() = android.os.SystemClock.elapsedRealtime()
+        override fun log(tag: String, msg: String) { android.util.Log.w(tag, msg) }
+    }
     private val res get() = L10n.wrap(getApplication(), store.lang)
     fun s(id: Int, vararg a: Any): String = res.getString(id, *a)
+    /** String by resource name (see [Str]); resolved against the user's chosen app language. */
+    fun s(key: String, vararg a: Any): String = res.getString(res.resources.getIdentifier(key, "string", res.packageName), *a)
     var theme by mutableStateOf(store.theme)
     /** Update source preference ("auto" | "github" | "pc"); auto = PC first, then GitHub. */
     var updateSource by mutableStateOf(store.updateSource)
@@ -212,11 +220,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var revision: Int get() = cur.revision; set(v) { cur.revision = v }
     private val gw get() = gws[profile]
 
-    private fun api() = ApiClient(store.relayBase(), profile, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
+    private fun api() = ApiClient(store.relayBase(), profile, store.apiKey ?: throw ApiException(s(Str.err_set_key)))
 
     private val netCb = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) { viewModelScope.launch { if (store.hasKey) { delay(800); pickRelay() }; if (offline) reconnect() } }
-        override fun onLost(network: Network) { viewModelScope.launch { status = s(R.string.network_changed) } }
+        override fun onLost(network: Network) { viewModelScope.launch { status = s(Str.network_changed) } }
     }
     init {
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(netCb)
@@ -318,11 +326,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (h.relayUrl != store.hotfixRelay) store.hotfixRelay = h.relayUrl
         }
         if (!manual && !forceUpdate && System.currentTimeMillis() - store.lastUpdateCheck < 6 * 3600_000L) return@launch
-        if (manual) updateStatus = s(R.string.checking)
-        val u = runCatching { updates.check(updateSource) }.getOrElse { if (manual) updateStatus = s(R.string.update_failed, it.message ?: "?"); return@launch }
+        if (manual) updateStatus = s(Str.checking)
+        val u = runCatching { updates.check(updateSource) }.getOrElse { if (manual) updateStatus = s(Str.update_failed, it.message ?: "?"); return@launch }
         store.lastUpdateCheck = System.currentTimeMillis()
         update = u
-        if (manual) updateStatus = if (u == null) s(R.string.up_to_date) else null
+        if (manual) updateStatus = if (u == null) s(Str.up_to_date) else null
     }
 
     var updateFileBytes by mutableStateOf(updates.downloadedSize())
@@ -332,21 +340,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         installJob = viewModelScope.launch {
             updateProgress = 0; updateStatus = null
             runCatching { updates.install(u) { p -> viewModelScope.launch(Dispatchers.Main) { updateProgress = p } } }
-                .onFailure { if (it !is kotlinx.coroutines.CancellationException) updateStatus = s(R.string.update_failed, it.message ?: "?") }
+                .onFailure { if (it !is kotlinx.coroutines.CancellationException) updateStatus = s(Str.update_failed, it.message ?: "?") }
             updateProgress = null; updateFileBytes = updates.downloadedSize()
         }
     }
     /** Stop the running download; the partial file is kept so a later install resumes it. */
     fun cancelUpdate() {
         installJob?.cancel(); installJob = null
-        updateProgress = null; updateStatus = s(R.string.update_cancelled)
+        updateProgress = null; updateStatus = s(Str.update_cancelled)
         viewModelScope.launch(Dispatchers.IO) { kotlinx.coroutines.delay(300); withContext(Dispatchers.Main) { updateFileBytes = updates.downloadedSize() } }
     }
     fun deleteUpdateFile() {
         installJob?.cancel(); installJob = null; updateProgress = null
         viewModelScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(300); updates.deleteFiles()
-            withContext(Dispatchers.Main) { updateFileBytes = updates.downloadedSize(); updateStatus = s(R.string.update_file_deleted) }
+            withContext(Dispatchers.Main) { updateFileBytes = updates.downloadedSize(); updateStatus = s(Str.update_file_deleted) }
         }
     }
     override fun onCleared() {
@@ -358,7 +366,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         offline = (e as? ApiException)?.unreachable == true
         val m = e.message ?: e.toString()
         // The gateway answers storage_unavailable when a session's stored creation receipt is missing (e.g. after an orphan reap).
-        error = if (m.contains("storage_unavailable")) s(R.string.err_session_corrupt) + " (storage_unavailable)" else m
+        error = if (m.contains("storage_unavailable")) s(Str.err_session_corrupt) + " (storage_unavailable)" else m
     }
 
     /** The phone's own Wi-Fi IPv4 address, or null when it isn't on Wi-Fi. */
@@ -462,12 +470,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     notifiedDrop = false; return@launch
                 }
                 if (!notifiedDrop) {      // notify at the first failed retry (whether or not the app is open)
-                    notifiedDrop = true; Notify.alert(getApplication<Application>(), s(R.string.n_disconnected), s(R.string.n_disconnected_text))
+                    notifiedDrop = true; Notify.alert(getApplication<Application>(), s(Str.n_disconnected), s(Str.n_disconnected_text))
                 }
                 // In the background: 3 failed tries and we stop (no endless wake-ups); the foreground reconnects.
-                if (!Notify.visible && ++bgFails >= 3) {
+                if (!platform.visible && ++bgFails >= 3) {
                     gaveUp.add(prof)
-                    if (!notifiedDrop) { notifiedDrop = true; Notify.alert(getApplication<Application>(), s(R.string.n_disconnected), s(R.string.n_disconnected_text)) }
+                    if (!notifiedDrop) { notifiedDrop = true; Notify.alert(getApplication<Application>(), s(Str.n_disconnected), s(Str.n_disconnected_text)) }
                     KeepAliveService.stop(getApplication()); return@launch
                 }
                 delayMs = (delayMs * 2).coerceAtMost(60_000L)
@@ -482,7 +490,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 val running = attach(g, c)
                 if (!running && (c.dropped || c.streaming)) { c.streaming = false; c.status = null; loadMessagesInto(c) }
-                else if (running) { c.streaming = true; c.status = s(R.string.reconnected_running) }
+                else if (running) { c.streaming = true; c.status = s(Str.reconnected_running) }
                 c.dropped = false
             }
         }
@@ -504,11 +512,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 gws.remove(prof)
                 for (c in chats.filter { it.profile == prof }) {
                     c.liveId = null
-                    if (c.streaming) { c.dropped = true; c.status = s(R.string.reconnecting) }
+                    if (c.streaming) { c.dropped = true; c.status = s(Str.reconnecting) }
                 }
                 if (prof == profile && cur.streaming) why?.let { error = it; offline = true }
                 scheduleReconnect(prof)
-            } }, logger = { tag, msg -> android.util.Log.w(tag, msg) })
+            } }, logger = { tag, msg -> platform.log(tag, msg) })
         withContext(Dispatchers.IO) { g.connect() }
         gws[prof] = g
         if (prof == profile && serverCommands.isEmpty()) viewModelScope.launch { loadCatalog() }
@@ -529,7 +537,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val snap = c.id?.let { g.call("session.resume", JSONObject().put("session_id", it).put("omit_messages", true)) }
             ?: (if (c.newCwd == null) g.call("session.create", createParams(false))
                 else try { g.call("session.create", createParams(true)) }
-                catch (e: ApiException) { if (e.unreachable) throw e; android.util.Log.w("HermesRpc", "session.create with cwd failed (${e.message}); retrying without cwd"); g.call("session.create", createParams(false)) }).also { r ->
+                catch (e: ApiException) { if (e.unreachable) throw e; platform.log("HermesRpc", "session.create with cwd failed (${e.message}); retrying without cwd"); g.call("session.create", createParams(false)) }).also { r ->
                 c.newCwd = null; c.createdHere = true
                 c.id = r.optString("stored_session_id").ifBlank { r.getString("session_id") }
                 c.id?.let { store.setSessionModel(it, c.model); store.setSessionEffort(it, c.effort) }
@@ -603,7 +611,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         scanProfiles()
     }
     fun localCommands(): List<Pair<String, String>> = SLASH_COMMANDS.map { (c, id) -> c to s(id) }
-    fun helpText() = s(R.string.help_header) + "\n" + localCommands().joinToString("\n") { "${it.first} — ${it.second}" } + "\n\n" + s(R.string.help_footer)
+    fun helpText() = s(Str.help_header) + "\n" + localCommands().joinToString("\n") { "${it.first} — ${it.second}" } + "\n\n" + s(Str.help_footer)
     fun commandList(): List<Pair<String, String>> {
         val names = (localCommands() + serverCommands).map { it.first }.toSet()
         return localCommands() + serverCommands + skills.filter { "/" + it.name !in names }.map { "/" + it.name to it.description }
@@ -656,7 +664,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val r = mutate(op, payload)
             if (r.optString("status") == "confirmation_required" || r.optBoolean("confirm_required")) {
                 val token = r.optString("confirm")
-                modelConfirm = r.optString("confirm_message").ifBlank { s(R.string.confirm_model) } to
+                modelConfirm = r.optString("confirm_message").ifBlank { s(Str.confirm_model) } to
                     JSONObject(payload.toString()).put("confirm", token)
             } else (r.optString("note").ifBlank { r.optString("warning") }).ifBlank { null }?.let { c.messages.add(UiMsg("system", it)) }
             syncFromPc(g, c, sid)
@@ -665,7 +673,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (c.ctxMax > 0 && c.ctxUsed > c.ctxMax) compressAsk = c
             }
         } catch (e: CancellationException) { throw e
-        } catch (e: Exception) { error = s(R.string.switch_failed) + ": " + (e.message ?: e.javaClass.simpleName)
+        } catch (e: Exception) { error = s(Str.switch_failed) + ": " + (e.message ?: e.javaClass.simpleName)
             runCatching { syncFromPc(gatewayFor(c.profile), c, c.liveId ?: return@runCatching) }
         } finally { switching = false }
     }
@@ -706,7 +714,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var liveKeys by mutableStateOf<Map<String, Set<String>>>(emptyMap())
 
     private val deviceId: String by lazy { android.provider.Settings.Secure.getString(getApplication<Application>().contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone" }
-    private val relay = RelayClient({ store.relayBase() }, { store.apiKey }, { s(R.string.err_set_key) })
+    private val relay = RelayClient({ store.relayBase() }, { store.apiKey }, { s(Str.err_set_key) })
     private fun relayJson(method: String, path: String, body: String?): String? = relay.json(method, path, body)
     /** Tell the PC relay which chats this phone has open as tabs (re-sent on every change and every minute), so other devices can mark them active. */
     private val tabReporter = viewModelScope.launch {
@@ -751,7 +759,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // shows everything under Home first and re-sorts into projects a moment later.
             val (ss, pj) = kotlinx.coroutines.coroutineScope {
                 val a = async { api().sessions() }
-                val b = async { runCatching { fetchProjects(gateway()) }.onFailure { android.util.Log.w("HermesRpc", "loadProjects: $it") }.getOrNull() }
+                val b = async { runCatching { fetchProjects(gateway()) }.onFailure { platform.log("HermesRpc", "loadProjects: $it") }.getOrNull() }
                 a.await() to b.await()
             }
             if (prof != profile) return@launch
@@ -779,18 +787,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var probes by mutableStateOf<List<Probe>>(emptyList())
     var probing by mutableStateOf(false)
     private fun pathLabel(url: String): String {
-        val h = runCatching { java.net.URI(url).host }.getOrNull() ?: return s(R.string.path_other)
+        val h = runCatching { java.net.URI(url).host }.getOrNull() ?: return s(Str.path_other)
         val p = h.split('.').mapNotNull { it.toIntOrNull() }
         return when {
             p.size == 4 && p[0] == 100 && p[1] in 64..127 -> "Tailscale"
             h.endsWith(".ts.net") -> "Tailscale"
-            p.size == 4 && (p[0] == 10 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && p[1] in 16..31)) -> s(R.string.path_lan)
-            else -> s(R.string.path_other)
+            p.size == 4 && (p[0] == 10 || (p[0] == 192 && p[1] == 168) || (p[0] == 172 && p[1] in 16..31)) -> s(Str.path_lan)
+            else -> s(Str.path_other)
         }
     }
     /** Probes every known path in parallel (main, LAN, gateway found on our subnet) and shows address, reachability, latency and the one in use. */
     fun testConnections(relay: String, lan: String) = viewModelScope.launch {
-        val key = store.apiKey ?: run { status = s(R.string.err_set_key); return@launch }
+        val key = store.apiKey ?: run { status = s(Str.err_set_key); return@launch }
         probing = true; probes = emptyList()
         try {
             val gwUrl = localNet()?.second?.let { "http://$it:8643" }
@@ -798,9 +806,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val active = store.activeRelay
             probes = coroutineScope {
                 urls.map { u -> async(Dispatchers.IO) {
-                    val t0 = android.os.SystemClock.elapsedRealtime()
+                    val t0 = platform.elapsedMs()
                     val r = runCatching { withTimeout(5000) { ApiClient(u, profile, key).health() } }
-                    Probe(pathLabel(u), u, r.isSuccess, android.os.SystemClock.elapsedRealtime() - t0, r.isSuccess && u == (active ?: relay.trim().trimEnd('/')),
+                    Probe(pathLabel(u), u, r.isSuccess, platform.elapsedMs() - t0, r.isSuccess && u == (active ?: relay.trim().trimEnd('/')),
                         r.exceptionOrNull()?.let { if (it is kotlinx.coroutines.TimeoutCancellationException) "timeout" else it.message.orEmpty() }.orEmpty())
                 } }.awaitAll()
             }
@@ -851,7 +859,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 a.await() to b.await()
             }
             otherData = otherData + (p to Triple(ss, pj.first, pj.second)); saveSnap(p, ss, pj.first, pj.second)
-        }.onFailure { android.util.Log.w("HermesRpc", "loadOther $p: $it") }
+        }.onFailure { platform.log("HermesRpc", "loadOther $p: $it") }
     }
 
     /** Make [p] the current profile without leaving the session page; its cached lists show at once. */
@@ -901,21 +909,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Re-home a stored session into a project by switching its working folder (what the desktop does). */
     fun moveToProject(s: Session, p: Project) = viewModelScope.launch {
         val cwd = p.path ?: p.homeCwd ?: pcHome
-        if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
+        if (cwd == null) { error = s(Str.move_no_folder); return@launch }
         try {
-            if (!moveOne(s, cwd)) { error = s(R.string.move_busy); return@launch }
-            status = s(R.string.moved_to, p.name); refreshSessions()
+            if (!moveOne(s, cwd)) { error = s(Str.move_busy); return@launch }
+            status = s(Str.moved_to, p.name); refreshSessions()
         } catch (e: Exception) { fail(e) }
     }
 
     /** Move several sessions of the current profile into [p] (busy ones are skipped). */
     fun moveManyToProject(list: List<Session>, p: Project) = viewModelScope.launch {
         val cwd = p.path ?: p.homeCwd ?: pcHome
-        if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
+        if (cwd == null) { error = s(Str.move_no_folder); return@launch }
         try {
             var skipped = 0
             for (x in list) if (!moveOne(x, cwd)) skipped++
-            if (skipped > 0) error = s(R.string.move_busy) else status = s(R.string.moved_to, p.name)
+            if (skipped > 0) error = s(Str.move_busy) else status = s(Str.moved_to, p.name)
             refreshSessions()
         } catch (e: Exception) { fail(e); refreshSessions() }
     }
@@ -962,7 +970,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.IO) { relayCall("GET", "/elevate/pending") }?.let { org.json.JSONArray(it) }
             }.getOrNull()
             elevate = if (list == null) emptyList() else List(list.length()) { list.getJSONObject(it) }
-            kotlinx.coroutines.delay(if (Notify.visible) 3000L else 20_000L)     // background: poll rarely
+            kotlinx.coroutines.delay(if (platform.visible) 3000L else 20_000L)     // background: poll rarely
         }
     }
 
@@ -1017,7 +1025,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val t = gatewayFor(prof).call("projects.tree", JSONObject().put("preview_limit", 0).put("session_limit", 1000))
                     val n = t.optJSONArray("projects") ?: JSONArray()
                     (0 until n.length()).mapNotNull { n.optJSONObject(it) }.flatMap { p ->
-                        val label = if (p.optBoolean("isNoProject")) s(R.string.home) else p.optString("label")
+                        val label = if (p.optBoolean("isNoProject")) s(Str.home) else p.optString("label")
                         val ids = p.optJSONArray("sessionIds") ?: JSONArray()
                         (0 until ids.length()).map { ids.optString(it) to label }
                     }.toMap()
@@ -1053,7 +1061,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         vdBusy = true
         try {
             val o = withContext(Dispatchers.IO) {
-                val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+                val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
                 val url = store.relayBase().trimEnd('/') + "/vdisplay/" + op
                 okhttp3.OkHttpClient.Builder().readTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
                     .newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key")
@@ -1088,7 +1096,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         ctxBusy = true; ctxError = null
         try {
             val o = withContext(Dispatchers.IO) {
-                val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+                val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
                 val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/context").header("Authorization", "Bearer $key")
                 if (values != null) b.post(values.toString().toRequestBody("application/json".toMediaType()))
                 relayHttp.newCall(b.build()).execute().use { r ->
@@ -1110,7 +1118,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         modelBusy = true; modelError = null
         try {
             val o = withContext(Dispatchers.IO) {
-                val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+                val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
                 val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/models").header("Authorization", "Bearer $key")
                 if (models != null) b.post(models.toString().toRequestBody("application/json".toMediaType()))
                 relayHttp.newCall(b.build()).execute().use { r ->
@@ -1172,7 +1180,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val ok = pick(runCatching { g.call("session.stats", JSONObject().put("session_id", id)) }.getOrNull())
                 if (!ok && idx < 30) {
                     val rr = runCatching { g.call("session.resume", JSONObject().put("session_id", id).put("omit_messages", true)) }
-                        .onFailure { android.util.Log.w("HermesRpc", "ctx $id: $it") }.getOrNull()
+                        .onFailure { platform.log("HermesRpc", "ctx $id: $it") }.getOrNull()
                     pick(rr)
                     // The probe made this session live on the PC; close it again (unless someone really has it open), or it would show as active.
                     val lid = rr?.optString("session_id")?.ifBlank { null }
@@ -1203,7 +1211,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun addPcStat(s: PcStat) { pcStats = (pcStats + s).takeLast(300) }
 
     private suspend fun fsCall(op: String, path: String, keep: List<String> = emptyList()): JSONObject = withContext(Dispatchers.IO) {
-        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
         val url = store.relayBase().trimEnd('/') + "/fs/" + op
         val body = JSONObject().put("path", path).put("keep", JSONArray(keep)).toString().toRequestBody("application/json".toMediaType())
         okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key").post(body).build()).execute().use { r ->
@@ -1215,11 +1223,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Relay file-system call (list / mkdir / rename / delete) with an arbitrary JSON body. */
     suspend fun fsJson(op: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
-        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
         val rb = body.toString().toRequestBody("application/json".toMediaType())
         okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/fs/" + op).header("Authorization", "Bearer $key").post(rb).build()).execute().use { r ->
             val o = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
-            if (!r.isSuccessful) throw ApiException(if (r.code == 404 && o.optString("error").lowercase().let { it.isBlank() || it == "not found" }) s(R.string.pf_old_relay) else o.optString("error").ifBlank { "HTTP ${r.code}" })
+            if (!r.isSuccessful) throw ApiException(if (r.code == 404 && o.optString("error").lowercase().let { it.isBlank() || it == "not found" }) s(Str.pf_old_relay) else o.optString("error").ifBlank { "HTTP ${r.code}" })
             o
         }
     }
@@ -1229,7 +1237,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** PC file -> the phone's Downloads folder. */
     suspend fun fsDownload(pcPath: String, name: String): Uri = withContext(Dispatchers.IO) {
-        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
         val ctx = getApplication<Application>()
         val http = okhttp3.OkHttpClient.Builder().readTimeout(0, java.util.concurrent.TimeUnit.SECONDS).build()
         val url = store.relayBase().trimEnd('/') + "/fs/download?path=" + java.net.URLEncoder.encode(pcPath, "UTF-8")
@@ -1255,7 +1263,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Phone file -> a PC folder (throws ApiException("exists") when the name is taken and [overwrite] is false). */
     suspend fun fsUpload(uri: Uri, folder: String, overwrite: Boolean) = withContext(Dispatchers.IO) {
-        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
         val cr = getApplication<Application>().contentResolver
         var name = "file"
         cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) ?: name }
@@ -1268,7 +1276,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         http.newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key").post(body).build()).execute().use { r ->
             if (!r.isSuccessful) {
                 val msg = runCatching { JSONObject(r.body!!.string()).optString("error") }.getOrNull().orEmpty()
-                throw ApiException(msg.ifBlank { if (r.code == 404) s(R.string.pf_old_relay) else "HTTP ${r.code}" })
+                throw ApiException(msg.ifBlank { if (r.code == 404) s(Str.pf_old_relay) else "HTTP ${r.code}" })
             }
         }
     }
@@ -1292,7 +1300,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             gateway().call("projects.add_folder", JSONObject().put("id", p.id).put("path", f).put("is_primary", true))
             val old = p.path
             if (old != null && old != f) runCatching { gateway().call("projects.remove_folder", JSONObject().put("id", p.id).put("path", old)) }
-            status = s(R.string.pf_folder_changed, p.name); refreshSessions()
+            status = s(Str.pf_folder_changed, p.name); refreshSessions()
         } catch (e: Exception) { fail(e) }
     }
 
@@ -1303,7 +1311,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             else {
                 val st = runCatching { fsCall("stat", f) }.getOrNull()   // older relay without /fs: skip the check
                 if (st != null && !st.optBoolean("exists")) { missingFolder = name to f; return@launch }
-                if (st != null && !st.optBoolean("dir")) throw ApiException(s(R.string.not_a_folder, f))
+                if (st != null && !st.optBoolean("dir")) throw ApiException(s(Str.not_a_folder, f))
             }
             gateway().call("projects.create", JSONObject().put("name", name.trim()).put("folders", JSONArray().put(f)).put("primary_path", f))
             refreshSessions()
@@ -1422,7 +1430,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         newChatCwd = null; newChatNone = false; attachments.clear(); activePage = null
     }
 
-    private fun apiFor(prof: String) = ApiClient(store.relayBase(), prof, store.apiKey ?: throw ApiException(s(R.string.err_set_key)))
+    private fun apiFor(prof: String) = ApiClient(store.relayBase(), prof, store.apiKey ?: throw ApiException(s(Str.err_set_key)))
 
     private suspend fun loadMessages(id: String) { if (cur.id == id) loadMessagesInto(cur) }
 
@@ -1477,44 +1485,44 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val cmd = t.substringBefore(' ').drop(1).lowercase()
         val arg = t.substringAfter(' ', "").trim()
         when (cmd) {
-            "help" -> { note(helpText()); if (serverCommands.isNotEmpty()) note(s(R.string.note_hermes_cmds, serverCommands.joinToString(" ") { it.first })) }
+            "help" -> { note(helpText()); if (serverCommands.isNotEmpty()) note(s(Str.note_hermes_cmds, serverCommands.joinToString(" ") { it.first })) }
             "model" -> if (arg.isBlank()) modelMenuOpen = true else {
                 val opts = modelOptions?.choices.orEmpty()
                 val hit = if (arg == "default") "" else opts.firstOrNull { it.model.equals(arg, true) || it.key.equals(arg, true) }?.key
                     ?: opts.firstOrNull { it.model.contains(arg, true) }?.key
-                if (hit == null) note(s(R.string.note_no_model, arg)) else { chooseModel(hit); note(s(R.string.note_model, modelLabel())) }
+                if (hit == null) note(s(Str.note_no_model, arg)) else { chooseModel(hit); note(s(Str.note_model, modelLabel())) }
             }
             "think", "thinking", "effort" -> {
                 val e = if (arg == "default") "" else arg.lowercase()
-                if (e !in SecureStore.EFFORTS) note(s(R.string.note_levels, SecureStore.EFFORTS.drop(1).joinToString(", ")))
-                else { chooseEffort(e); note(s(R.string.note_thinking, e.ifBlank { s(R.string.default_) })) }
+                if (e !in SecureStore.EFFORTS) note(s(Str.note_levels, SecureStore.EFFORTS.drop(1).joinToString(", ")))
+                else { chooseEffort(e); note(s(Str.note_thinking, e.ifBlank { s(Str.default_) })) }
             }
             "stop" -> stop()
-            "profile" -> if (arg in profileNames()) setProfileTo(arg) else note(s(R.string.note_profiles, profileNames().joinToString(", ")))
+            "profile" -> if (arg in profileNames()) setProfileTo(arg) else note(s(Str.note_profiles, profileNames().joinToString(", ")))
             "sessions" -> { openPage("sessions") }
             "delete" -> {
                 val id = currentId
-                if (id == null) note(s(R.string.note_no_delete))
-                else if (arg != "confirm") note(s(R.string.note_delete_confirm))
+                if (id == null) note(s(Str.note_no_delete))
+                else if (arg != "confirm") note(s(Str.note_delete_confirm))
                 else viewModelScope.launch { try { api().delete(id); newChat(); openPage("sessions") } catch (e: Exception) { fail(e) } }
             }
             "new" -> { newChat(); if (arg.isNotBlank()) sendMessage(arg, emptyList()) }
-            "retry" -> { val l = lastSent; if (l == null) note(s(R.string.note_nothing_retry)) else {
+            "retry" -> { val l = lastSent; if (l == null) note(s(Str.note_nothing_retry)) else {
                 val cont = agentWorkedAfter(cur, cur.messages.indexOfLast { it.role == "user" })
-                sendMessage(if (cont) s(R.string.continue_msg) else l.first, if (cont) emptyList() else l.second) } }
+                sendMessage(if (cont) s(Str.continue_msg) else l.first, if (cont) emptyList() else l.second) } }
             // Like the desktop: these are session mutations, not slash.exec commands.
             "compress" -> compressChat(arg)
             "branch", "fork" -> branchWhole(arg)
-            else -> if (hotfix.serverSlash) serverSlash(t) else note(s(R.string.err_desktop_only, t))
+            else -> if (hotfix.serverSlash) serverSlash(t) else note(s(Str.err_desktop_only, t))
         }
     }
 
     /** /compress [focus]: summarise older context into a continuation session (Hermes moves this chat to it). */
     private fun compressChat(focus: String) {
-        if (currentId == null) { note(s(R.string.note_nothing_to_compress)); return }
-        if (streaming) { note(s(R.string.move_busy)); return }
+        if (currentId == null) { note(s(Str.note_nothing_to_compress)); return }
+        if (streaming) { note(s(Str.move_busy)); return }
         messages.add(UiMsg("user", "/compress" + if (focus.isNotBlank()) " $focus" else ""))
-        status = s(R.string.compressing)
+        status = s(Str.compressing)
         val prof0 = profile
         viewModelScope.launch {
             try {
@@ -1531,9 +1539,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (target != null && target != currentId) { currentId = target; liveId = null }
                     currentId?.let { loadMessages(it); runCatching { val g = gateway(); ensureLive(g) } }
                 }
-                note(if (noop) s(R.string.compress_noop) + if (detail.isNotBlank()) "\n$detail" else ""
-                    else s(R.string.compressed) + if (detail.isNotBlank()) "\n$detail" else "")
-                if (!noop) Notify.alert(getApplication<Application>(), s(R.string.n_compress_done), detail.ifBlank { s(R.string.compressed) }, profile = prof0, session = currentId, kind = "compress")
+                note(if (noop) s(Str.compress_noop) + if (detail.isNotBlank()) "\n$detail" else ""
+                    else s(Str.compressed) + if (detail.isNotBlank()) "\n$detail" else "")
+                if (!noop) Notify.alert(getApplication<Application>(), s(Str.n_compress_done), detail.ifBlank { s(Str.compressed) }, profile = prof0, session = currentId, kind = "compress")
                 refreshSessions()
             } catch (e: Exception) { status = null; fail(e) }
         }
@@ -1541,7 +1549,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** /branch [title]: copy the whole conversation into a new session and open it. */
     private fun branchWhole(title: String) {
-        if (currentId == null) { note(s(R.string.note_nothing_to_compress)); return }
+        if (currentId == null) { note(s(Str.note_nothing_to_compress)); return }
         viewModelScope.launch {
             try {
                 val r = mutate("branch", if (title.isNotBlank()) JSONObject().put("title", title) else JSONObject())
@@ -1567,7 +1575,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (t.startsWith("/title") || t.startsWith("/new")) refreshSessions()
         } catch (e: Exception) {
-            if (e.message == "unsupported_command") note(s(R.string.err_desktop_only, t)) else fail(e)
+            if (e.message == "unsupported_command") note(s(Str.err_desktop_only, t)) else fail(e)
         }
     }
 
@@ -1593,7 +1601,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val i = c.messages.indexOfFirst { it.uid == msg.uid }
                 if (i >= 0) c.messages[i] = c.messages[i].copy(failed = true)
                 if (c === cur) fail(e)
-                Notify.alert(getApplication<Application>(), s(R.string.n_send_failed), text.take(120))
+                Notify.alert(getApplication<Application>(), s(Str.n_send_failed), text.take(120))
             }
         }
     }
@@ -1605,7 +1613,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun resendFailed(m: UiMsg) {
         val cont = agentWorkedAfter(cur, cur.messages.indexOfFirst { it.uid == m.uid })
         cur.messages.removeAll { it.uid == m.uid }
-        sendMessage(if (cont) s(R.string.continue_msg) else m.resend ?: m.text, emptyList())
+        sendMessage(if (cont) s(Str.continue_msg) else m.resend ?: m.text, emptyList())
     }
     fun deleteFailed(m: UiMsg) { cur.messages.removeAll { it.uid == m.uid } }
     fun editFailed(m: UiMsg, newText: String) { cur.messages.removeAll { it.uid == m.uid }; if (newText.isNotBlank()) sendMessage(newText, emptyList()) }
@@ -1645,8 +1653,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val c = if (sid.isEmpty()) (if (cur.profile == prof) cur else return)
             else chats.find { it.profile == prof && (it.liveId == sid || it.id == sid) } ?: return
         val app = getApplication<Application>()
-        val away = !Notify.visible || c !== cur          // not looking at this chat
-        val name = c.title ?: s(R.string.chat)
+        val away = !platform.visible || c !== cur          // not looking at this chat
+        val name = c.title ?: s(Str.chat)
         if (type == "tool.complete" || type == "message.complete") kickProcPoll(c)   // a command may have started a background process
         when (type) {
             "session.usage" -> (p.optJSONObject("usage") ?: p).let { u -> applyUsage(c, u) }
@@ -1656,19 +1664,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (type == "session.info") adoptServerModel(c, p)
             }
             "message.start" -> { c.streaming = true; c.status = null
-                c.turnStartAt = android.os.SystemClock.elapsedRealtime(); c.firstTokenAt = 0L
-                Notify.clear(app, c.id, "reply")       // a new turn (from the phone or the PC): the last reply was seen
+                c.turnStartAt = platform.elapsedMs(); c.firstTokenAt = 0L
+                platform.clearAlerts(c.id, "reply")       // a new turn (from the phone or the PC): the last reply was seen
                 if (c.messages.lastOrNull()?.role != "assistant") c.messages.add(UiMsg("assistant", "")) }
             "message.delta" -> { c.status = null; val t = p.str("text")
-                if (c.firstTokenAt == 0L && t.isNotEmpty()) c.firstTokenAt = android.os.SystemClock.elapsedRealtime()
+                if (c.firstTokenAt == 0L && t.isNotEmpty()) c.firstTokenAt = platform.elapsedMs()
                 updateLast(c) { m ->
                     val closed = m.steps.map { s -> if (s.kind == "thinking" && s.output == null) s.copy(output = "") else s }
                     val steps = if (t.isEmpty()) closed
                         else if (closed.lastOrNull()?.kind == "text") closed.dropLast(1) + closed.last().copy(detail = closed.last().detail + t)
                         else closed + Step("text", "", t)
                     m.copy(text = m.text + t, steps = steps) } }
-            "thinking.delta", "reasoning.delta" -> { c.status = s(R.string.thinking_status)
-                if (c.firstTokenAt == 0L && p.str("text").isNotEmpty()) c.firstTokenAt = android.os.SystemClock.elapsedRealtime()
+            "thinking.delta", "reasoning.delta" -> { c.status = s(Str.thinking_status)
+                if (c.firstTokenAt == 0L && p.str("text").isNotEmpty()) c.firstTokenAt = platform.elapsedMs()
                 val t = p.str("text"); if (t.isNotEmpty()) updateLast(c) { m ->
                     val last = m.steps.lastOrNull()
                     m.copy(steps = if (last?.kind == "thinking" && last.output == null) m.steps.dropLast(1) + last.copy(detail = last.detail + t) else m.steps + Step("thinking", "", t)) } }
@@ -1693,7 +1701,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     applyUsage(c, u)?.let { (i, o) ->
                         if (i0 != null && o0 != null && (i != i0 || o != o0)) {
                             val di = if (i >= i0) i - i0 else i; val dO = if (o >= o0) o - o0 else o
-                            val end = android.os.SystemClock.elapsedRealtime()
+                            val end = platform.elapsedMs()
                             val ttft = if (c.firstTokenAt > 0 && c.turnStartAt > 0) (c.firstTokenAt - c.turnStartAt) / 1000f else 0f
                             val gen = if (c.firstTokenAt > 0) (end - c.firstTokenAt) / 1000f else 0f
                             val pre = if (ttft >= 0.05f && di > 0) di / ttft else null
@@ -1702,7 +1710,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)) } }
                         }
                         c.totIn = i; c.totOut = o } }
-                if (away && text.isNotBlank()) Notify.alert(app, s(R.string.n_reply_done, name), text, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
+                if (away && text.isNotBlank()) Notify.alert(app, s(Str.n_reply_done, name), text, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
                 if (c !== cur || screen != Screen.Chat) c.unread = true
                 viewModelScope.launch { refreshIds(c) }
@@ -1714,24 +1722,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: listOf("once", "deny")
                 c.approval = Approval(p.optString("prompt_id"), p.optString("command"), p.optString("description"), ch,
                     p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(R.string.n_approval) + " · " + name, p.optString("command"), force = c !== cur, profile = c.profile, session = c.id, kind = "approval")
+                if (away) Notify.alert(app, s(Str.n_approval) + " · " + name, p.optString("command"), force = c !== cur, profile = c.profile, session = c.id, kind = "approval")
             }
             "clarify.request" -> {
                 val ch = p.optJSONArray("choices")?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
                 c.clarify = Clarify(p.optString("prompt_id"), listOf(ClarifyQ("q", p.optString("question"), ch, p.optBoolean("multi_select") && ch.isNotEmpty())),
                     p.optInt("execution_generation", c.generation))
-                if (away) Notify.alert(app, s(R.string.n_clarify) + " · " + name, p.optString("question"), force = c !== cur, profile = c.profile, session = c.id, kind = "clarify")
+                if (away) Notify.alert(app, s(Str.n_clarify) + " · " + name, p.optString("question"), force = c !== cur, profile = c.profile, session = c.id, kind = "clarify")
             }
             // Answered here or on the PC: the question's notification is stale either way.
-            "approval.settled" -> { if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null; Notify.clear(app, c.id, "approval") }
-            "clarify.settled" -> { if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null; Notify.clear(app, c.id, "clarify") }
+            "approval.settled" -> { if (c.approval?.reqId == p.optString("prompt_id")) c.approval = null; platform.clearAlerts(c.id, "approval") }
+            "clarify.settled" -> { if (c.clarify?.reqId == p.optString("prompt_id")) c.clarify = null; platform.clearAlerts(c.id, "clarify") }
             "subagent.spawn_requested", "subagent.start", "subagent.thinking", "subagent.text", "subagent.tool",
             "subagent.progress", "subagent.complete", "background.complete" -> taskEvent(c, type, p)
             "session.title" -> p.optString("title").ifBlank { null }?.let { c.title = it }
             "error" -> { val msg = p.optString("message").ifBlank { "Hermes error" }
                 c.streaming = false; c.status = null; dropEmpty(c); c.messages.add(UiMsg("system", "⚠ $msg"))
                 if (c === cur) error = msg
-                if (away) Notify.alert(app, s(R.string.n_error) + " · " + name, msg, force = c !== cur, profile = c.profile, session = c.id) }
+                if (away) Notify.alert(app, s(Str.n_error) + " · " + name, msg, force = c !== cur, profile = c.profile, session = c.id) }
         }
     }
 
@@ -1750,7 +1758,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         val ro = taskChats.getOrPut(System.identityHashCode(c).toString() + key) {
             Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true
-                it.title = s(if (bg) R.string.task_background else R.string.task_subagent) } }
+                it.title = s(if (bg) Str.task_background else Str.task_subagent) } }
         val goal = p.str("goal").ifBlank { p.str("preview") }
         var status = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.status ?: "running"
         var started = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.startedAt ?: now
@@ -1793,7 +1801,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun kickProcPoll(c: Chat = cur) {
         if (c.readOnly || c.liveId == null || !store.hasKey || procJobs[c]?.isActive == true) return
         procJobs[c] = viewModelScope.launch {
-            while (Notify.visible && c === cur) {
+            while (platform.visible && c === cur) {
                 val sid = c.liveId ?: break
                 if (!runCatching { pollProcs(c, sid) }.getOrDefault(false) && !c.streaming) break   // keep looking while a turn runs: the process may not exist yet
                 delay(3000)
@@ -1900,13 +1908,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun answerApproval(choice: String) {
-        val c = cur; val a = c.approval ?: return; c.approval = null; Notify.clear(getApplication(), c.id, "approval")
+        val c = cur; val a = c.approval ?: return; c.approval = null; platform.clearAlerts(c.id, "approval")
         if (a.gen == null) { gw?.respond(a.reqId, JSONObject().put("choice", choice)); return }
         viewModelScope.launch { runCatching { gatewayFor(c.profile).call("approval.respond", JSONObject().put("session_id", c.liveId)
             .put("execution_generation", a.gen).put("prompt_id", a.reqId).put("choice", choice)) }.onFailure { fail(it) } }
     }
     fun answerClarify(answers: Map<String, String>?) {
-        val chat = cur; val c = chat.clarify ?: return; chat.clarify = null; Notify.clear(getApplication(), chat.id, "clarify")
+        val chat = cur; val c = chat.clarify ?: return; chat.clarify = null; platform.clearAlerts(chat.id, "clarify")
         if (c.gen != null) {
             viewModelScope.launch { runCatching { gatewayFor(chat.profile).call("clarify.respond", JSONObject().put("session_id", chat.liveId)
                 .put("execution_generation", c.gen).put("prompt_id", c.reqId).put("answer", answers?.values?.firstOrNull().orEmpty())) }
@@ -1936,13 +1944,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val res = r.getOrThrow()
                 if (res.optString("status") == "rejected") throw ApiException("steer_rejected")
-                c.status = s(R.string.steered)
+                c.status = s(Str.steered)
             } catch (e: Exception) {
                 // Steer refused (generation moved on / turn ending): drop the optimistic bubbles and send it as a normal message,
                 // or queue it behind the running turn, instead of leaving a dead message and an error.
                 val i = c.messages.indexOfLast { it.role == "user" && it.text == t && it.id == null }
                 if (i >= 0) { c.messages.removeAt(i); if (c.messages.getOrNull(i)?.let { it.role == "assistant" && it.text.isEmpty() && it.steps.isEmpty() } == true) c.messages.removeAt(i) }
-                if (!c.streaming) sendMessage(t, emptyList(), c) else { c.queue.add(t); c.status = s(R.string.steered) }
+                if (!c.streaming) sendMessage(t, emptyList(), c) else { c.queue.add(t); c.status = s(Str.steered) }
             }
         }
     }
@@ -1961,7 +1969,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     g.call("session.interrupt", JSONObject().put("session_id", sid).put("execution_generation", generation))
                 }.onFailure { fail(it) }
             } else r.onFailure { fail(it) }
-            c.status = s(R.string.stopping)
+            c.status = s(Str.stopping)
         }
     }
 
@@ -1971,7 +1979,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var uploadsActive = 0
 
     fun addAttachments(uris: List<Uri>) = viewModelScope.launch {
-        if (!hotfix.attachments) { error = s(R.string.attachments_disabled); return@launch }
+        if (!hotfix.attachments) { error = s(Str.attachments_disabled); return@launch }
         for (u in uris) {
             try { attachments.add(readAttachment(u)) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message ?: e.toString() }
         }
@@ -1998,12 +2006,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         uploadToPc(uri, name, size)
     }
 
-    private fun setUploadStatus(name: String, pct: Int) { uploadStatus = s(R.string.uploading_large, name, pct) }
+    private fun setUploadStatus(name: String, pct: Int) { uploadStatus = s(Str.uploading_large, name, pct) }
 
     /** Chunked, parallel (4 connections x 4 MB) upload through the relay: /upload/init, PUT /upload/<id>?offset=N, /upload/<id>/done. */
     private suspend fun uploadToPc(uri: Uri, name: String, size0: Long): Attachment = withContext(Dispatchers.IO) {
         val app = getApplication<Application>()
-        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
         val base = store.relayBase().trimEnd('/')
         val http = okhttp3.OkHttpClient.Builder().readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build()
@@ -2022,7 +2030,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val ch = java.io.FileInputStream(pfd!!.fileDescriptor).channel
             val json = "application/json".toMediaType()
             fun call(rb: okhttp3.Request.Builder): String = http.newCall(rb.header("Authorization", "Bearer $key").build()).execute().use { r ->
-                if (r.code == 404) throw ApiException(s(R.string.upload_relay_old))
+                if (r.code == 404) throw ApiException(s(Str.upload_relay_old))
                 if (!r.isSuccessful) throw ApiException("upload: HTTP ${r.code} ${r.body?.string().orEmpty().take(200)}")
                 r.body?.string().orEmpty() }
             val init = JSONObject(call(okhttp3.Request.Builder().url("$base/upload/init").post(JSONObject().put("name", name).put("size", size).toString().toRequestBody(json))))
@@ -2064,7 +2072,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 pickRelay(); api().health(); api().sessions()
-                gateway(); status = s(R.string.connected_relay)
+                gateway(); status = s(Str.connected_relay)
                 error = null; offline = false; openPage("sessions"); loadMeta()
             } catch (e: Exception) { fail(e) }
         }
