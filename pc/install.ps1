@@ -21,7 +21,7 @@
        "none" = skip; Out-GridView when available). With -Profiles / -AllProfiles, or when there is no console
        (hidden / redirected), every profile gets both skills. The choice is not remembered. "default" = the root profile.
        If the profile sync daemon is installed (profile-sync\sync_engine.py), nothing is asked: SKILL.md goes to the default
-       profile only (the shared layer all profiles read), copies that would shadow it are moved to profile-syncackups.
+       profile only (the shared layer all profiles read), copies that would shadow it are moved to profile-sync\backups.
     6. Pairs the phone: over USB/adb if a phone is connected (installs the app and pairs it, no typing), otherwise
        opens a page with two QR codes (download the app, then pair). Also copies the key to the clipboard.
   The key is never printed.
@@ -341,7 +341,7 @@ if (-not $PairOnly) {
                 if ($d -eq $HH) { continue }
                 $loc = Join-Path $d "skills\software-development\$sk"
                 if (Test-Path $loc) {
-                    $bk = Join-Path $HH ("profile-syncackups\skill-installer\$stamp\" + (Profile-Name $d))
+                    $bk = Join-Path $HH ("profile-sync\backups\skill-installer\$stamp\" + (Profile-Name $d))
                     New-Item -ItemType Directory -Force $bk | Out-Null
                     Move-Item $loc $bk -Force
                     Ok "moved the shadowing copy of '$sk' out of profile $(Profile-Name $d) (backup: $bk)"
