@@ -590,7 +590,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (prof == profile && cur.streaming) why?.let { error = it; offline = true }
                 scheduleReconnect(prof)
-            } })
+            } }, logger = { tag, msg -> android.util.Log.w(tag, msg) })
         withContext(Dispatchers.IO) { g.connect() }
         gws[prof] = g
         if (prof == profile && serverCommands.isEmpty()) viewModelScope.launch { loadCatalog() }

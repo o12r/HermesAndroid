@@ -5,3 +5,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "HermesAndroid"
 include(":app")
+include(":shared")   // pure Kotlin/JVM protocol layer (no AGP)

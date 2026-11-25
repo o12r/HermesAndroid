@@ -22,6 +22,7 @@ class GatewayWs(
     private val onEvent: (type: String, sessionId: String, payload: JSONObject) -> Unit,
     private val onServerRequest: (id: String, method: String, params: JSONObject) -> Unit,
     private val onClosed: (String?) -> Unit,
+    private val logger: Logger = Logger.default,
 ) {
     private val url: String = run {
         val u = URI(relayUrl.trim().trimEnd('/'))
@@ -87,7 +88,7 @@ class GatewayWs(
         val f = withTimeout(timeoutMs) { d.await() }
         f.optJSONObject("error")?.let { e ->
             val reason = e.optJSONObject("data")?.optString("reason")?.ifBlank { null } ?: e.optString("message")
-            android.util.Log.w("HermesRpc", "$method failed: $reason (code ${e.optInt("code")})")  // no params/content logged
+            logger.w("HermesRpc", "$method failed: $reason (code ${e.optInt("code")})")  // no params/content logged
             throw ApiException(reason)
         }
         return f.optJSONObject("result") ?: JSONObject()
