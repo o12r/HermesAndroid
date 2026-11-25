@@ -536,6 +536,48 @@ async def tabs_list(req: web.Request):
     return web.json_response([{"device": d, "profile": t.get("profile"), "id": t["id"]} for d, (_, tabs) in _TABS.items() for t in tabs])
 
 
+STATS = HERMES_HOME / "launchers" / "reply-stats.json"   # {session: {replyKey: [tokIn, tokOut, prefillTps, genTps]}} shared by every device
+_STATS_LOCK = threading.Lock()
+
+
+def _stats_load() -> dict:
+    try:
+        return json.loads(STATS.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+async def stats_get(req: web.Request):
+    """GET /stats?session=<id>: the per-reply token/speed stats any device recorded for that session."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    with _STATS_LOCK:
+        return web.json_response(_stats_load().get(req.query.get("session", ""), {}))
+
+
+async def stats_put(req: web.Request):
+    """POST /stats {session, stats:{replyKey:[4 numbers|null]}}: merge a device's measured stats (existing keys are kept)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await req.json()
+        sid = str(body["session"]); new = body["stats"]
+        assert sid and isinstance(new, dict) and len(new) <= 500
+        assert all(isinstance(v, list) and len(v) == 4 for v in new.values())
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+    with _STATS_LOCK:
+        allst = _stats_load(); cur = allst.setdefault(sid, {})
+        for k, v in new.items():
+            cur.setdefault(k, v)
+        while len(cur) > 300:
+            cur.pop(next(iter(cur)))
+        while len(allst) > 500:
+            allst.pop(next(iter(allst)))
+        tmp = STATS.with_suffix(".tmp"); tmp.write_text(json.dumps(allst), encoding="utf-8"); os.replace(tmp, STATS)
+    return web.json_response({"ok": True})
+
+
 async def elevate_pending(req: web.Request):
     """GET /elevate/pending: elevation requests the agent made, waiting for the phone's decision."""
     if not _authed(req):

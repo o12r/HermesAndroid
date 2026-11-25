@@ -62,6 +62,15 @@ class SecureStore(ctx: Context) {
         o.put(text.hashCode().toString(), org.json.JSONArray(v.map { it ?: org.json.JSONObject.NULL }))
         prefs.edit().putString("mstat_$sid", o.toString()).apply()
     }
+    /** Every reply stat this device holds for [sid], as the relay's JSON ({key: [4 numbers|null]}). */
+    fun replyStatsJson(sid: String): org.json.JSONObject = runCatching { org.json.JSONObject(prefs.getString("mstat_$sid", "{}")!!) }.getOrDefault(org.json.JSONObject())
+    /** Adds stats other devices recorded (keeps this device's own on a clash). */
+    fun mergeReplyStats(sid: String, other: org.json.JSONObject) {
+        val o = replyStatsJson(sid); var changed = false
+        other.keys().forEach { k -> if (!o.has(k)) { o.put(k, other.get(k)); changed = true } }
+        while (o.length() > 300) o.remove(o.keys().next())
+        if (changed) prefs.edit().putString("mstat_$sid", o.toString()).apply()
+    }
     /** User-chosen profile order (names); profiles not listed follow alphabetically. */
     var profileOrder: List<String>
         get() = prefs.getString("profileOrder", "")!!.lines().filter { it.isNotBlank() }

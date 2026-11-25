@@ -962,6 +962,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Elevation requests from the PC agent (phone-approved, no UAC prompt on the PC). */
     var elevate by mutableStateOf<List<JSONObject>>(emptyList())
 
+    /** Share this device's reply stats with the PC relay (best effort; an older relay just 404s). */
+    private fun pushReplyStats(sid: String) = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching { relayJson("POST", "/stats", JSONObject().put("session", sid).put("stats", store.replyStatsJson(sid)).toString()) }
+    }
+    /** Pull stats other devices measured and push ours the relay lacks. Blocking: call from IO. */
+    private fun syncReplyStats(sid: String) {
+        runCatching {
+            val remote = JSONObject(relayJson("GET", "/stats?session=" + java.net.URLEncoder.encode(sid, "UTF-8"), null) ?: return)
+            val mine = store.replyStatsJson(sid)
+            store.mergeReplyStats(sid, remote)
+            if (mine.keys().asSequence().any { !remote.has(it) }) relayJson("POST", "/stats", JSONObject().put("session", sid).put("stats", mine).toString())
+        }
+    }
     private fun relayCall(method: String, path: String): String? = relay.call(method, path)
 
     suspend fun pollElevate() {
@@ -1453,6 +1466,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadMessagesInto(c: Chat) {
         val id = c.id ?: return
         try {
+            syncReplyStats(id)
             val m = apiFor(c.profile).messages(id)
             m.filter { it.role == "assistant" }.forEach { sendMedia(c, it.content, id) }
             val failed = c.messages.filter { it.failed }
@@ -1707,7 +1721,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             val pre = if (ttft > 0f && di > 0) di / ttft else null
                             val gt = if (gen >= 0.2f && dO > 0) dO / gen else null
                             updateLast(c) { it.copy(tokIn = di, tokOut = dO, prefillTps = pre, genTps = gt) }
-                            c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)) } }
+                            c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)).also { pushReplyStats(sid) } } }
                         }
                         c.totIn = i; c.totOut = o } }
                 if (away && text.isNotBlank()) Notify.alert(app, s(Str.n_reply_done, name), text, force = c !== cur, profile = c.profile, session = c.id, kind = "reply")
