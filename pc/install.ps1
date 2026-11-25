@@ -20,6 +20,8 @@
        this setup. For each skill you pick the profiles (all pre-selected: Enter = all, "1,3" or names = those,
        "none" = skip; Out-GridView when available). With -Profiles / -AllProfiles, or when there is no console
        (hidden / redirected), every profile gets both skills. The choice is not remembered. "default" = the root profile.
+       If the profile sync daemon is installed (profile-sync\sync_engine.py), nothing is asked: SKILL.md goes to the default
+       profile only (the shared layer all profiles read), copies that would shadow it are moved to profile-syncackups.
     6. Pairs the phone: over USB/adb if a phone is connected (installs the app and pairs it, no typing), otherwise
        opens a page with two QR codes (download the app, then pair). Also copies the key to the clipboard.
   The key is never printed.
@@ -230,7 +232,11 @@ if ($Uninstall) {
     Remove-Item (Join-Path $Launch "sudovda") -Recurse -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $Launch "app-updates\hermes-android") -Recurse -ErrorAction SilentlyContinue
     Remove-Item $PyLib -Recurse -ErrorAction SilentlyContinue
-    foreach ($d in Profile-Dirs) { foreach ($sk in "hermes-android", "hermes-agent-screen") { Remove-Item (Join-Path $d "skills\software-development\$sk") -Recurse -ErrorAction SilentlyContinue } }
+    foreach ($d in Profile-Dirs) { foreach ($sk in "hermes-android", "hermes-agent-screen") {
+        $sd = Join-Path $d "skills\software-development\$sk"
+        # With the profile sync daemon the default copy is the shared layer: delete only SKILL.md and keep references\ (extra notes live there).
+        if (($d -eq $HH) -and (Test-Path (Join-Path $sd "references"))) { Remove-Item (Join-Path $sd "SKILL.md") -ErrorAction SilentlyContinue }
+        else { Remove-Item $sd -Recurse -ErrorAction SilentlyContinue } } }
     Ok "files and skill removed (API_SERVER_KEY in .env files kept; delete those lines yourself if unwanted)"
     exit 0
 }
@@ -320,8 +326,32 @@ if (-not $PairOnly) {
     # ------------------------------------------------------------ 5. skill for the local Hermes
     Step "Hermes skill"
     $allDirs = @(Profile-Dirs)
-    $noAsk = $AllProfiles -or ($Profiles.Count -gt 0) -or [Console]::IsInputRedirected -or -not [Environment]::UserInteractive
     $skills = @("hermes-android", "hermes-agent-screen")
+    $syncOn = Test-Path (Join-Path $HH "profile-sync\sync_engine.py")
+    if ($syncOn) {
+        # Profile sync daemon present: the default profile's skills\ folder is the shared layer every profile reads (skills.external_dirs).
+        # Install SKILL.md there only (references\ stays); a copy inside another profile would shadow the shared one and freeze it.
+        Ok "profile sync detected: skills go to the shared layer (default) only"
+        $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+        foreach ($sk in $skills) {
+            $dst = Join-Path $HH "skills\software-development\$sk"
+            New-Item -ItemType Directory -Force $dst | Out-Null
+            Copy-Item (Join-Path $Here "skill\$sk\SKILL.md") $dst -Force
+            foreach ($d in $allDirs) {
+                if ($d -eq $HH) { continue }
+                $loc = Join-Path $d "skills\software-development\$sk"
+                if (Test-Path $loc) {
+                    $bk = Join-Path $HH ("profile-syncackups\skill-installer\$stamp\" + (Profile-Name $d))
+                    New-Item -ItemType Directory -Force $bk | Out-Null
+                    Move-Item $loc $bk -Force
+                    Ok "moved the shadowing copy of '$sk' out of profile $(Profile-Name $d) (backup: $bk)"
+                }
+            }
+            Ok "skill '$sk' installed in the shared layer"
+        }
+        Warn "to hide a skill from some profile, add its name to that profile's skills.disabled (the installer does not edit config)"
+    } else {
+    $noAsk = $AllProfiles -or ($Profiles.Count -gt 0) -or [Console]::IsInputRedirected -or -not [Environment]::UserInteractive
     $picked = $null
     if (-not $noAsk -and -not $env:HERMES_INSTALL_NO_GUI) { $picked = Show-SkillPicker $skills $allDirs }
     foreach ($sk in $skills) {
@@ -332,6 +362,7 @@ if (-not $PairOnly) {
             Copy-Item (Join-Path $Here "skill\$sk\SKILL.md") $dst -Force
         }
         Ok "skill '$sk' installed in $($chosen.Count) of $($allDirs.Count) profile(s)"
+    }
     }
 
     # ------------------------------------------- tray app (admin: owns relay + gateway + Tailscale + vdisplay host)
