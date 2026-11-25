@@ -1704,7 +1704,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             val end = platform.elapsedMs()
                             val ttft = if (c.firstTokenAt > 0 && c.turnStartAt > 0) (c.firstTokenAt - c.turnStartAt) / 1000f else 0f
                             val gen = if (c.firstTokenAt > 0) (end - c.firstTokenAt) / 1000f else 0f
-                            val pre = if (ttft >= 0.05f && di > 0) di / ttft else null
+                            val pre = if (ttft > 0f && di > 0) di / ttft else null
                             val gt = if (gen >= 0.2f && dO > 0) dO / gen else null
                             updateLast(c) { it.copy(tokIn = di, tokOut = dO, prefillTps = pre, genTps = gt) }
                             c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { store.setReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)) } }
