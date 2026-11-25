@@ -5,6 +5,9 @@ description: Use when the Hermes Android app or phone relay misbehaves. Diagnose
 
 # Hermes Android app + phone relay
 
+> **Do not edit this skill.** It is shipped with HermesAndroid and is overwritten on every update (install.ps1 / tray "Check for updates"). Keep machine-specific facts (IP addresses, device serials, paths, profile names) in the profile's memory or AGENTS.md instead.
+
+
 The phone app (`dev.oscar.hermes`, source: https://github.com/o12r/HermesAndroid) talks to this PC through a small
 **phone relay**. The relay forwards to the Hermes gateway's desktop protocol, so phone chats are real Hermes
 sessions: the same ones the desktop app shows, with streaming, slash commands, approvals and clarify questions.
@@ -60,6 +63,29 @@ phone app ──HTTP/WS :8643 (Bearer API_SERVER_KEY)──> hermes-phone-relay.
 - Release: `python scripts/release.py --notes "..." [--github]` bumps `version.properties`, builds, and publishes to the PC update folder (and GitHub). Phones update from Settings → Check for updates.
 - Hotfix without a release: edit `hotfix.json` (banner text, `min_version_code`, feature flags), then `python scripts/release.py --hotfix`.
 - Updates must be signed with the same key as the installed app: the debug keystore of the PC that built it.
+
+## Tray menu actions from the command line
+
+Every tray menu item has a shell equivalent (PowerShell; `$L = "$env:LOCALAPPDATA\hermes\launchers"`, `$HH = "$env:LOCALAPPDATA\hermes"`).
+Run long ones in the background with a timeout. Restarting the tray, relay or gateway can drop the agent's own session: tell the user first, and for the gateway run the command from a separate shell, not from inside the gateway process.
+
+| Tray item | Command |
+|---|---|
+| Relay / gateway / Tailscale status | `curl http://127.0.0.1:8643/health`; `& "$HH\bin\hermes.exe" gateway status`; `tailscale status` |
+| Restart relay | kill the `python(w).exe` whose command line contains `hermes-phone-relay.py`; the tray restarts it within ~10 s (or start it yourself: `Start-Process "$HH\hermes-agent\venv\Scripts\pythonw.exe" -ArgumentList '-I',"$L\hermes-phone-relay.py" -WorkingDirectory $L -WindowStyle Hidden`) |
+| Restart gateway | `& "$HH\bin\hermes.exe" gateway restart`, from a separate shell outside the gateway (the tray itself does `gateway stop --all -y` then `gateway ensure`) |
+| Open log | `Get-Content "$L\phone-relay.log" -Tail 50` |
+| Show pairing QR code | `powershell -NoProfile -ExecutionPolicy Bypass -File "$L\install.ps1" -PairOnly -NoAdb` |
+| Check for updates | `powershell -NoProfile -ExecutionPolicy Bypass -File "$L\update-pc.ps1" -Check` only compares versions; without `-Check` it downloads and overwrites the launchers files. Result in `$L\update-result.txt` (`uptodate`, `available`, `updated` or `fail` plus tag/reason). It never restarts anything: tell the user to restart tray and relay |
+| Agent virtual screen on/off, screen on/off | `python -I "$L\hermes-vdisplay.py" on`, `off`, `screen off`, `screen on` (see the `hermes-agent-screen` skill) |
+| Start with Windows | `Enable-ScheduledTask HermesAndroidTray` / `Disable-ScheduledTask HermesAndroidTray` |
+| Auto start Tailscale / Mobile hotspot | set `"autoTailscale"` / `"autoHotspot"` to `true` or `false` in `$HH\tray-settings.json`; the running tray reads it only at start, so restart the tray for it to apply |
+| Start the hotspot now | `powershell -NoProfile -ExecutionPolicy Bypass -File "$L\hotspot.ps1" -Start` (Windows PowerShell 5.1, not pwsh); `-Query` prints the state |
+| Reconnect Tailscale | `powershell -NoProfile -ExecutionPolicy Bypass -File "$L\tailscale-connect.ps1"`; result in `$L\tailscale-connect.result` |
+| Restart tray | `Stop-ScheduledTask HermesAndroidTray; Start-ScheduledTask HermesAndroidTray` (the task runs it elevated) |
+| Exit tray | `Stop-ScheduledTask HermesAndroidTray` |
+
+Nothing in the menu is GUI-only. The balloon notifications have no CLI output: read the result files above instead.
 
 ## Agent virtual screen
 

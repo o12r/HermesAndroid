@@ -355,6 +355,7 @@ fun SessionsScreen(vm: ChatViewModel) {
     var moving by remember { mutableStateOf<Session?>(null) }
     var creating by remember { mutableStateOf(false) }
     var deletingProject by remember { mutableStateOf<Project?>(null) }
+    var changingFolder by remember { mutableStateOf<Project?>(null) }
     var showArchived by remember { mutableStateOf(false) }
     var reordering by remember { mutableStateOf(false) }
     var selMode by remember { mutableStateOf(false) }
@@ -475,6 +476,8 @@ fun SessionsScreen(vm: ChatViewModel) {
                                     leadingIcon = { Icon(Icons.Default.Star, null) }, onClick = { menu = false; vm.enterProfile(prof); vm.setActiveProject(if (active) null else p) })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(if (p.archived) R.string.unarchive else R.string.archive)) },
                                     leadingIcon = { Icon(Icons.Default.Archive, null) }, onClick = { menu = false; vm.enterProfile(prof); vm.archiveProject(p, restore = p.archived) })
+                                if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(R.string.pf_change_folder)) },
+                                    leadingIcon = { Icon(Icons.Default.FolderOpen, null) }, onClick = { menu = false; vm.enterProfile(prof); changingFolder = p })
                                 if (!p.isHome && !p.isAuto) DropdownMenuItem(text = { Text(stringResource(R.string.delete_project)) },
                                     leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menu = false; vm.enterProfile(prof); deletingProject = p })
                             } }
@@ -529,9 +532,10 @@ fun SessionsScreen(vm: ChatViewModel) {
     if (deletingMany) AlertDialog(onDismissRequest = { deletingMany = false }, title = { Text(stringResource(R.string.delete_n_sessions_q, picked.size)) },
         confirmButton = { TextButton(onClick = { vm.deleteMany(picked); deletingMany = false; selMode = false; sel = emptySet() }) { Text(stringResource(R.string.delete)) } },
         dismissButton = { TextButton(onClick = { deletingMany = false }) { Text(stringResource(R.string.cancel)) } })
+    if (movingMany || moving != null) LaunchedEffect(Unit) { vm.loadPcHome() }
     if (movingMany) AlertDialog(onDismissRequest = { movingMany = false }, title = { Text(stringResource(R.string.move_to_project)) },
         text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-            vm.projects.filter { !it.archived }.forEach { p ->
+            vm.moveTargets().forEach { p ->
                 val can = p.path != null || p.homeCwd != null
                 ListItem(headlineContent = { Text(if (p.isHome) stringResource(R.string.home) else p.name) },
                     supportingContent = { Text(p.path ?: p.homeCwd ?: stringResource(R.string.move_no_folder), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -540,10 +544,10 @@ fun SessionsScreen(vm: ChatViewModel) {
         } },
         confirmButton = {}, dismissButton = { TextButton(onClick = { movingMany = false }) { Text(stringResource(R.string.cancel)) } })
     moving?.let { s ->
-        val current = vm.projects.find { s.id in it.sessionIds }
+        val current = vm.projects.find { s.id in it.sessionIds }?.let { c -> vm.moveTargets().find { it.id == c.id || (it.isHome && c.isHome) } ?: c }
         AlertDialog(onDismissRequest = { moving = null }, title = { Text(stringResource(R.string.move_to_project)) },
             text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                vm.projects.filter { !it.archived }.forEach { p ->
+                vm.moveTargets().forEach { p ->
                     val can = p.path != null || p.homeCwd != null
                     ListItem(headlineContent = { Text(if (p.isHome) stringResource(R.string.home) else p.name) },
                         supportingContent = { Text(p.path ?: p.homeCwd ?: stringResource(R.string.move_no_folder), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -555,11 +559,14 @@ fun SessionsScreen(vm: ChatViewModel) {
     }
     if (creating) {
         var name by remember { mutableStateOf("") }
-        var folder by remember { mutableStateOf("C:\\Users\\oscar\\Projects\\") }
-        AlertDialog(onDismissRequest = { creating = false }, title = { Text(stringResource(R.string.new_project)) },
+        var folder by remember { mutableStateOf("") }
+        var browseNew by remember { mutableStateOf(true) }   // the folder picker opens straight away when a project is created
+        if (browseNew) PcFileBrowser(vm, pick = true, start = folder.ifBlank { vm.pcHome }, onPick = { folder = it; if (name.isBlank()) name = it.trimEnd('\\').substringAfterLast('\\'); browseNew = false }, onClose = { browseNew = false })
+        if (!browseNew) AlertDialog(onDismissRequest = { creating = false }, title = { Text(stringResource(R.string.new_project)) },
             text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.project_name)) }, singleLine = true)
                 OutlinedTextField(folder, { folder = it }, label = { Text(stringResource(R.string.project_folder)) }, singleLine = true,
+                    trailingIcon = { IconButton(onClick = { browseNew = true }) { Icon(Icons.Default.FolderOpen, stringResource(R.string.pf_browse)) } },
                     supportingText = { Text(stringResource(R.string.project_folder_help)) })
             } },
             confirmButton = { TextButton(onClick = { vm.createProject(name, folder); creating = false }, enabled = name.isNotBlank() && folder.isNotBlank()) {
@@ -572,18 +579,24 @@ fun SessionsScreen(vm: ChatViewModel) {
             confirmButton = { Button(onClick = { vm.missingFolder = null; vm.createProject(name, path, mkdir = true) }) { Text(stringResource(R.string.create_folder)) } },
             dismissButton = { TextButton(onClick = { vm.missingFolder = null }) { Text(stringResource(R.string.cancel)) } })
     }
+    changingFolder?.let { p -> PcFileBrowser(vm, pick = true, start = p.path, onPick = { vm.changeProjectFolder(p, it); changingFolder = null }, onClose = { changingFolder = null }) }
     deletingProject?.let { p ->
         var withFolder by remember(p.id) { mutableStateOf(false) }
+        var withSessions by remember(p.id) { mutableStateOf(false) }
         AlertDialog(onDismissRequest = { deletingProject = null }, title = { Text(stringResource(R.string.delete_project_q, p.name)) },
             text = { Column {
                 Text(stringResource(R.string.delete_project_note))
+                if (p.sessionIds.isNotEmpty()) Row(Modifier.fillMaxWidth().clickable { withSessions = !withSessions }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(withSessions, { withSessions = it })
+                    Text(stringResource(R.string.delete_project_sessions, p.sessionIds.size), color = if (withSessions) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified)
+                }
                 if (p.path != null) Row(Modifier.fillMaxWidth().clickable { withFolder = !withFolder }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(withFolder, { withFolder = it })
                     Column { Text(stringResource(R.string.delete_project_folder), color = if (withFolder) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified)
                         Text(p.path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             } },
-            confirmButton = { TextButton(onClick = { vm.deleteProject(p, withFolder); deletingProject = null }) { Text(stringResource(R.string.delete)) } },
+            confirmButton = { TextButton(onClick = { vm.deleteProject(p, withFolder, withSessions); deletingProject = null }) { Text(stringResource(R.string.delete)) } },
             dismissButton = { TextButton(onClick = { deletingProject = null }) { Text(stringResource(R.string.cancel)) } })
     }
     renaming?.let { s ->
@@ -1236,8 +1249,8 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Text(stringResource(R.string.clock_format))
             ChoiceRow(listOf("system" to stringResource(R.string.clock_system), "12" to stringResource(R.string.clock_12), "24" to stringResource(R.string.clock_24)), vm.clock) { vm.chooseClock(it) }
             Text(stringResource(R.string.power_mode))
-            ChoiceRow(listOf("balanced" to stringResource(R.string.power_balanced), "saver" to stringResource(R.string.power_saver)), vm.powerMode) { vm.choosePower(it) }
-            Text(stringResource(if (vm.powerMode == "saver") R.string.power_saver_hint else R.string.power_balanced_hint), style = MaterialTheme.typography.bodySmall)
+            ChoiceRow(listOf("system" to stringResource(R.string.power_system), "balanced" to stringResource(R.string.power_balanced), "saver" to stringResource(R.string.power_saver)), vm.powerMode) { vm.choosePower(it) }
+            Text(stringResource(when (vm.powerMode) { "saver" -> R.string.power_saver_hint; "system" -> R.string.power_system_hint; else -> R.string.power_balanced_hint }), style = MaterialTheme.typography.bodySmall)
             Text(stringResource(R.string.app_icon))
             ChoiceRow(listOf("dark" to stringResource(R.string.icon_dark), "light" to stringResource(R.string.icon_light)), vm.appIcon) { vm.chooseIcon(it) }
             var previewPct by remember { mutableStateOf((vm.fontScale * 100).toInt()) }
@@ -1305,6 +1318,8 @@ fun screenLabel(sc: PcScreen): String {
 @Composable
 fun ScreensScreen(vm: ChatViewModel) {
     var open by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showFiles by remember { mutableStateOf(false) }
+    if (showFiles) PcFileBrowser(vm, pick = false, start = null, onPick = {}, onClose = { showFiles = false })
     fun toggle(sc: PcScreen) { open = if (sc.name in open) open - sc.name else open + sc.name }
     LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
@@ -1339,6 +1354,8 @@ fun ScreensScreen(vm: ChatViewModel) {
         if (vm.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 HorizontalDivider()
             } }
+            item { ListItem(leadingContent = { Icon(Icons.Default.Folder, null) }, headlineContent = { Text(stringResource(R.string.pf_title)) },
+                supportingContent = { Text(stringResource(R.string.pf_hint)) }, modifier = Modifier.clickable { showFiles = true }) }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             items(pc, key = { "pc:" + it.name }) { sc -> Column { ScreenRow(screenLabel(sc), sc, sc.on, screenActions(vm, sc)) { toggle(sc) }
                 if (sc.name in open) ScreenInline(vm, sc) { open = open - sc.name } } }

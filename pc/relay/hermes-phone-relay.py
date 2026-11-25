@@ -10,6 +10,7 @@ Run with the Hermes venv python. Never logs keys or tickets.
 import asyncio, ctypes, hmac, json, logging, os, re, subprocess, sys, tempfile, threading, time
 from ctypes import wintypes
 from pathlib import Path
+from urllib.parse import quote
 from aiohttp import web, ClientSession, WSMsgType
 
 HERMES_HOME = Path(os.environ.get("LOCALAPPDATA", "")) / "hermes"
@@ -194,10 +195,36 @@ async def fs_op(req: web.Request):
         keep = [str(k) for k in (body.get("keep") or []) if k]
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
+    op = req.match_info["op"]
+    if op == "list" and not raw:
+        return web.json_response(await _io(_fs_roots))
     p = Path(os.path.expandvars(os.path.expanduser(raw)))
     if not raw or not p.is_absolute():
         return web.json_response({"error": "path must be absolute"}, status=400)
-    op = req.match_info["op"]
+    if op == "list":
+        try:
+            return web.json_response(await _io(_fs_list, p))
+        except OSError as e:
+            return web.json_response({"error": f"{e.strerror or e}"}, status=400)
+    if op == "rename":
+        new = str(body.get("new", "")).strip()
+        if not new or any(c in new for c in '\\/:*?"<>|') or new in (".", ".."):
+            return web.json_response({"error": "invalid name"}, status=400)
+        try:
+            await _io(lambda: p.rename(p.with_name(new)))
+        except OSError as e:
+            return web.json_response({"error": f"rename failed: {e.strerror or e}"}, status=400)
+        log.info("phone renamed %s -> %s", p, new)
+        return web.json_response({"ok": True})
+    if op == "delete":
+        try:
+            err = await _io(_fs_delete, p, keep)
+        except OSError as e:
+            return web.json_response({"error": f"delete failed: {e.strerror or e}"}, status=400)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        log.info("phone deleted %s", p)
+        return web.json_response({"ok": True})
     if op == "stat":
         ex, isdir = await _io(lambda: (p.exists(), p.is_dir()))
         return web.json_response({"exists": ex, "dir": isdir})
@@ -242,6 +269,105 @@ async def fs_op(req: web.Request):
         log.info("phone deleted folder %s", p)
         return web.json_response({"exists": False, "dir": False})
     return web.json_response({"error": "not found"}, status=404)
+
+
+def _fs_roots() -> dict:
+    home = str(Path.home())
+    drives = []
+    try:
+        import string
+        drives = [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
+    except Exception:
+        pass
+    return {"path": "", "parent": None, "home": home,
+            "items": [{"name": d, "dir": True, "size": 0, "mtime": 0, "path": d} for d in drives]}
+
+
+def _fs_list(p: Path) -> dict:
+    if not p.is_dir():
+        raise NotADirectoryError(20, "not a folder")
+    items = []
+    with os.scandir(p) as it:
+        for e in it:
+            try:
+                st = e.stat()
+                items.append({"name": e.name, "dir": e.is_dir(), "size": 0 if e.is_dir() else st.st_size,
+                              "mtime": int(st.st_mtime)})
+            except OSError:
+                items.append({"name": e.name, "dir": False, "size": 0, "mtime": 0})
+            if len(items) >= 5000:
+                break
+    items.sort(key=lambda x: (not x["dir"], x["name"].lower()))
+    parent = "" if p.parent == p else str(p.parent)
+    return {"path": str(p), "parent": parent, "home": str(Path.home()), "items": items}
+
+
+def _fs_delete(p: Path, keep: list):
+    """Delete a file or folder. Refuses drive roots, the user's home, Hermes' own data, system folders and anything
+    that contains one of `keep` (other projects' folders)."""
+    import shutil
+    def _key(x: Path) -> str:
+        return os.path.normcase(os.path.abspath(str(x))).rstrip("\\/")
+    if not p.exists() and not p.is_symlink():
+        return "not found"
+    k = _key(p)
+    if p.parent == p or len(Path(k).parts) < 3:
+        return "refusing to delete a drive root or top-level folder"
+    for guard in (Path.home(), HERMES_HOME, Path(os.environ.get("SystemRoot", "C:\\Windows")),
+                  Path(os.environ.get("ProgramFiles", "C:\\Program Files"))):
+        g = _key(guard)
+        if k == g or g.startswith(k + os.sep):
+            return "refusing to delete a protected folder"
+    for o in keep:
+        ok = _key(Path(o))
+        if ok == k or ok.startswith(k + os.sep):
+            return "folder contains another project's folder"
+    if p.is_dir() and not p.is_symlink():
+        shutil.rmtree(p)
+    else:
+        p.unlink()
+    return None
+
+
+def _fs_auth(req: web.Request) -> bool:
+    auth = req.headers.get("Authorization", "")
+    return auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip(), KEY)
+
+
+async def fs_download(req: web.Request):
+    """GET /fs/download?path=C:\\file: streams a PC file to the phone (ranges supported)."""
+    if not _fs_auth(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    p = Path(os.path.expandvars(os.path.expanduser(req.query.get("path", ""))))
+    if not p.is_absolute() or not await _io(p.is_file):
+        return web.json_response({"error": "not a file"}, status=404)
+    return web.FileResponse(p, headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(p.name)})
+
+
+async def fs_upload(req: web.Request):
+    """POST /fs/upload?path=<folder>&name=<file name>[&overwrite=1]: raw body is written into that PC folder."""
+    if not _fs_auth(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    d = Path(os.path.expandvars(os.path.expanduser(req.query.get("path", ""))))
+    name = req.query.get("name", "").strip()
+    if not d.is_absolute() or not await _io(d.is_dir):
+        return web.json_response({"error": "not a folder"}, status=400)
+    if not name or any(c in name for c in '\\/:*?"<>|') or name in (".", ".."):
+        return web.json_response({"error": "invalid name"}, status=400)
+    dest = d / name
+    if dest.exists() and req.query.get("overwrite") != "1":
+        return web.json_response({"error": "exists"}, status=409)
+    tmp = d / (name + ".hermes-part")
+    try:
+        with open(tmp, "wb") as f:
+            async for chunk in req.content.iter_chunked(1 << 20):
+                await _io(f.write, chunk)
+        await _io(lambda: os.replace(tmp, dest))
+    except OSError as e:
+        await _io(lambda: tmp.unlink(missing_ok=True))
+        return web.json_response({"error": f"upload failed: {e.strerror or e}"}, status=400)
+    log.info("phone uploaded %s", dest)
+    return web.json_response({"ok": True})
 
 
 VDISPLAY = HERMES_HOME / "launchers" / "hermes-vdisplay.py"   # open-source virtual display CLI (pc/vdisplay)
@@ -1268,6 +1394,8 @@ def main():
     app.router.add_get("/ws", ws_handler)
     app.router.add_route("*", "/api/{tail:.*}", http_proxy)
     app.router.add_get("/app/{app}/{what}", app_files)
+    app.router.add_get("/fs/download", fs_download)
+    app.router.add_post("/fs/upload", fs_upload)
     app.router.add_post("/fs/{op}", fs_op)
     app.router.add_post("/vdisplay/shot", vdisplay_shot)
     app.router.add_post("/vdisplay/{op}", vdisplay_op)
@@ -1301,6 +1429,8 @@ def main():
             app.router.add_get("/ws", ws_handler)
             app.router.add_route("*", "/api/{tail:.*}", http_proxy)
             app.router.add_get("/app/{app}/{what}", app_files)
+            app.router.add_get("/fs/download", fs_download)
+            app.router.add_post("/fs/upload", fs_upload)
             app.router.add_post("/fs/{op}", fs_op)
             app.router.add_post("/vdisplay/shot", vdisplay_shot)
             app.router.add_post("/vdisplay/{op}", vdisplay_op)

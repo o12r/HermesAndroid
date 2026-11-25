@@ -15,6 +15,12 @@ topology. "screen off" and "agent screen" are fully independent: toggling one ne
   screens                        JSON: every screen (phone screen manager)
   screen off | screen on [disp]  physical screens go dark; one stand-in per physical screen takes its windows; real
                                  keyboard/mouse input turns them back on. Legacy: mode extend|second-only
+  screen dim | screen undim      [UNSTABLE / experimental] light alternative to `screen off`: only the monitors' power is cut (SC_MONITORPOWER),
+                                 nothing is detached and no window moves, no driver/daemon needed. ANY input, including
+                                 the agent's real-input fallbacks (`click`/`type`), wakes it (measured: injected input
+                                 wakes it and a low-level hook cannot stop that). Use bg-click/bg-type/bg-key with it.
+                                 Needs Modern Standby off (`powercfg /a` lists no "S0 Low Power Idle"), else the
+                                 network can drop while dark. Not sleep: the PC keeps running.
   recover                        after a daemon crash: bring the physical screens back, re-create the agent screens
   daemon-stop                    screen on, close every agent screen, stop the daemon
   windows                        visible top-level windows: hwnd, pid, display, title
@@ -1978,6 +1984,20 @@ def _final(res=None):
     return 0
 
 
+def _monitor_power(dim):
+    """`screen dim`: cut the monitors' power only (no topology change, no daemon). `screen undim`: power them back on."""
+    if dim:
+        time.sleep(1)   # lets the key release / click that started the command pass without waking the screen at once
+    res = ctypes.c_size_t()
+    u32.SendMessageTimeoutW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM, W.UINT, W.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    ok = u32.SendMessageTimeoutW(0xFFFF, 0x0112, 0xF170, 2 if dim else -1, 2, 2000, ctypes.byref(res))   # HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER
+    if not dim:
+        u32.mouse_event(0x0001, 1, 0, 0, 0); u32.mouse_event(0x0001, -1, 0, 0, 0)   # a nudge wakes a monitor that ignored the message
+    print(json.dumps({"ok": bool(ok), "monitors": "off" if dim else "on", "unstable": True}))
+    print("note: screen dim/undim is experimental: any input wakes the monitors; prefer `screen off`", file=sys.stderr)
+    return 0 if ok else 1
+
+
 def main(a):
     if not a or a[0] in ("-h", "--help", "help"):
         print(__doc__); return 0
@@ -1998,6 +2018,8 @@ def main(a):
         args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "install-vdd.ps1")]
         subprocess.run(args + (["-Uninstall"] if c == "uninstall" else []), timeout=900)
         print(json.dumps(status())); return 0
+    if c == "screen" and r[:1] in (["dim"], ["undim"]):
+        return _monitor_power(r[0] == "dim")
     if c == "status":
         print(json.dumps(status(), indent=1)); return 0
     if c == "screens":

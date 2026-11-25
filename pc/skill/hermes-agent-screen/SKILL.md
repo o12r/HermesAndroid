@@ -5,6 +5,9 @@ description: Use when GUI work should not take the user's screen. Agent virtual 
 
 # Agent virtual screen (work without taking the user's screen)
 
+> **Do not edit this skill.** It is shipped with HermesAndroid and is overwritten on every update (install.ps1 / tray "Check for updates"). Keep machine-specific facts (IP addresses, device serials, paths, profile names) in the profile's memory or AGENTS.md instead.
+
+
 An open-source virtual monitor driver (SudoVDA, MIT; never Parsec) gives the agent its own screen. CLI (JSON output):
 `python -I "%LOCALAPPDATA%\hermes\launchers\hermes-vdisplay.py" <cmd>`
 
@@ -21,6 +24,7 @@ thin client over a localhost socket. It writes `%LOCALAPPDATA%\hermes\vdisplay\s
 | `status` | installed / `agent` / `screen_off` / `agents` / geometry / daemon (`elevated`) |
 | `on` / `off` | this session's agent screen on (right of the other screens) / off. Screen-off state is not touched |
 | `screen off` / `screen on` | physical screens dark + user windows moved to stand-in user screens / restored. Works with the agent screen on or off; real input also turns it back on |
+| `screen dim` / `screen undim` | **UNSTABLE (experimental)**, prefer `screen off`. Light alternative: only cuts the monitors' power (nothing detached, no window moves, no daemon). **Any** input wakes it, including `click`/`type`; use `bg-*` while dim. Needs Modern Standby off (`powercfg /a` must not list "S0 Low Power Idle"), else the network can drop. Not sleep. |
 | `launch -- <cmd...>` | start an app on the agent screen (registered as an agent window), without focus |
 | `move <hwnd\|title> virtual\|main` | move a window; `virtual` registers it, `main` unregisters it and shows it to the user |
 | `windows` | list top-level windows with their display |

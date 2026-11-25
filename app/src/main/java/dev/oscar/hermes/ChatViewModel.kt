@@ -310,9 +310,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var clock by mutableStateOf(store.clock.also { Formats.clock = it; Formats.appCtx = app.applicationContext })
     fun chooseClock(v: String) { clock = v; store.clock = v; Formats.clock = v }
     fun chooseTheme(t: String) { theme = t; store.theme = t }
-    var powerMode by mutableStateOf(store.powerMode.also { GatewayWs.pingSec = if (it == "saver") 60L else 30L })
+    var powerMode by mutableStateOf(store.powerMode.also { GatewayWs.pingSec = if (KeepAliveService.isSaver(getApplication())) 60L else 30L })
     fun choosePower(m: String) {
-        powerMode = m; store.powerMode = m; GatewayWs.pingSec = if (m == "saver") 60L else 30L
+        powerMode = m; store.powerMode = m; GatewayWs.pingSec = if (KeepAliveService.isSaver(getApplication())) 60L else 30L
         KeepAliveService.start(getApplication())      // re-applies the wake lock policy
     }
 
@@ -986,7 +986,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Re-home a stored session into a project by switching its working folder (what the desktop does). */
     fun moveToProject(s: Session, p: Project) = viewModelScope.launch {
-        val cwd = p.path ?: p.homeCwd
+        val cwd = p.path ?: p.homeCwd ?: pcHome
         if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
         try {
             if (!moveOne(s, cwd)) { error = s(R.string.move_busy); return@launch }
@@ -996,7 +996,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Move several sessions of the current profile into [p] (busy ones are skipped). */
     fun moveManyToProject(list: List<Session>, p: Project) = viewModelScope.launch {
-        val cwd = p.path ?: p.homeCwd
+        val cwd = p.path ?: p.homeCwd ?: pcHome
         if (cwd == null) { error = s(R.string.move_no_folder); return@launch }
         try {
             var skipped = 0
@@ -1309,6 +1309,86 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Relay file-system call (list / mkdir / rename / delete) with an arbitrary JSON body. */
+    suspend fun fsJson(op: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val rb = body.toString().toRequestBody("application/json".toMediaType())
+        okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/fs/" + op).header("Authorization", "Bearer $key").post(rb).build()).execute().use { r ->
+            val o = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+            if (!r.isSuccessful) throw ApiException(o.optString("error").ifBlank { if (r.code == 404) s(R.string.pf_old_relay) else "HTTP ${r.code}" })
+            o
+        }
+    }
+
+    /** PC file -> the phone's Downloads folder. */
+    suspend fun fsDownload(pcPath: String, name: String): Uri = withContext(Dispatchers.IO) {
+        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val ctx = getApplication<Application>()
+        val http = okhttp3.OkHttpClient.Builder().readTimeout(0, java.util.concurrent.TimeUnit.SECONDS).build()
+        val url = store.relayBase().trimEnd('/') + "/fs/download?path=" + java.net.URLEncoder.encode(pcPath, "UTF-8")
+        val tmp = java.io.File(ctx.cacheDir, "pcfile-" + System.nanoTime()).also { it.parentFile?.mkdirs() }
+        try {
+            http.newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key").build()).execute().use { r ->
+                if (!r.isSuccessful) throw ApiException(runCatching { JSONObject(r.body!!.string()).optString("error") }.getOrNull().orEmpty().ifBlank { "HTTP ${r.code}" })
+                tmp.outputStream().use { o -> r.body!!.byteStream().copyTo(o) }
+            }
+            val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name); put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+                put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = ctx.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw ApiException("Couldn't create the file in Downloads")
+            try {
+                ctx.contentResolver.openOutputStream(uri)!!.use { o -> tmp.inputStream().use { it.copyTo(o) } }
+                ctx.contentResolver.update(uri, android.content.ContentValues().apply { put(android.provider.MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            } catch (e: Exception) { ctx.contentResolver.delete(uri, null, null); throw e }
+            uri
+        } finally { tmp.delete() }
+    }
+
+    /** Phone file -> a PC folder (throws ApiException("exists") when the name is taken and [overwrite] is false). */
+    suspend fun fsUpload(uri: Uri, folder: String, overwrite: Boolean) = withContext(Dispatchers.IO) {
+        val key = store.apiKey ?: throw ApiException(s(R.string.err_set_key))
+        val cr = getApplication<Application>().contentResolver
+        var name = "file"
+        cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) ?: name }
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = "application/octet-stream".toMediaType()
+            override fun writeTo(sink: okio.BufferedSink) { cr.openInputStream(uri)!!.use { ins -> val buf = ByteArray(65536); while (true) { val n = ins.read(buf); if (n < 0) break; sink.write(buf, 0, n) } } }
+        }
+        val url = store.relayBase().trimEnd('/') + "/fs/upload?path=" + java.net.URLEncoder.encode(folder, "UTF-8") + "&name=" + java.net.URLEncoder.encode(name, "UTF-8") + if (overwrite) "&overwrite=1" else ""
+        val http = okhttp3.OkHttpClient.Builder().readTimeout(0, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(0, java.util.concurrent.TimeUnit.SECONDS).build()
+        http.newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key").post(body).build()).execute().use { r ->
+            if (!r.isSuccessful) {
+                val msg = runCatching { JSONObject(r.body!!.string()).optString("error") }.getOrNull().orEmpty()
+                throw ApiException(msg.ifBlank { if (r.code == 404) s(R.string.pf_old_relay) else "HTTP ${r.code}" })
+            }
+        }
+    }
+
+    /** The PC user's home folder (target for "move to home"), learned from the relay. */
+    var pcHome by mutableStateOf<String?>(null)
+    fun loadPcHome() { if (pcHome != null) return; viewModelScope.launch { pcHome = runCatching { fsJson("list", JSONObject().put("path", "")).optString("home").ifBlank { null } }.getOrNull() } }
+
+    /** Move-to-project targets: always lists home (unfiled) first, even when the tree has no usable home node yet. */
+    fun moveTargets(): List<Project> {
+        val l = projects.filter { !it.archived }
+        val h = l.find { it.isHome }
+        val home = (h ?: Project("__home", "home", null, true, false, false, emptyList())).let { it.copy(homeCwd = it.homeCwd ?: pcHome) }
+        return listOf(home) + l.filter { !it.isHome }
+    }
+
+    /** Point a project at another folder: attach it as the primary path and detach the old one. */
+    fun changeProjectFolder(p: Project, folder: String) = viewModelScope.launch {
+        try {
+            val f = folder.trim()
+            gateway().call("projects.add_folder", JSONObject().put("id", p.id).put("path", f).put("is_primary", true))
+            val old = p.path
+            if (old != null && old != f) runCatching { gateway().call("projects.remove_folder", JSONObject().put("id", p.id).put("path", old)) }
+            status = s(R.string.pf_folder_changed, p.name); refreshSessions()
+        } catch (e: Exception) { fail(e) }
+    }
+
     fun createProject(name: String, folder: String, mkdir: Boolean = false) = viewModelScope.launch {
         try {
             val f = folder.trim()
@@ -1326,8 +1406,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try { gateway().call("projects.archive", JSONObject().put("id", p.id).put("restore", restore)); refreshSessions() } catch (e: Exception) { fail(e) }
     }
     /** Deletes the project grouping; with [deleteFolder] also its folder on the PC (via the relay, with guards). */
-    fun deleteProject(p: Project, deleteFolder: Boolean = false) = viewModelScope.launch {
+    fun deleteProject(p: Project, deleteFolder: Boolean = false, deleteSessions: Boolean = false) = viewModelScope.launch {
         try {
+            if (deleteSessions) {
+                val ids = p.sessionIds.toSet()
+                for (id in ids) runCatching { api().delete(id) }
+                chats.removeAll { it.profile == profile && it.id in ids }; tabs.removeAll { it.profile == profile && it.id in ids }
+                if (currentId in ids) newChat()
+            }
             if (deleteFolder && p.path != null) {
                 fsCall("rmdir", p.path, projects.filter { it.id != p.id && !it.isHome }.mapNotNull { it.path })
             }
@@ -2101,8 +2187,15 @@ object Internal {
     private val OOB = Regex("""\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*([\s\S]*?)\s*\[/OUT-OF-BAND USER MESSAGE\]""")
     /** Hermes' own file syntax: a line "MEDIA:<pc path>". The phone shows it as an Inbox file instead of raw text. */
     private val MEDIA = Regex("""(?m)^[ \t]*MEDIA:[ \t]*(.+?)[ \t]*$""")
-    fun mediaPaths(text: String): List<String> = MEDIA.findAll(text).map { it.groupValues[1].trim().trim('"', '\'', '`') }.filter { it.isNotBlank() }.distinct().toList()
-    fun stripMedia(text: String): String = if (text.contains("MEDIA:")) MEDIA.replace(text, "").replace(Regex("\n{3,}"), "\n\n").trim() else text
+    /** MEDIA: in the middle of a line (after text, in a list item, in backticks/quotes): the path is the quoted part or the next token. */
+    private val MEDIA_INLINE = Regex("""(?<![\w/\\])MEDIA:[ \t]*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|([^\s`"'<>|]+))""")
+    private fun inlinePath(m: MatchResult): String = (m.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: "").trim().trimEnd('.', ',', ';', ')', ']', '!', '?')
+    fun mediaPaths(text: String): List<String> {
+        val lines = MEDIA.findAll(text).map { it.groupValues[1].trim().trim('"', '\'', '`') }.toList()
+        val rest = MEDIA.replace(text, "")
+        return (lines + MEDIA_INLINE.findAll(rest).map { inlinePath(it) }.toList()).filter { it.isNotBlank() }.distinct()
+    }
+    fun stripMedia(text: String): String = if (text.contains("MEDIA:")) MEDIA_INLINE.replace(MEDIA.replace(text, ""), "").replace(Regex("[ \t]+\n"), "\n").replace(Regex("\n{3,}"), "\n\n").trim() else text
     fun clean(role: String, text: String): String? {
         if (role == "tool") return null
         if (role != "user") return stripMedia(text).takeUnless { it.trim() == "[SILENT]" || (it.isBlank() && text.isNotBlank()) }

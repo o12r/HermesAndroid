@@ -29,18 +29,34 @@ class KeepAliveService : Service() {
         else startForeground(1, n)
         // Screen locked: keep the CPU awake so the gateway socket (and its pings) stays up. No Wi-Fi high-perf lock (big drain).
         // Saver mode: no wake lock at all; the exempted app still gets network in Doze maintenance windows.
-        val saver = getSharedPreferences("hermes", Context.MODE_PRIVATE).getString("powerMode", "balanced") == "saver"
-        if (!saver && wake == null) wake = getSystemService(android.os.PowerManager::class.java)
-            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:keepalive").apply { setReferenceCounted(false); acquire() }
+        applyWake()
+        if (psReceiver == null) {   // "follow system" mode: re-evaluate when the system battery saver toggles
+            psReceiver = object : android.content.BroadcastReceiver() { override fun onReceive(c: Context?, i: Intent?) { applyWake() } }
+            registerReceiver(psReceiver, android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED))
+        }
         return START_NOT_STICKY
     }
 
+    private var psReceiver: android.content.BroadcastReceiver? = null
+    private fun applyWake() {
+        val saver = isSaver(this)
+        if (saver) { runCatching { wake?.release() }; wake = null }
+        else if (wake == null) wake = getSystemService(android.os.PowerManager::class.java)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "hermes:keepalive").apply { setReferenceCounted(false); acquire() }
+        GatewayWs.pingSec = if (saver) 60L else 30L
+    }
+
     private var wake: android.os.PowerManager.WakeLock? = null
-    override fun onDestroy() { runCatching { wake?.release() }; wake = null; super.onDestroy() }
+    override fun onDestroy() { runCatching { wake?.release() }; wake = null; psReceiver?.let { runCatching { unregisterReceiver(it) } }; psReceiver = null; super.onDestroy() }
 
     override fun onTaskRemoved(rootIntent: Intent?) { stopSelf() }
 
     companion object {
+        /** Saver mode, or "system" while Android's own battery saver is on. */
+        fun isSaver(ctx: Context): Boolean {
+            val m = ctx.getSharedPreferences("hermes", Context.MODE_PRIVATE).getString("powerMode", "balanced")
+            return m == "saver" || (m == "system" && ctx.getSystemService(android.os.PowerManager::class.java).isPowerSaveMode)
+        }
         fun start(ctx: Context) = runCatching { ctx.startForegroundService(Intent(ctx, KeepAliveService::class.java)) }
 
         /** Doze still cuts the network unless the app is exempt from battery optimisation: ask once. */

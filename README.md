@@ -28,7 +28,7 @@ phone ──Tailscale──> PC relay 100.92.121.115:8643 ──loopback──> 
 
 ## Build
 ```bash
-cd C:/Users/oscar/Projects/HermesAndroid
+cd C:/Users/oscar/Projects/hermes-client/HermesAndroid
 timeout 1200 ./gradlew assembleDebug --console=plain > build.log 2>&1
 ```
 - Toolchain: JDK `C:\Java\jdk21` (set in gradle.properties) and SDK `C:\Android\Sdk` (set in local.properties).
