@@ -35,88 +35,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
-enum class Screen { Sessions, Chat, Settings, Screens, Files }
-data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null,
-    /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
-    val steps: List<Step> = emptyList(),
-    /** Send failed: shows a red ! with resend / edit / delete. [resend] is the original text. */
-    val failed: Boolean = false, val resend: String? = null, val uid: String = UUID.randomUUID().toString(),
-    /** A file the phone saved from the Inbox (role "file"): content Uri, shown inline. */
-    val file: String? = null,
-    /** Session the file belongs to (file messages only). */
-    val session: String? = null,
-    /** Tokens this reply used (input/output), from the PC's session totals; null if unknown. */
-    val tokIn: Long? = null, val tokOut: Long? = null,
-    /** Speeds measured on the phone for this reply: prompt tokens / time-to-first-token, output tokens / generation time (tok/s). */
-    val prefillTps: Float? = null, val genTps: Float? = null,
-    /** Send time (epoch ms): stored timestamp for history, creation time for live messages; 0 = unknown. */
-    val ts: Long = System.currentTimeMillis(),
-    /** Sub-agent / background task card (role "task"). */
-    val task: TaskInfo? = null)
-/** Notice card for a sub-agent / background task: [chat] is its read-only transcript tab. */
-data class TaskInfo(val key: String, val kind: String, val status: String, val startedAt: Long, val endedAt: Long, val chat: Chat,
-    /** kind "proc" (terminal background process): parsed progress 0-100 (null = unknown) and its last output line. */
-    val percent: Double? = null, val last: String = "")
-data class Attachment(val name: String, val isImage: Boolean, val payload: String, val pcPath: String? = null)
-data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
-data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,
-    val archived: Boolean, val sessionIds: List<String>, val homeCwd: String? = null)
-/** A PC screen for the screen manager. kind: physical | screen-off | agent; role: main | secondary (index 1, 2, ...). */
-data class PcScreen(val name: String, val kind: String, val role: String, val index: Int, val on: Boolean,
-    val w: Int, val h: Int, val hz: Int, val session: String?, val profile: String?, val cwd: String?,
-    val title: String? = null, val project: String? = null)
-data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
-/** One PC resource sample from the relay's GET /pc/stats (percentages, gpu null when unavailable). */
-data class PcStat(val cpu: Double?, val mem: Double?, val gpu: Double?, val ts: Long, val gpus: List<Pair<String, Double>> = emptyList())
-data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
-
-/** State of one conversation. Kept per chat so several can run at once and events never land in the wrong one. */
-class Chat(val profile: String, id: String?, title: String?) {
-    /** Non-null for a page tab ("settings" / "pc"), not a conversation. */
-    var page: String? = null
-    var id by mutableStateOf(id)                 // stored session id (null until a new chat is created)
-    var title by mutableStateOf(title)
-    val messages = mutableStateListOf<UiMsg>()
-    // Reading position, restored when the chat is shown again; follow=true means pinned to the newest output.
-    var scrollIdx = 0
-    var scrollOff = 0
-    var follow = true
-    var streaming by mutableStateOf(false)
-    var status by mutableStateOf<String?>(null)
-    var approval by mutableStateOf<Approval?>(null)
-    var clarify by mutableStateOf<Clarify?>(null)
-    var liveId: String? = null                   // live id from session.resume/create on this profile's connection
-    var generation = 0
-    var revision = 0
-    var dropped = false                          // a turn was running when the connection dropped
-    var newCwd: String? = null
-    var projectId: String? = null               // project this chat was created/opened in (shown before its session exists)
-    var model by mutableStateOf("")              // per chat: "provider|model" or "" (server default)
-    /** What the PC session actually runs ("provider|model", effort); null until the server reports it. */
-    var serverModel: String? = null
-    var serverEffort: String? = null
-    /** Created on the phone and no prompt sent yet: the phone's model pick wins until the first turn. */
-    var createdHere = false
-    var effort by mutableStateOf("")
-    /** Context in use / context window of the PC session (0 = unknown). */
-    var ctxUsed by mutableStateOf(0L)
-    var ctxMax by mutableStateOf(0L)
-    /** Session token totals at the last reply, to work out what each reply used. */
-    var totIn: Long? = null
-    var turnStartAt = 0L
-    var firstTokenAt = 0L
-    var totOut: Long? = null
-    var loaded = false
-    /** Transcript of a sub-agent / background task: no input box, never sent to. */
-    var readOnly by mutableStateOf(false)
-    /** Unsent text in the input box; survives leaving and re-opening the chat. */
-    var draft by mutableStateOf("")
-    /** A reply finished while this chat wasn't on screen; shown as a red dot on its tab. */
-    var unread by mutableStateOf(false)
-    /** Messages waiting for the running turn to finish; sent one by one, in order. */
-    val queue = mutableStateListOf<String>()
-}
-
 /**
  * Everything goes through the PC relay: lists/history/rename/delete via the gateway's native HTTP API;
  * chat turns, streaming, approvals, models and real slash commands via the desktop protocol (so desktop-created sessions work too).
@@ -1418,7 +1336,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (currentId in ids) newChat()
             }
             if (deleteFolder && p.path != null) {
-                fsCall("rmdir", p.path, projects.filter { it.id != p.id && !it.isHome }.mapNotNull { it.path })
+                fsCall("rmdir", p.path!!, projects.filter { it.id != p.id && !it.isHome }.mapNotNull { it.path })
             }
             gateway().call("projects.delete", JSONObject().put("id", p.id)); refreshSessions()
         } catch (e: Exception) { fail(e); refreshSessions() }
@@ -1848,8 +1766,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true
                 it.title = s(if (bg) R.string.task_background else R.string.task_subagent) } }
         val goal = p.str("goal").ifBlank { p.str("preview") }
-        var status = c.messages.firstOrNull { it.task?.key == key && it.task.chat === ro }?.task?.status ?: "running"
-        var started = c.messages.firstOrNull { it.task?.key == key && it.task.chat === ro }?.task?.startedAt ?: now
+        var status = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.status ?: "running"
+        var started = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.startedAt ?: now
         var ended = 0L
         when (type) {
             "subagent.spawn_requested", "subagent.start" -> {
@@ -1926,7 +1844,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val cmd = row.str("command").replace('\n', ' ').trim()
         val ro = taskChats.getOrPut(System.identityHashCode(c).toString() + key) {
             Chat(c.profile, null, null).also { it.readOnly = true; it.loaded = true; it.title = cmd.take(40).ifBlank { pid } } }
-        val old = c.messages.firstOrNull { it.task?.key == key && it.task.chat === ro }?.task
+        val old = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task
         val running = row.str("status") == "running"
         val failed = !running && !row.isNull("exit_code") && row.optInt("exit_code", 0) != 0
         val status = if (running) "running" else if (failed) "failed" else "done"
@@ -2173,38 +2091,3 @@ val SLASH_COMMANDS = listOf(
     "/retry" to R.string.cmd_retry, "/stop" to R.string.cmd_stop, "/profile" to R.string.cmd_profile,
     "/sessions" to R.string.cmd_sessions, "/delete" to R.string.cmd_delete, "/help" to R.string.cmd_help,
 )
-
-/** optString that treats JSON null as empty (org.json returns the literal "null"). */
-private fun JSONObject.str(k: String): String = if (isNull(k)) "" else optString(k)
-
-/** optDouble that returns null for a missing / null / non-numeric field (optDouble yields NaN otherwise). */
-private fun JSONObject.optDoubleOrNull(k: String): Double? =
-    if (!has(k) || isNull(k)) null else optDouble(k).takeIf { it.isFinite() }
-
-
-/** Hermes stores gateway/system notices (background-process results, compaction notes, ...) as "user"
- *  rows. Hide those in the phone UI; unwrap real out-of-band user messages. */
-object Internal {
-    private val HIDE = listOf("[IMPORTANT: Background process", "[IMPORTANT: Background", "[INTERNAL NOTIFICATION",
-        "[System note:", "[CONTEXT COMPACTION", "[PRIOR CONTEXT", "[Context from the interrupted", "[SYSTEM:")
-    private val OOB = Regex("""\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*([\s\S]*?)\s*\[/OUT-OF-BAND USER MESSAGE\]""")
-    /** Hermes' own file syntax: a line "MEDIA:<pc path>". The phone shows it as an Inbox file instead of raw text. */
-    private val MEDIA = Regex("""(?m)^[ \t]*MEDIA:[ \t]*(.+?)[ \t]*$""")
-    /** MEDIA: in the middle of a line (after text, in a list item, in backticks/quotes): the path is the quoted part or the next token. */
-    private val MEDIA_INLINE = Regex("""(?<![\w/\\])MEDIA:[ \t]*(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|([^\s`"'<>|]+))""")
-    private fun inlinePath(m: MatchResult): String = (m.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: "").trim().trimEnd('.', ',', ';', ')', ']', '!', '?')
-    fun mediaPaths(text: String): List<String> {
-        val lines = MEDIA.findAll(text).map { it.groupValues[1].trim().trim('"', '\'', '`') }.toList()
-        val rest = MEDIA.replace(text, "")
-        return (lines + MEDIA_INLINE.findAll(rest).map { inlinePath(it) }.toList()).filter { it.isNotBlank() }.distinct()
-    }
-    fun stripMedia(text: String): String = if (text.contains("MEDIA:")) MEDIA_INLINE.replace(MEDIA.replace(text, ""), "").replace(Regex("[ \t]+\n"), "\n").replace(Regex("\n{3,}"), "\n\n").trim() else text
-    fun clean(role: String, text: String): String? {
-        if (role == "tool") return null
-        if (role != "user") return stripMedia(text).takeUnless { it.trim() == "[SILENT]" || (it.isBlank() && text.isNotBlank()) }
-        val t = text.trimStart()
-        OOB.find(t)?.let { return it.groupValues[1].trim().ifBlank { null } }
-        if (HIDE.any { t.startsWith(it) } || t.contains("[INTERNAL NOTIFICATION")) return null
-        return text
-    }
-}

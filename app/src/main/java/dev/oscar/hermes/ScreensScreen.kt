@@ -150,7 +150,7 @@ fun ScreensScreen(vm: ChatViewModel) {
 fun screenActions(vm: ChatViewModel, sc: PcScreen): List<Pair<String, () -> Unit>> = when {
     sc.kind == "physical" && sc.on -> listOf(stringResource(R.string.vd_screen_off_this) to { vm.vdisplay("screen-off", sc.name) })
     sc.kind == "physical" -> listOf(stringResource(R.string.vd_screen_on_this) to { vm.vdisplay("screen-on", sc.name) })
-    sc.kind == "agent" && sc.session != null -> listOf(stringResource(R.string.vd_close) to { vm.closeAgentScreen(sc.session) })
+    sc.kind == "agent" && sc.session != null -> listOf(stringResource(R.string.vd_close) to { vm.closeAgentScreen(sc.session!!) })
     else -> emptyList()
 }
 

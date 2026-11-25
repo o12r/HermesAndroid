@@ -322,7 +322,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                 if (p.path != null) Row(Modifier.fillMaxWidth().clickable { withFolder = !withFolder }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(withFolder, { withFolder = it })
                     Column { Text(stringResource(R.string.delete_project_folder), color = if (withFolder) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified)
-                        Text(p.path, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Text(p.path!!, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             } },
             confirmButton = { TextButton(onClick = { vm.deleteProject(p, withFolder, withSessions); deletingProject = null }) { Text(stringResource(R.string.delete)) } },

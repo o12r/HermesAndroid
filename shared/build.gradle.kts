@@ -17,6 +17,7 @@ java {
 }
 
 dependencies {
+    api("androidx.compose.runtime:runtime:1.13.0")   // Chat state (mutableStateOf); jvm variant is used on desktop
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     // Provided by android.jar at runtime on device; :desktop will add this as implementation().

@@ -84,7 +84,7 @@ fun Bubble(m: UiMsg, vm: ChatViewModel, live: Boolean = false) {
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
         return
     }
-    if (m.role == "task" && m.task != null) { TaskCard(m.task) { vm.openTask(m.task) }; return }
+    if (m.role == "task" && m.task != null) { TaskCard(m.task!!) { vm.openTask(m.task!!) }; return }
     if (m.role == "file") {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file, vm.fileProgress[m.text]) { vm.saveInbox(m.text, m.session) } }
         return
@@ -126,7 +126,7 @@ fun TaskCard(t: TaskInfo, onOpen: () -> Unit) {
                     else LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp))
                 }
                 if (t.kind == "proc" && t.last.isNotBlank())
-                    Text((if (t.percent != null && t.status == "running") "${t.percent.toInt()}% · " else "") + t.last, style = MaterialTheme.typography.labelSmall,
+                    Text((if (t.percent != null && t.status == "running") "${t.percent!!.toInt()}% · " else "") + t.last, style = MaterialTheme.typography.labelSmall,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             }
             Text("🔒", Modifier.padding(start = 6.dp))
