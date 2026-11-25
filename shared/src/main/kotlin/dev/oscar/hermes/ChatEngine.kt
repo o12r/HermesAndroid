@@ -1,11 +1,13 @@
 package dev.oscar.hermes
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,6 +28,11 @@ interface EngineHost {
     fun drainQueue(c: Chat)
     fun sendMedia(c: Chat, rawText: String)
     fun adoptServerModel(c: Chat, info: JSONObject)
+    suspend fun gateway(profile: String): GatewayWs
+    suspend fun ensureLive(g: GatewayWs, c: Chat): String
+    fun fail(e: Throwable)
+    fun noteSent(text: String, atts: List<Attachment>)
+    fun respond(reqId: String, result: JSONObject)
     fun saveReplyStat(sid: String, text: String, v: List<Float?>)
     suspend fun gatewayCall(profile: String, method: String, params: JSONObject): JSONObject
 }
@@ -287,5 +294,124 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
         if (i >= 0) { c.messages.add(i, card); return }
         val l = c.messages.lastIndex
         if (l >= 0 && c.messages[l].role == "assistant" && c.streaming) c.messages.add(l, card) else c.messages.add(card)
+    }
+
+    fun sendMessage(text: String, atts: List<Attachment>, c: Chat = host.cur) {
+        if (c.streaming || (text.isBlank() && atts.isEmpty())) return
+        host.noteSent(text, atts)
+        val shown = (atts.map { if (it.isImage) "🖼️ ${it.name}" else "📎 ${it.name}" } + text).filter { it.isNotBlank() }.joinToString("\n")
+        val msg = UiMsg("user", shown, resend = text)
+        c.messages.add(msg)
+        scope.launch {
+            try {
+                val g = host.gateway(c.profile)
+                try { submit(g, host.ensureLive(g, c), text, atts, c) }
+                catch (e: CancellationException) { throw e
+                } catch (e: Exception) {
+                    // Stale live session (e.g. the gateway reaped it while the agent was busy): re-attach once and resend.
+                    if (c.id == null) throw e
+                    c.liveId = null; submit(g, host.ensureLive(g, c), text, atts, c)
+                }
+            }
+            catch (e: Exception) {
+                c.streaming = false; c.status = null
+                val i = c.messages.indexOfFirst { it.uid == msg.uid }
+                if (i >= 0) c.messages[i] = c.messages[i].copy(failed = true)
+                if (c === host.cur) host.fail(e)
+                host.alert(host.s(Str.n_send_failed), text.take(120))
+            }
+        }
+    }
+
+
+    /** True when the agent already did tool work after message [idx]: a retry then just says "continue" instead of repeating the request. */
+    fun agentWorkedAfter(c: Chat, idx: Int): Boolean = idx >= 0 && c.messages.drop(idx + 1).takeWhile { it.role != "user" }
+        .any { it.role == "assistant" && (it.tools.isNotEmpty() || it.steps.any { st -> st.kind != "thinking" && st.kind != "text" }) }
+
+    suspend fun submit(g: GatewayWs, sid: String, text: String, atts: List<Attachment>, c: Chat) {
+        if (c === host.cur) host.error = null
+        c.streaming = true; c.status = null
+        val messages = c.messages
+        messages.add(UiMsg("assistant", ""))
+        try {
+            for (a in atts.filter { it.isImage }) {
+                g.call("image.attach_bytes", JSONObject().put("session_id", sid).put("filename", a.name)
+                    .put("content_base64", a.payload.substringAfter("base64,")))
+            }
+            val files = atts.filter { !it.isImage }.joinToString("") {
+                if (it.pcPath != null) "File `${it.name}` was uploaded to this PC at: ${it.pcPath}\n\n"
+                else "File `${it.name}`:\n```\n${it.payload}\n```\n\n" }
+            val p = JSONObject().put("session_id", sid).put("text", files + text).put("submission_id", UUID.randomUUID().toString())
+            g.call("prompt.submit", p)
+            c.createdHere = false
+        } catch (e: Exception) { c.streaming = false; dropEmpty(c); throw e }
+    }
+
+
+    fun answerApproval(choice: String) {
+        val c = host.cur; val a = c.approval ?: return; c.approval = null; host.platform.clearAlerts(c.id, "approval")
+        if (a.gen == null) { host.respond(a.reqId, JSONObject().put("choice", choice)); return }
+        scope.launch { runCatching { host.gateway(c.profile).call("approval.respond", JSONObject().put("session_id", c.liveId)
+            .put("execution_generation", a.gen).put("prompt_id", a.reqId).put("choice", choice)) }.onFailure { host.fail(it) } }
+    }
+    fun answerClarify(answers: Map<String, String>?) {
+        val chat = host.cur; val c = chat.clarify ?: return; chat.clarify = null; host.platform.clearAlerts(chat.id, "clarify")
+        if (c.gen != null) {
+            scope.launch { runCatching { host.gateway(chat.profile).call("clarify.respond", JSONObject().put("session_id", chat.liveId)
+                .put("execution_generation", c.gen).put("prompt_id", c.reqId).put("answer", answers?.values?.firstOrNull().orEmpty())) }
+                .onFailure { host.fail(it) } }
+            return
+        }
+        host.respond(c.reqId, if (answers == null) JSONObject().put("outcome", "cancelled")
+            else JSONObject().put("answers", JSONObject(answers as Map<*, *>)).put("outcome", "submitted"))
+    }
+
+
+    /** Inject text into the running turn (Hermes sees it with the next tool result) without interrupting. */
+    fun steer(t: String) {
+        val c = host.cur
+        // Mid-turn note: appears where it was sent (after what the agent has said so far); later output continues in a new reply below it.
+        c.messages.add(UiMsg("user", t))
+        c.messages.add(UiMsg("assistant", ""))
+        scope.launch {
+            var generation by object { operator fun getValue(a: Any?, b: Any?) = c.generation; operator fun setValue(a: Any?, b: Any?, v: Int) { c.generation = v } }
+            try {
+                val g = host.gateway(c.profile)
+                val sid = c.liveId ?: host.ensureLive(g, c)
+                var r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
+                if (r.isFailure) {  // generation moved on: refresh once and retry
+                    val info = g.call("session.info", JSONObject().put("session_id", sid))
+                    generation = info.optInt("execution_generation", generation)
+                    r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
+                }
+                val res = r.getOrThrow()
+                if (res.optString("status") == "rejected") throw ApiException("steer_rejected")
+                c.status = host.s(Str.steered)
+            } catch (e: Exception) {
+                // Steer refused (generation moved on / turn ending): drop the optimistic bubbles and send it as a normal message,
+                // or queue it behind the running turn, instead of leaving a dead message and an error.
+                val i = c.messages.indexOfLast { it.role == "user" && it.text == t && it.id == null }
+                if (i >= 0) { c.messages.removeAt(i); if (c.messages.getOrNull(i)?.let { it.role == "assistant" && it.text.isEmpty() && it.steps.isEmpty() } == true) c.messages.removeAt(i) }
+                if (!c.streaming) sendMessage(t, emptyList(), c) else { c.queue.add(t); c.status = host.s(Str.steered) }
+            }
+        }
+    }
+
+    fun stop() {
+        val c = host.cur
+        val sid = c.liveId ?: return
+        scope.launch {
+            var generation by object { operator fun getValue(a: Any?, b: Any?) = c.generation; operator fun setValue(a: Any?, b: Any?, v: Int) { c.generation = v } }
+            val g = runCatching { host.gateway(c.profile) }.getOrElse { host.fail(it); return@launch }
+            val r = runCatching { g.call("session.interrupt", JSONObject().put("session_id", sid).put("execution_generation", generation)) }
+            if (r.exceptionOrNull()?.message == "stale_generation") {
+                // Refresh the fence from a snapshot and retry once.
+                runCatching {
+                    generation = g.call("session.resume", JSONObject().put("session_id", sid).put("omit_messages", true)).optInt("execution_generation", generation)
+                    g.call("session.interrupt", JSONObject().put("session_id", sid).put("execution_generation", generation))
+                }.onFailure { host.fail(it) }
+            } else r.onFailure { host.fail(it) }
+            c.status = host.s(Str.stopping)
+        }
     }
 }

@@ -213,6 +213,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         override fun drainQueue(c: Chat) = this@ChatViewModel.drainQueue(c)
         override fun sendMedia(c: Chat, rawText: String) = this@ChatViewModel.sendMedia(c, rawText)
         override fun adoptServerModel(c: Chat, info: JSONObject) = this@ChatViewModel.adoptServerModel(c, info)
+        override suspend fun gateway(profile: String) = gatewayFor(profile)
+        override suspend fun ensureLive(g: GatewayWs, c: Chat) = this@ChatViewModel.ensureLive(g, c)
+        override fun fail(e: Throwable) = this@ChatViewModel.fail(e)
+        override fun noteSent(text: String, atts: List<Attachment>) { lastSent = text to atts }
+        override fun respond(reqId: String, result: JSONObject) { gw?.respond(reqId, result) }
         override fun saveReplyStat(sid: String, text: String, v: List<Float?>) { store.setReplyStat(sid, text, v); pushReplyStats(sid) }
         override suspend fun gatewayCall(profile: String, method: String, params: JSONObject) = gatewayFor(profile).call(method, params)
     }, viewModelScope) }
@@ -1596,37 +1601,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun sendMessage(text: String, atts: List<Attachment>, c: Chat = cur) {
-        if (c.streaming || (text.isBlank() && atts.isEmpty())) return
-        lastSent = text to atts
-        val shown = (atts.map { if (it.isImage) "🖼️ ${it.name}" else "📎 ${it.name}" } + text).filter { it.isNotBlank() }.joinToString("\n")
-        val msg = UiMsg("user", shown, resend = text)
-        c.messages.add(msg)
-        viewModelScope.launch {
-            try {
-                val g = gatewayFor(c.profile)
-                try { submit(g, ensureLive(g, c), text, atts, c) }
-                catch (e: CancellationException) { throw e
-                } catch (e: Exception) {
-                    // Stale live session (e.g. the gateway reaped it while the agent was busy): re-attach once and resend.
-                    if (c.id == null) throw e
-                    c.liveId = null; submit(g, ensureLive(g, c), text, atts, c)
-                }
-            }
-            catch (e: Exception) {
-                c.streaming = false; c.status = null
-                val i = c.messages.indexOfFirst { it.uid == msg.uid }
-                if (i >= 0) c.messages[i] = c.messages[i].copy(failed = true)
-                if (c === cur) fail(e)
-                Notify.alert(getApplication<Application>(), s(Str.n_send_failed), text.take(120))
-            }
-        }
-    }
+    private fun sendMessage(text: String, atts: List<Attachment>, c: Chat = cur) = engine.sendMessage(text, atts, c)
 
     /** Red ! menu: send a failed message again / drop it. Edit = put its text back via [editFailed]. */
-    /** True when the agent already did tool work after message [idx]: a retry then just says "continue" instead of repeating the request. */
-    private fun agentWorkedAfter(c: Chat, idx: Int): Boolean = idx >= 0 && c.messages.drop(idx + 1).takeWhile { it.role != "user" }
-        .any { it.role == "assistant" && (it.tools.isNotEmpty() || it.steps.any { st -> st.kind != "thinking" && st.kind != "text" }) }
+    private fun agentWorkedAfter(c: Chat, idx: Int) = engine.agentWorkedAfter(c, idx)
     fun resendFailed(m: UiMsg) {
         val cont = agentWorkedAfter(cur, cur.messages.indexOfFirst { it.uid == m.uid })
         cur.messages.removeAll { it.uid == m.uid }
@@ -1634,25 +1612,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun deleteFailed(m: UiMsg) { cur.messages.removeAll { it.uid == m.uid } }
     fun editFailed(m: UiMsg, newText: String) { cur.messages.removeAll { it.uid == m.uid }; if (newText.isNotBlank()) sendMessage(newText, emptyList()) }
-
-    private suspend fun submit(g: GatewayWs, sid: String, text: String, atts: List<Attachment>, c: Chat = cur) {
-        if (c === cur) error = null
-        c.streaming = true; c.status = null
-        val messages = c.messages
-        messages.add(UiMsg("assistant", ""))
-        try {
-            for (a in atts.filter { it.isImage }) {
-                g.call("image.attach_bytes", JSONObject().put("session_id", sid).put("filename", a.name)
-                    .put("content_base64", a.payload.substringAfter("base64,")))
-            }
-            val files = atts.filter { !it.isImage }.joinToString("") {
-                if (it.pcPath != null) "File `${it.name}` was uploaded to this PC at: ${it.pcPath}\n\n"
-                else "File `${it.name}`:\n```\n${it.payload}\n```\n\n" }
-            val p = JSONObject().put("session_id", sid).put("text", files + text).put("submission_id", UUID.randomUUID().toString())
-            g.call("prompt.submit", p)
-            c.createdHere = false
-        } catch (e: Exception) { c.streaming = false; dropEmpty(c); throw e }
-    }
 
     private fun dropEmpty(c: Chat = cur) = engine.dropEmpty(c)
     private fun updateLast(c: Chat, f: (UiMsg) -> UiMsg) = engine.updateLast(c, f)
@@ -1696,71 +1655,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun answerApproval(choice: String) {
-        val c = cur; val a = c.approval ?: return; c.approval = null; platform.clearAlerts(c.id, "approval")
-        if (a.gen == null) { gw?.respond(a.reqId, JSONObject().put("choice", choice)); return }
-        viewModelScope.launch { runCatching { gatewayFor(c.profile).call("approval.respond", JSONObject().put("session_id", c.liveId)
-            .put("execution_generation", a.gen).put("prompt_id", a.reqId).put("choice", choice)) }.onFailure { fail(it) } }
-    }
-    fun answerClarify(answers: Map<String, String>?) {
-        val chat = cur; val c = chat.clarify ?: return; chat.clarify = null; platform.clearAlerts(chat.id, "clarify")
-        if (c.gen != null) {
-            viewModelScope.launch { runCatching { gatewayFor(chat.profile).call("clarify.respond", JSONObject().put("session_id", chat.liveId)
-                .put("execution_generation", c.gen).put("prompt_id", c.reqId).put("answer", answers?.values?.firstOrNull().orEmpty())) }
-                .onFailure { fail(it) } }
-            return
-        }
-        gw?.respond(c.reqId, if (answers == null) JSONObject().put("outcome", "cancelled")
-            else JSONObject().put("answers", JSONObject(answers as Map<*, *>)).put("outcome", "submitted"))
-    }
+    fun answerApproval(choice: String) = engine.answerApproval(choice)
+    fun answerClarify(answers: Map<String, String>?) = engine.answerClarify(answers)
 
-    /** Inject text into the running turn (Hermes sees it with the next tool result) without interrupting. */
-    private fun steer(t: String) {
-        val c = cur
-        // Mid-turn note: appears where it was sent (after what the agent has said so far); later output continues in a new reply below it.
-        c.messages.add(UiMsg("user", t))
-        c.messages.add(UiMsg("assistant", ""))
-        viewModelScope.launch {
-            var generation by object { operator fun getValue(a: Any?, b: Any?) = c.generation; operator fun setValue(a: Any?, b: Any?, v: Int) { c.generation = v } }
-            try {
-                val g = gatewayFor(c.profile)
-                val sid = c.liveId ?: ensureLive(g, c)
-                var r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
-                if (r.isFailure) {  // generation moved on: refresh once and retry
-                    val info = g.call("session.info", JSONObject().put("session_id", sid))
-                    generation = info.optInt("execution_generation", generation)
-                    r = runCatching { g.call("session.steer", JSONObject().put("session_id", sid).put("text", t).put("execution_generation", generation)) }
-                }
-                val res = r.getOrThrow()
-                if (res.optString("status") == "rejected") throw ApiException("steer_rejected")
-                c.status = s(Str.steered)
-            } catch (e: Exception) {
-                // Steer refused (generation moved on / turn ending): drop the optimistic bubbles and send it as a normal message,
-                // or queue it behind the running turn, instead of leaving a dead message and an error.
-                val i = c.messages.indexOfLast { it.role == "user" && it.text == t && it.id == null }
-                if (i >= 0) { c.messages.removeAt(i); if (c.messages.getOrNull(i)?.let { it.role == "assistant" && it.text.isEmpty() && it.steps.isEmpty() } == true) c.messages.removeAt(i) }
-                if (!c.streaming) sendMessage(t, emptyList(), c) else { c.queue.add(t); c.status = s(Str.steered) }
-            }
-        }
-    }
-
-    fun stop() {
-        val c = cur
-        val sid = c.liveId ?: return
-        viewModelScope.launch {
-            var generation by object { operator fun getValue(a: Any?, b: Any?) = c.generation; operator fun setValue(a: Any?, b: Any?, v: Int) { c.generation = v } }
-            val g = runCatching { gatewayFor(c.profile) }.getOrElse { fail(it); return@launch }
-            val r = runCatching { g.call("session.interrupt", JSONObject().put("session_id", sid).put("execution_generation", generation)) }
-            if (r.exceptionOrNull()?.message == "stale_generation") {
-                // Refresh the fence from a snapshot and retry once.
-                runCatching {
-                    generation = g.call("session.resume", JSONObject().put("session_id", sid).put("omit_messages", true)).optInt("execution_generation", generation)
-                    g.call("session.interrupt", JSONObject().put("session_id", sid).put("execution_generation", generation))
-                }.onFailure { fail(it) }
-            } else r.onFailure { fail(it) }
-            c.status = s(Str.stopping)
-        }
-    }
+    private suspend fun submit(g: GatewayWs, sid: String, text: String, atts: List<Attachment>, c: Chat = cur) = engine.submit(g, sid, text, atts, c)
+    private fun steer(t: String) = engine.steer(t)
+    fun stop() = engine.stop()
 
     // ---------- attachments ----------
     /** Progress notice while a big file streams to the PC ("Uploading large file... 42%"); null when idle. */
