@@ -299,4 +299,11 @@
     <string name="pf_folder_changed">已更改 %1$s 的文件夹</string>
     <string name="pf_old_relay">电脑端中继版本过旧，不支持文件访问：请更新电脑端并重启中继。</string>
     <string name="delete_project_sessions">同时删除其中的 %1$d 个会话</string>
+    <string name="pf_quick">快速访问</string>
+    <string name="pf_copy_path">拷贝路径</string>
+    <string name="pf_path_copied">已拷贝路径</string>
+    <string name="pf_go">前往</string>
+    <string name="pf_pin">固定到快速访问</string>
+    <string name="pf_unpin">从快速访问取消固定</string>
+    <string name="pf_home">返回 C 盘</string>
 </resources>

@@ -299,4 +299,11 @@
     <string name="pf_folder_changed">Folder of %1$s changed</string>
     <string name="pf_old_relay">The PC relay is too old for file access: update the PC part and restart the relay.</string>
     <string name="delete_project_sessions">Also delete its %1$d sessions</string>
+    <string name="pf_quick">Quick access</string>
+    <string name="pf_copy_path">Copy path</string>
+    <string name="pf_path_copied">Path copied</string>
+    <string name="pf_go">Go</string>
+    <string name="pf_pin">Pin to Quick access</string>
+    <string name="pf_unpin">Unpin from Quick access</string>
+    <string name="pf_home">C: drive</string>
 </resources>

@@ -206,6 +206,17 @@ async def fs_op(req: web.Request):
             return web.json_response(await _io(_fs_list, p))
         except OSError as e:
             return web.json_response({"error": f"{e.strerror or e}"}, status=400)
+    if op in ("pin", "unpin"):
+        if not await _io(p.is_dir):
+            return web.json_response({"error": "not a folder"}, status=400)
+        try:
+            err = await _io(_fs_pin, p, op == "pin")
+        except Exception as e:
+            err = str(e)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        log.info("phone %sned %s in Quick access", op, p)
+        return web.json_response({"ok": True})
     if op == "rename":
         new = str(body.get("new", "")).strip()
         if not new or any(c in new for c in '\\/:*?"<>|') or new in (".", ".."):
@@ -271,6 +282,40 @@ async def fs_op(req: web.Request):
     return web.json_response({"error": "not found"}, status=404)
 
 
+_QA = {"t": 0.0, "v": []}
+
+
+def _fs_quick() -> list:
+    """Windows Quick access folders (pinned + frequent), read through the shell; cached for a minute."""
+    if _QA["v"] and time.time() - _QA["t"] < 60:
+        return _QA["v"]
+    ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $o=(New-Object -ComObject Shell.Application)"
+          ".Namespace('shell:::{679F85CB-0220-4080-B29B-5540CC05AAB6}'); if($o){$o.Items()|%{ $_.Name+'|'+$_.Path }}")
+    out, seen = [], set()
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=10,
+                           creationflags=0x08000000)
+        for line in r.stdout.decode("utf-8", "replace").splitlines():
+            name, _, p = line.strip().partition("|")
+            if p and p.upper() not in seen and os.path.isdir(p):
+                seen.add(p.upper()); out.append({"name": name or os.path.basename(p), "dir": True, "size": 0, "mtime": 0, "path": p})
+    except Exception:
+        pass
+    _QA["t"], _QA["v"] = time.time(), out[:24]
+    return _QA["v"]
+
+
+def _fs_pin(p: Path, pin: bool) -> str | None:
+    """Pin / unpin a folder in Windows Quick access through the shell verbs; returns an error text or None."""
+    ps = ("$f=(New-Object -ComObject Shell.Application).Namespace($env:HFS_P); if(-not $f){exit 2}; "
+          "$f.Self.InvokeVerb($env:HFS_V)")
+    env = dict(os.environ, HFS_P=str(p), HFS_V="pintohome" if pin else "unpinfromhome")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=15,
+                       env=env, creationflags=0x08000000)
+    _QA["t"] = 0.0
+    return None if r.returncode == 0 else "could not pin/unpin this folder"
+
+
 def _fs_roots() -> dict:
     home = str(Path.home())
     drives = []
@@ -279,7 +324,7 @@ def _fs_roots() -> dict:
         drives = [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
     except Exception:
         pass
-    return {"path": "", "parent": None, "home": home,
+    return {"path": "", "parent": None, "home": home, "quick": _fs_quick(),
             "items": [{"name": d, "dir": True, "size": 0, "mtime": 0, "path": d} for d in drives]}
 
 

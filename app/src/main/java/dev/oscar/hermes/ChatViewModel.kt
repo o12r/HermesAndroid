@@ -35,7 +35,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
-enum class Screen { Sessions, Chat, Settings, Screens }
+enum class Screen { Sessions, Chat, Settings, Screens, Files }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null,
     /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
     val steps: List<Step> = emptyList(),
@@ -124,7 +124,7 @@ class Chat(val profile: String, id: String?, title: String?) {
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val store = SecureStore(app)
     /** What is on screen is the active tab: a page tab (sessions / pc / settings) or, when [activePage] is null, the chat [cur]. */
-    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "pc" -> Screen.Screens; else -> Screen.Settings }
+    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "pc" -> Screen.Screens; "files" -> Screen.Files; else -> Screen.Settings }
     var profile by mutableStateOf(store.profile)
     var sessions by mutableStateOf<List<Session>>(emptyList())
     /** Profiles found on the PC (name to description); cached so the menu works offline. */
@@ -220,7 +220,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun openPage(kind: String, refresh: Boolean = true) {
         val t = tabs.firstOrNull { it.page == kind } ?: Chat(profile, null, null).also {
             it.page = kind; it.readOnly = true; it.loaded = true
-            it.title = s(when (kind) { "pc" -> R.string.pc; "sessions" -> R.string.sessions; else -> R.string.settings }); tabs.add(it) }
+            it.title = s(when (kind) { "pc" -> R.string.pc; "files" -> R.string.pf_title; "sessions" -> R.string.sessions; else -> R.string.settings }); tabs.add(it) }
         activePage = t
         pageEntered(kind, refresh)
     }
@@ -1319,6 +1319,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             o
         }
     }
+
+    /** Folder shown in the PC files tab (kept while the tab is open). */
+    var filesPath by mutableStateOf("")
 
     /** PC file -> the phone's Downloads folder. */
     suspend fun fsDownload(pcPath: String, name: String): Uri = withContext(Dispatchers.IO) {

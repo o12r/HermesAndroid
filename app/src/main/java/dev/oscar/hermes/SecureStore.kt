@@ -35,7 +35,7 @@ class SecureStore(ctx: Context) {
     /** UI text scale, 0.8..1.5 (on top of the system font size). */
     var fontScale: Float
         get() = prefs.getFloat("fontScale", 1f)
-        set(v) = prefs.edit().putFloat("fontScale", v.coerceIn(0.8f, 1.5f)).apply()
+        set(v) = prefs.edit().putFloat("fontScale", v.coerceIn(0.5f, 1.5f)).apply()
     /** Last profile list scanned from the PC: "name\tdescription" lines. */
     var profileCache: List<Pair<String, String>>
         get() = prefs.getString("profileCache", "")!!.lines().filter { it.isNotBlank() }

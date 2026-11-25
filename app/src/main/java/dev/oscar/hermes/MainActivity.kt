@@ -176,6 +176,7 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
                 onOpenContextSettings = { vm.openSettingsSection("chat") },
                 onOpenModelSettings = { vm.openSettingsSection("model") })
             Screen.Screens -> ScreensScreen(vm)
+            Screen.Files -> PcFileBrowser(vm, pick = false, start = null, onPick = {}, onClose = { vm.leavePage() }, asPage = true)
         } }
     }
     UpdateDialog(vm)
@@ -881,7 +882,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val dragging = dragKey == System.identityHashCode(c)
             Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
             InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
-                leadingIcon = if (c.page != null) ({ Icon(when (c.page) { "pc" -> Icons.Default.Monitor; "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                leadingIcon = if (c.page != null) ({ Icon(when (c.page) { "pc" -> Icons.Default.Monitor; "files" -> Icons.Default.Folder; "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
                     Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } }),
                 colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -1257,10 +1258,10 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Text(stringResource(R.string.font_size, previewPct), style = MaterialTheme.typography.titleSmall)
             Slider(
                 modifier = Modifier.padding(horizontal = 24.dp).systemGestureExclusion(),
-                value = (previewPct - 80).toFloat(),
-                onValueChange = { previewPct = (it.toInt() + 80).coerceIn(80, 150) },
+                value = (previewPct - 50).toFloat(),
+                onValueChange = { previewPct = (it.toInt() + 50).coerceIn(50, 150) },
                 onValueChangeFinished = { if (previewPct / 100f != vm.fontScale) { vm.chooseFontScale(previewPct / 100f); recreate() } },
-                valueRange = 0f..70f)
+                valueRange = 0f..100f)
             Text(stringResource(R.string.font_preview), style = MaterialTheme.typography.bodyMedium)
             Text(stringResource(R.string.language), style = MaterialTheme.typography.titleSmall)
             ChoiceRow(listOf("system" to stringResource(R.string.lang_system), "en" to stringResource(R.string.lang_en),
@@ -1318,8 +1319,6 @@ fun screenLabel(sc: PcScreen): String {
 @Composable
 fun ScreensScreen(vm: ChatViewModel) {
     var open by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var showFiles by remember { mutableStateOf(false) }
-    if (showFiles) PcFileBrowser(vm, pick = false, start = null, onPick = {}, onClose = { showFiles = false })
     fun toggle(sc: PcScreen) { open = if (sc.name in open) open - sc.name else open + sc.name }
     LaunchedEffect(Unit) { vm.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
@@ -1355,7 +1354,7 @@ fun ScreensScreen(vm: ChatViewModel) {
                 HorizontalDivider()
             } }
             item { ListItem(leadingContent = { Icon(Icons.Default.Folder, null) }, headlineContent = { Text(stringResource(R.string.pf_title)) },
-                supportingContent = { Text(stringResource(R.string.pf_hint)) }, modifier = Modifier.clickable { showFiles = true }) }
+                supportingContent = { Text(stringResource(R.string.pf_hint)) }, modifier = Modifier.clickable { vm.openPage("files") }) }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             items(pc, key = { "pc:" + it.name }) { sc -> Column { ScreenRow(screenLabel(sc), sc, sc.on, screenActions(vm, sc)) { toggle(sc) }
                 if (sc.name in open) ScreenInline(vm, sc) { open = open - sc.name } } }
