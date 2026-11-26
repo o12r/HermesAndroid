@@ -640,7 +640,7 @@ def _authed(req):
 
 def _outbox_files():
     OUTBOX.mkdir(parents=True, exist_ok=True)
-    files = [f for f in OUTBOX.iterdir() if f.is_file() and SAFE_NAME.fullmatch(f.name) and not f.name.endswith(".session")]
+    files = [f for f in OUTBOX.iterdir() if f.is_file() and SAFE_NAME.fullmatch(f.name) and not f.name.endswith((".session", ".anchor"))]
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     out = []
     for f in files:
@@ -648,7 +648,12 @@ def _outbox_files():
         sess = re.sub(r"[^A-Za-z0-9_\-]", "", side.read_text(encoding="utf-8").strip()) if side.is_file() else ""
         if sess:
             sess = root_session(sess, HERMES_HOME)   # sub-agent session -> its dispatcher's chat
-        out.append({"name": f.name, "size": f.stat().st_size, "time": int(f.stat().st_mtime), "session": sess})
+        anc = f.with_name(f.name + ".anchor")
+        try:
+            anchor = int(anc.read_text(encoding="utf-8").strip()) if anc.is_file() else 0
+        except ValueError:
+            anchor = 0
+        out.append({"name": f.name, "size": f.stat().st_size, "time": int(f.stat().st_mtime), "session": sess, "anchor": anchor})
     return out
 
 
@@ -683,6 +688,7 @@ async def outbox_send(req: web.Request):
         body = await req.json()
         src = Path(str(body.get("path", ""))).expanduser()
         sess = re.sub(r"[^A-Za-z0-9_\-]", "", str(body.get("session", "")))
+        anchor = int(body.get("ts") or 0)   # ms timestamp of the reply that said MEDIA: the card is shown right after it
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
 
@@ -704,6 +710,8 @@ async def outbox_send(req: web.Request):
         shutil.copyfile(src, dst)
         if sess:
             dst.with_name(dst.name + ".session").write_text(sess, encoding="utf-8")
+        if anchor > 0:
+            dst.with_name(dst.name + ".anchor").write_text(str(anchor), encoding="utf-8")
         return dst.name, None
 
     name, err = await _io(work)
@@ -723,7 +731,7 @@ async def outbox_item(req: web.Request):
     if not await _io(f.is_file) or name.endswith(".session"):
         return web.json_response({"error": "not found"}, status=404)
     if req.method == "DELETE":
-        await _io(lambda: (f.unlink(), f.with_name(name + ".session").unlink(missing_ok=True)))
+        await _io(lambda: (f.unlink(), f.with_name(name + ".session").unlink(missing_ok=True), f.with_name(name + ".anchor").unlink(missing_ok=True)))
         return web.json_response({"ok": True})
     return web.FileResponse(f, headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 

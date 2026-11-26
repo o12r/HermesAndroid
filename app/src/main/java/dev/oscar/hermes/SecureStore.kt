@@ -109,10 +109,10 @@ class SecureStore(ctx: Context) {
         (0 until a.length()).map { a.getJSONObject(it).let { o -> Triple(o.getString("name"), o.getString("uri"), o.optLong("ts", 0L)) } }
     }.getOrDefault(emptyList())
     /** Add or replace (by name) a file in a session. An empty [uri] means the file is still on the PC. */
-    fun upsertSessionFile(id: String, name: String, uri: String) {
+    fun upsertSessionFile(id: String, name: String, uri: String, at: Long = 0L) {
         val a = runCatching { org.json.JSONArray(prefs.getString("files.$id", "[]")!!) }.getOrDefault(org.json.JSONArray())
         val out = org.json.JSONArray()
-        var ts = System.currentTimeMillis()   // when the file arrived; kept when the entry is replaced so the card stays where it was
+        var ts = if (at > 0) at else System.currentTimeMillis()   // when the file arrived; kept when the entry is replaced so the card stays where it was
         for (i in 0 until a.length()) a.getJSONObject(i).let { if (it.getString("name") != name) out.put(it) else if (it.optLong("ts", 0L) > 0) ts = it.getLong("ts") }
         out.put(org.json.JSONObject().put("name", name).put("uri", uri).put("ts", ts))
         prefs.edit().putString("files.$id", out.toString()).apply()

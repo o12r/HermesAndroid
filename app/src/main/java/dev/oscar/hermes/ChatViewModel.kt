@@ -268,7 +268,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Files the agent sent to the phone: download progress (0-100) per file name, shown on its chat bubble. */
     val fileProgress = mutableStateMapOf<String, Int>()
-    suspend fun saveInboxNow(name: String, session: String?): android.net.Uri {
+    suspend fun saveInboxNow(name: String, session: String?, anchor: Long = 0L): android.net.Uri {
         fileProgress[name] = 0
         val uri = try { withContext(Dispatchers.IO) { Inbox.save(getApplication(), store, name) { p ->
                 viewModelScope.launch(Dispatchers.Main) { if (name in fileProgress) fileProgress[name] = p } } } }
@@ -281,8 +281,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val sid = outboxSession(session)
         if (!found) (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
-            ?.messages?.add(UiMsg("file", name, file = u, session = sid))
-        sid?.let { store.upsertSessionFile(it, name, u) }
+            ?.let { ch -> engine.placeByTime(ch, UiMsg("file", name, file = u, session = sid, ts = if (anchor > 0) anchor + 1 else System.currentTimeMillis())) }
+        sid?.let { store.upsertSessionFile(it, name, u, if (anchor > 0) anchor + 1 else 0L) }
         return uri
     }
 
@@ -297,8 +297,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun showPendingFile(item: Inbox.Item) {
         val sid = outboxSession(item.session)
         (chats.firstOrNull { it.id == sid } ?: cur.takeIf { sid == null || it.id == sid })
-            ?.messages?.add(UiMsg("file", item.name, file = null, session = sid))
-        sid?.let { store.upsertSessionFile(it, item.name, "") }
+            ?.let { ch -> engine.placeByTime(ch, UiMsg("file", item.name, file = null, session = sid, ts = if (item.anchor > 0) item.anchor + 1 else System.currentTimeMillis())) }
+        sid?.let { store.upsertSessionFile(it, item.name, "", if (item.anchor > 0) item.anchor + 1 else 0L) }
     }
 
     /** Real-time inbox: long-polls the PC relay; images are saved at once, other files appear as cards. */
@@ -312,7 +312,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 for (item in items) {
                     if (store.inboxSeen(item.key)) continue
                     try {
-                        if (isImageName(item.name)) saveInboxNow(item.name, item.session) else showPendingFile(item)
+                        if (isImageName(item.name)) saveInboxNow(item.name, item.session, item.anchor) else showPendingFile(item)
                         store.markInboxSeen(item.key)
                     } catch (e: Exception) { delay(5000) }
                 }
@@ -1460,14 +1460,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Reload [c]'s stored transcript; keeps unsent (failed) messages at the end. */
     /** "MEDIA:<path>" in an agent reply: have the relay copy that PC file to the phone Inbox (once per session+path); it then shows in the chat. */
-    private fun sendMedia(c: Chat, text: String, sid: String? = c.id) {
+    private fun sendMedia(c: Chat, text: String, sid: String? = c.id, anchor: Long = c.messages.lastOrNull { it.role == "assistant" }?.ts ?: 0L) {
         if (!text.contains("MEDIA:")) return
         for (path in Internal.mediaPaths(text)) {
             val key = "${sid.orEmpty()}|$path"
             if (store.mediaDone(key)) continue
             store.markMedia(key)
             viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching { relayJson("POST", "/outbox/send", JSONObject().put("path", path).put("session", sid.orEmpty()).toString()) }
+                runCatching { relayJson("POST", "/outbox/send", JSONObject().put("path", path).put("session", sid.orEmpty()).put("ts", anchor).toString()) }
                     .onFailure { store.unmarkMedia(key) }
                     .onSuccess { if (it == null) store.unmarkMedia(key) }
             }
@@ -1479,7 +1479,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         try {
             syncReplyStats(id)
             val m = apiFor(c.profile).messages(id)
-            m.filter { it.role == "assistant" }.forEach { sendMedia(c, it.content, id) }
+            m.filter { it.role == "assistant" }.forEach { sendMedia(c, it.content, id, it.ts) }
             val failed = c.messages.filter { it.failed }
             val cards = c.messages.filter { it.task != null }   // sub-agent / background / process cards are not in the server history
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->

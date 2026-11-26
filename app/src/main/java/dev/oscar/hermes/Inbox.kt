@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 object Inbox {
     private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(120, TimeUnit.SECONDS).build()
 
-    data class Item(val name: String, val size: Long, val time: Long, val session: String) {
+    data class Item(val name: String, val size: Long, val time: Long, val session: String, val anchor: Long = 0L) {
         /** Identity of this outbox entry; the relay returns it again only if the file is re-sent. */
         val key: String get() = "$name|$time"
     }
@@ -37,7 +37,7 @@ object Inbox {
         http.newCall(r).execute().use { resp ->
             if (!resp.isSuccessful) throw ApiException("Inbox failed (HTTP ${resp.code})")
             val arr = JSONObject(resp.body!!.string()).optJSONArray("files") ?: return emptyList()
-            return (0 until arr.length()).map { i -> arr.getJSONObject(i).let { Item(it.getString("name"), it.optLong("size"), it.optLong("time"), it.optString("session")) } }
+            return (0 until arr.length()).map { i -> arr.getJSONObject(i).let { Item(it.getString("name"), it.optLong("size"), it.optLong("time"), it.optString("session"), it.optLong("anchor")) } }
         }
     }
 

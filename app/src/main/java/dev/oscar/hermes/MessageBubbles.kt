@@ -139,7 +139,7 @@ fun TaskCard(t: TaskInfo, onOpen: () -> Unit) {
 fun AssistantBody(m: UiMsg, live: Boolean) {
     val textSteps = m.steps.filter { it.kind == "text" }
     val details = m.steps.filter { it.kind != "text" }
-    if (textSteps.isNotEmpty()) textSteps.forEach { Markdown(it.detail) }
+    if (textSteps.isNotEmpty()) textSteps.forEach { st -> Internal.stripMedia(st.detail).takeIf { it.isNotBlank() }?.let { Markdown(it) } }
     else Markdown(if (m.text.isEmpty()) "…" else m.text)
     if (details.isNotEmpty()) StepsView(details, live = live)
     else if (m.tools.isNotEmpty()) Text("🔧 " + m.tools.joinToString(", "), style = MaterialTheme.typography.labelSmall)
