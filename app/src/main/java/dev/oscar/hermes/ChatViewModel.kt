@@ -107,7 +107,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         cur = c; c.unread = false; activePage = null; seen()
         if (c.id != null) viewModelScope.launch {
-            if (!c.streaming && !c.loaded) loadMessagesInto(c)
+            // Reload the transcript whenever a tab is opened (not just the first time): a turn that finished
+            // elsewhere (e.g. the desktop) never delivered message.complete to a background tab, so its
+            // MEDIA: lines would only be copied to the outbox here. sendMedia() is deduped per session+path.
+            if (!c.streaming) loadMessagesInto(c)
             runCatching { ensureLive(gatewayFor(c.profile), c) }
             loadChatCtx(c)
             if (c === cur) kickProcPoll(c)
