@@ -29,7 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * A model picker for a settings field, reusing the chat page's model list (vm.modelOptions).
+ * A model picker for a settings field, reusing the chat page's model list (vm.c.modelOptions).
  * [current] is the current (provider, model); a null/blank model means "server default".
  * [onPick] receives (provider, model); null/blank values reset to the server default.
  */
@@ -41,13 +41,13 @@ fun ModelPickerField(
     onPick: (provider: String?, model: String?) -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
-    val choices = vm.modelOptions?.choices.orEmpty()
+    val choices = vm.c.modelOptions?.choices.orEmpty()
     val curKey = current?.second?.takeIf { !it.isNullOrBlank() }?.let { (current.first ?: "") + "|" + it }
     val shown = current?.second?.takeIf { !it.isNullOrBlank() } ?: stringResource(R.string.server_default)
     Column {
         Text(label, style = MaterialTheme.typography.bodyMedium)
         Box {
-            OutlinedButton(onClick = { open = true; if (vm.modelOptions == null) vm.loadMeta() }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { open = true; if (vm.c.modelOptions == null) vm.c.loadMeta() }, modifier = Modifier.fillMaxWidth()) {
                 Text(shown, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             DropdownMenu(open, { open = false }, modifier = Modifier.heightIn(max = 480.dp)) {
@@ -56,7 +56,7 @@ fun ModelPickerField(
                     onClick = { open = false; onPick(null, null) },
                     trailingIcon = { if (curKey == null) Icon(Icons.Default.Check, null) },
                 )
-                if (vm.modelOptions == null) DropdownMenuItem(text = { Text(stringResource(R.string.loading_models)) }, onClick = {}, enabled = false)
+                if (vm.c.modelOptions == null) DropdownMenuItem(text = { Text(stringResource(R.string.loading_models)) }, onClick = {}, enabled = false)
                 val expanded = remember(open) { mutableStateMapOf<String, Boolean>() }
                 choices.groupBy { it.providerName }.forEach { (provider, ms) ->
                     HorizontalDivider()

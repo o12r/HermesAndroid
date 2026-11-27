@@ -82,25 +82,25 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
     val def = stringResource(R.string.default_)
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.weight(1f, fill = false)) {
-            val label = if (vm.model.isBlank()) stringResource(R.string.model_default, vm.modelOptions?.currentModel?.ifBlank { null } ?: "…")
-                else vm.model.substringAfter('|')
-            FilterChip(selected = vm.model.isNotBlank(), enabled = !vm.switching, onClick = { vm.modelMenuOpen = true; if (vm.modelOptions == null) vm.loadMeta() },
+            val label = if (vm.c.model.isBlank()) stringResource(R.string.model_default, vm.c.modelOptions?.currentModel?.ifBlank { null } ?: "…")
+                else vm.c.model.substringAfter('|')
+            FilterChip(selected = vm.c.model.isNotBlank(), enabled = !vm.c.switching, onClick = { vm.c.modelMenuOpen = true; if (vm.c.modelOptions == null) vm.c.loadMeta() },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) },
                 leadingIcon = { Icon(Icons.Default.Memory, null, Modifier.size(16.dp)) }, modifier = Modifier.widthIn(max = 260.dp))
-            DropdownMenu(vm.modelMenuOpen, { vm.modelMenuOpen = false }, Modifier.heightIn(max = 480.dp)) {
-                val cur = vm.modelOptions?.currentModel.orEmpty()
+            DropdownMenu(vm.c.modelMenuOpen, { vm.c.modelMenuOpen = false }, Modifier.heightIn(max = 480.dp)) {
+                val cur = vm.c.modelOptions?.currentModel.orEmpty()
                 DropdownMenuItem(text = { Text(stringResource(R.string.server_default) + if (cur.isNotBlank()) " ($cur)" else "") },
-                    onClick = { vm.chooseModel(""); vm.modelMenuOpen = false },
+                    onClick = { vm.c.chooseModel(""); vm.c.modelMenuOpen = false },
                     trailingIcon = { Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (vm.model.isBlank()) Icon(Icons.Default.Check, null)
-                        IconButton(onClick = { vm.modelMenuOpen = false; onOpenModelSettings() }, modifier = Modifier.size(28.dp)) {
+                        if (vm.c.model.isBlank()) Icon(Icons.Default.Check, null)
+                        IconButton(onClick = { vm.c.modelMenuOpen = false; onOpenModelSettings() }, modifier = Modifier.size(28.dp)) {
                             Icon(Icons.Default.Settings, stringResource(R.string.model_settings), Modifier.size(18.dp))
                         }
                     } })
-                val groups = vm.modelOptions?.choices.orEmpty().groupBy { it.providerName }
-                if (vm.modelOptions == null) DropdownMenuItem(text = { Text(stringResource(R.string.loading_models)) }, onClick = {}, enabled = false)
-                val expanded = remember(vm.modelMenuOpen) { mutableStateMapOf<String, Boolean>() }
-                val activeKey = vm.model.ifBlank { null }
+                val groups = vm.c.modelOptions?.choices.orEmpty().groupBy { it.providerName }
+                if (vm.c.modelOptions == null) DropdownMenuItem(text = { Text(stringResource(R.string.loading_models)) }, onClick = {}, enabled = false)
+                val expanded = remember(vm.c.modelMenuOpen) { mutableStateMapOf<String, Boolean>() }
+                val activeKey = vm.c.model.ifBlank { null }
                 groups.forEach { (provider, ms) ->
                     HorizontalDivider()
                     val isCurrent = ms.any { it.key == activeKey || (activeKey == null && it.model == cur) }
@@ -115,22 +115,22 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
                     if (open) ms.forEach { m ->
                         val sel = m.key == activeKey || (activeKey == null && m.model == cur)
                         DropdownMenuItem(text = { Text(m.model, color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { vm.chooseModel(m.key); vm.modelMenuOpen = false }, contentPadding = PaddingValues(start = 40.dp, end = 12.dp),
+                            onClick = { vm.c.chooseModel(m.key); vm.c.modelMenuOpen = false }, contentPadding = PaddingValues(start = 40.dp, end = 12.dp),
                             trailingIcon = { if (sel) Icon(Icons.Default.Check, null) })
                     }
                 }
             }
         }
         Box {
-            FilterChip(selected = vm.effort.isNotBlank(), enabled = !vm.switching, onClick = { effortOpen = true },
-                label = { Text(vm.effort.ifBlank { def }, style = MaterialTheme.typography.labelSmall) },
+            FilterChip(selected = vm.c.effort.isNotBlank(), enabled = !vm.c.switching, onClick = { effortOpen = true },
+                label = { Text(vm.c.effort.ifBlank { def }, style = MaterialTheme.typography.labelSmall) },
                 leadingIcon = { Icon(Icons.Default.Psychology, null, Modifier.size(16.dp)) })
             DropdownMenu(effortOpen, { effortOpen = false }) {
                 SecureStore.EFFORTS.forEach { e -> DropdownMenuItem(text = { Text(e.ifBlank { def }) },
-                    onClick = { vm.chooseEffort(e); effortOpen = false }, trailingIcon = { if (vm.effort == e) Icon(Icons.Default.Check, null) }) }
+                    onClick = { vm.c.chooseEffort(e); effortOpen = false }, trailingIcon = { if (vm.c.effort == e) Icon(Icons.Default.Check, null) }) }
             }
         }
-        val c = vm.cur
+        val c = vm.c.cur
         val tasks = c.messages.mapNotNull { it.task }
         if (tasks.isNotEmpty()) {
             var tasksOpen by remember { mutableStateOf(false) }
@@ -145,13 +145,13 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
                         val kind = stringResource(when (t.kind) { "bg" -> R.string.task_background; "proc" -> R.string.task_process; else -> R.string.task_subagent })
                         DropdownMenuItem(text = { Text(kind + (t.chat.title?.takeIf { it.isNotBlank() && t.kind != "bg" }?.let { " · " + it.take(40) } ?: "") + " — " + st,
                                 maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge) },
-                            onClick = { tasksOpen = false; vm.openTask(t) })
+                            onClick = { tasksOpen = false; vm.c.openTask(t) })
                     }
                 }
             }
         }
-        val cfgMax = vm.ctxSettings?.opt("context_length")?.toString()?.toDoubleOrNull()?.toLong() ?: 0L
-        LaunchedEffect(c.id == null) { if (c.id == null && vm.ctxSettings == null && vm.store.hasKey) vm.loadCtxSettings() }
+        val cfgMax = vm.c.ctxSettings?.opt("context_length")?.toString()?.toDoubleOrNull()?.toLong() ?: 0L
+        LaunchedEffect(c.id == null) { if (c.id == null && vm.c.ctxSettings == null && vm.c.store.hasKey) vm.c.loadCtxSettings() }
         val usage = if (c.ctxMax <= 0 && c.ctxUsed <= 0 && c.id == null) (if (cfgMax > 0) "0/" + fmtTok(cfgMax) else "—")
             else if (c.ctxMax > 0) fmtTok(c.ctxUsed) + "/" + fmtTok(c.ctxMax)
             else if (c.ctxUsed > 0) fmtTok(c.ctxUsed) else stringResource(R.string.ctx_title)

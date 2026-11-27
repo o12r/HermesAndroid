@@ -14,39 +14,19 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
 
-/** A downloadable build. `source` is "pc" or "github". */
-data class UpdateInfo(val versionCode: Int, val versionName: String, val notes: String, val apkUrl: String, val source: String)
-
-/** Server-side config fetched without reinstalling (hotfix). */
-data class Hotfix(
-    val bannerEn: String?, val bannerZh: String?, val minVersionCode: Int, val relayUrl: String?,
-    val attachments: Boolean, val serverSlash: Boolean,
-) {
-    fun banner(zh: Boolean) = (if (zh) bannerZh ?: bannerEn else bannerEn ?: bannerZh)?.takeIf { it.isNotBlank() }
-    companion object {
-        val NONE = Hotfix(null, null, 0, null, attachments = true, serverSlash = true)
-        fun parse(o: JSONObject): Hotfix {
-            val b = o.optJSONObject("banner"); val f = o.optJSONObject("features") ?: JSONObject()
-            fun s(x: JSONObject?, k: String) = x?.takeIf { !it.isNull(k) }?.optString(k)?.takeIf { it.isNotBlank() }
-            return Hotfix(s(b, "en"), s(b, "zh"), o.optInt("min_version_code", 0), s(o, "relay_url"),
-                f.optBoolean("attachments", true), f.optBoolean("server_slash", true))
-        }
-    }
-}
-
 /**
  * In-app updates + hotfix config. Sources, in order:
  *  1. the PC relay: GET {relay}/app/hermes-android/latest.json, .../apk, .../hotfix.json (Bearer key)
  *  2. GitHub: releases/latest of [GITHUB_REPO] (asset *.apk, versionCode in the asset name) and hotfix.json on main.
  */
-class UpdateManager(private val ctx: Context, private val store: SecureStore) {
+class UpdateManager(private val ctx: Context, private val store: Store) : Updater {
     init { runCatching { cleanup() } }
     private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
         .followRedirects(true).build()
 
-    val currentCode: Int = ctx.packageManager.getPackageInfo(ctx.packageName, 0).let {
+    override val currentCode: Int = ctx.packageManager.getPackageInfo(ctx.packageName, 0).let {
         if (Build.VERSION.SDK_INT >= 28) it.longVersionCode.toInt() else @Suppress("DEPRECATION") it.versionCode }
-    val currentName: String = ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
+    override val currentName: String = ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
 
     private fun relayReq(path: String): Request? {
         val key = store.apiKey ?: return null
@@ -60,7 +40,7 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
     }.getOrNull()
 
     /** Newest available build from the chosen [source] ("auto" | "github" | "pc"), or null if none is newer than this one. */
-    suspend fun check(source: String = "auto"): UpdateInfo? = withContext(Dispatchers.IO) {
+    override suspend fun check(source: String): UpdateInfo? = withContext(Dispatchers.IO) {
         val pc = relay()
         when (source) {
             "pc" -> pc?.takeIf { it.versionCode > currentCode }
@@ -92,14 +72,14 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
         return null
     }
 
-    suspend fun hotfix(): Hotfix = withContext(Dispatchers.IO) {
+    override suspend fun hotfix(): Hotfix = withContext(Dispatchers.IO) {
         val o = relayReq("/hotfix.json")?.let { getJson(it) }
             ?: getJson(Request.Builder().url("https://raw.githubusercontent.com/$GITHUB_REPO/main/hotfix.json").build())
         o?.let { runCatching { Hotfix.parse(it) }.getOrNull() } ?: Hotfix.NONE
     }
 
     /** Download the APK and hand it to the system installer (the user confirms). */
-    suspend fun install(u: UpdateInfo, progress: (Int) -> Unit) = withContext(Dispatchers.IO) {
+    override suspend fun install(u: UpdateInfo, progress: (Int) -> Unit) = withContext(Dispatchers.IO) {
         val file = File(ctx.cacheDir, "update-${u.versionCode}.apk")
         ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") && !it.name.startsWith(file.name) }?.forEach { it.delete() }
         // Already downloaded and verified (e.g. the last install was cancelled or failed): install it again, no re-download.
@@ -138,10 +118,10 @@ class UpdateManager(private val ctx: Context, private val store: SecureStore) {
     }
 
     /** Bytes of downloaded / partly downloaded update files in the cache. */
-    fun downloadedSize(): Long = ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") }?.sumOf { it.length() } ?: 0L
+    override fun downloadedSize(): Long = ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") }?.sumOf { it.length() } ?: 0L
 
     /** Delete every downloaded or partial update file (user action). */
-    fun deleteFiles() { ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") }?.forEach { it.delete() } }
+    override fun deleteFiles() { ctx.cacheDir.listFiles()?.filter { it.name.startsWith("update") }?.forEach { it.delete() } }
 
     /** Drop downloaded APKs for versions that are already installed. */
     fun cleanup() {

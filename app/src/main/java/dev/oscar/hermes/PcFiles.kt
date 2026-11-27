@@ -64,16 +64,16 @@ fun PcFileBrowser(vm: ChatViewModel, pick: Boolean, start: String?, onPick: (Str
         scope.launch {
             busy = true; err = null
             try {
-                val j = vm.fsJson("list", JSONObject().put("path", p))
+                val j = vm.c.fsJson("list", JSONObject().put("path", p))
                 path = j.optString("path"); typed = path; parent = if (j.isNull("parent")) null else j.optString("parent")
                 items = parse(j.optJSONArray("items")); quick = if (path.isEmpty()) parse(j.optJSONArray("quick")) else emptyList()
-                if (!pick) vm.filesPath = path
+                if (!pick) vm.c.filesPath = path
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) { if (fallback && p.isNotEmpty()) { load("") } else err = e.message ?: e.toString() }
             finally { busy = false }
         }
     }
-    LaunchedEffect(Unit) { load((if (pick) start else vm.filesPath).orEmpty(), fallback = true) }
+    LaunchedEffect(Unit) { load((if (pick) start else vm.c.filesPath).orEmpty(), fallback = true) }
     BackHandler(asPage && path.isNotEmpty()) { load(parent ?: "") }
 
     fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_SHORT).show()
@@ -164,7 +164,7 @@ fun PcFileBrowser(vm: ChatViewModel, pick: Boolean, start: String?, onPick: (Str
                             onClick = {
                                 menuFor = null
                                 scope.launch {
-                                    try { vm.fsJson(if (section == "quick") "unpin" else "pin", JSONObject().put("path", full)); load(path) }
+                                    try { vm.c.fsJson(if (section == "quick") "unpin" else "pin", JSONObject().put("path", full)); load(path) }
                                     catch (x: kotlinx.coroutines.CancellationException) { throw x }
                                     catch (x: Exception) { err = x.message ?: x.toString() }
                                 }
@@ -207,8 +207,8 @@ fun PcFileBrowser(vm: ChatViewModel, pick: Boolean, start: String?, onPick: (Str
                 val n = name.trim(); nameDlg = null
                 scope.launch {
                     try {
-                        if (kind == "new") vm.fsJson("mkdir", JSONObject().put("path", joinPath(path, n)))
-                        else vm.fsJson("rename", JSONObject().put("path", joinPath(path, old!!)).put("new", n))
+                        if (kind == "new") vm.c.fsJson("mkdir", JSONObject().put("path", joinPath(path, n)))
+                        else vm.c.fsJson("rename", JSONObject().put("path", joinPath(path, old!!)).put("new", n))
                         load(path)
                     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
                     catch (e: Exception) { err = e.message ?: e.toString() }
@@ -223,7 +223,7 @@ fun PcFileBrowser(vm: ChatViewModel, pick: Boolean, start: String?, onPick: (Str
             confirmButton = { TextButton(onClick = {
                 deleting = null
                 scope.launch {
-                    try { vm.fsJson("delete", JSONObject().put("path", joinPath(path, e.name))); load(path) }
+                    try { vm.c.fsJson("delete", JSONObject().put("path", joinPath(path, e.name))); load(path) }
                     catch (x: kotlinx.coroutines.CancellationException) { throw x }
                     catch (x: Exception) { err = x.message ?: x.toString() }
                 }

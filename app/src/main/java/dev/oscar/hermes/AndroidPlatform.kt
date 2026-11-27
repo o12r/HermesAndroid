@@ -1,0 +1,83 @@
+package dev.oscar.hermes
+
+import android.app.Application
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.Uri
+import java.io.File
+
+/** Android implementation of [Platform]: notifications, keep-alive service, connectivity, MediaStore. */
+class AndroidPlatform(private val app: Application, private val store: Store) : Platform {
+    override val visible get() = Notify.visible
+    override fun clearAlerts(session: String?, vararg kinds: String) = Notify.clear(app, session, *kinds)
+    override fun elapsedMs() = android.os.SystemClock.elapsedRealtime()
+    override fun log(tag: String, msg: String) { android.util.Log.w(tag, msg) }
+    override val deviceId: String by lazy { android.provider.Settings.Secure.getString(app.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone" }
+    override val cacheDir: File get() = app.cacheDir
+    private val res get() = L10n.wrap(app, store.lang)
+    override fun string(key: String, vararg a: Any): String = res.getString(res.resources.getIdentifier(key, "string", res.packageName), *a)
+    override fun alert(title: String, text: String, force: Boolean, profile: String?, session: String?, kind: String) =
+        Notify.alert(app, title, text, force = force, profile = profile, session = session, kind = kind)
+    override fun localNet(): Pair<String, String?>? = localNetImpl()
+    /** (own IPv4, default gateway) of the LAN-ish network: Wi-Fi, Ethernet, or WSA/emulator's virtual NIC; never VPN or cellular. */
+    private fun localNetImpl(): Pair<String, String?>? = runCatching {
+        val cm = app.getSystemService(ConnectivityManager::class.java)
+        cm.allNetworks.mapNotNull { n ->
+            val caps = cm.getNetworkCapabilities(n) ?: return@mapNotNull null
+            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
+            val lp = cm.getLinkProperties(n) ?: return@mapNotNull null
+            val ip = lp.linkAddresses.map { it.address }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress ?: return@mapNotNull null
+            val gw = lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }?.gateway?.hostAddress
+            (if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) 0 else 1) to (ip to gw)
+        }.minByOrNull { it.first }?.second
+    }.getOrNull() ?: hotspotNet()
+    /** This phone is the hotspot (the PC joined it): its own AP interface isn't a Network, so read it directly. */
+    private fun hotspotNet(): Pair<String, String?>? = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback && !it.name.startsWith("tun") && !it.name.startsWith("rmnet") }
+            .flatMap { it.inetAddresses.toList() }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress?.let { it to null }
+    }.getOrNull()
+
+    private var netCb: ConnectivityManager.NetworkCallback? = null
+    override fun watchNetwork(onAvailable: () -> Unit, onLost: () -> Unit) {
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = onAvailable()
+            override fun onLost(network: Network) = onLost()
+        }
+        netCb = cb
+        app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(cb)
+    }
+    override fun unwatchNetwork() {
+        netCb?.let { cb -> runCatching { app.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
+        netCb = null
+    }
+    override fun isSaver() = KeepAliveService.isSaver(app)
+    override fun keepAliveStart() { KeepAliveService.start(app) }
+    override fun keepAliveStop() { KeepAliveService.stop(app) }
+    override fun is24h() = android.text.format.DateFormat.is24HourFormat(app.applicationContext)
+    override val updater: Updater by lazy { UpdateManager(app, store) }
+    override suspend fun saveInbox(name: String, progress: (Int) -> Unit): String = Inbox.save(app, store, name, progress).toString()
+    override fun saveToDownloads(file: File, name: String): String {
+        val cr = app.contentResolver
+        val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name); put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+            put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = cr.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw ApiException("Couldn't create the file in Downloads")
+        try {
+            cr.openOutputStream(uri)!!.use { o -> file.inputStream().use { it.copyTo(o) } }
+            cr.update(uri, android.content.ContentValues().apply { put(android.provider.MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+        } catch (e: Exception) { cr.delete(uri, null, null); throw e }
+        return uri.toString()
+    }
+    override fun fileTime(uri: String): Long = runCatching {
+        if (uri.isBlank()) return Long.MAX_VALUE
+        val u = Uri.parse(uri)
+        app.contentResolver.query(u, null, null, null, null)?.use { q ->
+            if (!q.moveToFirst()) return@use null
+            val ms = q.getColumnIndex("last_modified").takeIf { it >= 0 }?.let { q.getLong(it) }?.takeIf { it > 0 }
+            val sec = listOf("date_modified", "date_added").map { q.getColumnIndex(it) }.firstOrNull { it >= 0 }?.let { q.getLong(it) * 1000 }?.takeIf { it > 0 }
+            ms ?: sec
+        }
+    }.getOrNull() ?: Long.MAX_VALUE
+}

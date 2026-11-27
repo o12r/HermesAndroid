@@ -44,7 +44,6 @@ private val IMAGE_EXT = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic"
 private val VIDEO_EXT = setOf("mp4", "webm", "mkv", "3gp", "mov")
 
 /** Images are shown inline and fetched from the PC automatically. */
-fun isImageName(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in IMAGE_EXT
 
 /**
  * A file in the chat. With [uriStr] (saved to Downloads): images and videos show a thumbnail, tap opens it.

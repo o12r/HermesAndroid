@@ -78,26 +78,26 @@ import java.util.Date
 
 @Composable
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.reconnect(); vm.checkUpdates(manual = false) }
-    BackHandler(vm.screen != Screen.Sessions && vm.store.hasKey) {
-        if (vm.screen == Screen.Screens || vm.screen == Screen.Settings) vm.leavePage()
-        else vm.openPage("sessions") }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.c.reconnect(); vm.c.checkUpdates(manual = false) }
+    BackHandler(vm.c.screen != Screen.Sessions && vm.c.store.hasKey) {
+        if (vm.c.screen == Screen.Screens || vm.c.screen == Screen.Settings) vm.c.leavePage()
+        else vm.c.openPage("sessions") }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
         Banner(vm)
-        Box(Modifier.weight(1f)) { when (vm.screen) {
+        Box(Modifier.weight(1f)) { when (vm.c.screen) {
             Screen.Settings -> SettingsScreen(vm, recreate)
             Screen.Sessions -> SessionsScreen(vm)
             Screen.Chat -> ChatScreen(vm,
-                onOpenContextSettings = { vm.openSettingsSection("chat") },
-                onOpenModelSettings = { vm.openSettingsSection("model") })
+                onOpenContextSettings = { vm.c.openSettingsSection("chat") },
+                onOpenModelSettings = { vm.c.openSettingsSection("model") })
             Screen.Screens -> ScreensScreen(vm)
-            Screen.Files -> PcFileBrowser(vm, pick = false, start = null, onPick = {}, onClose = { vm.leavePage() }, asPage = true)
+            Screen.Files -> PcFileBrowser(vm, pick = false, start = null, onPick = {}, onClose = { vm.c.leavePage() }, asPage = true)
         } }
     }
     UpdateDialog(vm)
-    LaunchedEffect(Unit) { vm.pollElevate() }
-    vm.elevate.firstOrNull()?.let { e ->
+    LaunchedEffect(Unit) { vm.c.pollElevate() }
+    vm.c.elevate.firstOrNull()?.let { e ->
         AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.elevate_title)) },
             text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(stringResource(R.string.elevate_body))
@@ -107,32 +107,32 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
                 Text(stringResource(R.string.elevate_publisher, e.optString("publisher")), style = MaterialTheme.typography.bodySmall)
                 Text("SHA-256 " + e.optString("sha256").take(16) + "…", style = MaterialTheme.typography.bodySmall)
             } },
-            confirmButton = { TextButton({ vm.decideElevate(e.optString("id"), true) }) { Text(stringResource(R.string.elevate_allow)) } },
-            dismissButton = { OutlinedButton({ vm.decideElevate(e.optString("id"), false) }) { Text(stringResource(R.string.deny)) } })
+            confirmButton = { TextButton({ vm.c.decideElevate(e.optString("id"), true) }) { Text(stringResource(R.string.elevate_allow)) } },
+            dismissButton = { OutlinedButton({ vm.c.decideElevate(e.optString("id"), false) }) { Text(stringResource(R.string.deny)) } })
     }
-    vm.modelConfirm?.let { (msg, _) ->
-        AlertDialog(onDismissRequest = { vm.confirmModel(false) }, title = { Text(stringResource(R.string.confirm_model_title)) },
+    vm.c.modelConfirm?.let { (msg, _) ->
+        AlertDialog(onDismissRequest = { vm.c.confirmModel(false) }, title = { Text(stringResource(R.string.confirm_model_title)) },
             text = { Text(msg) },
-            confirmButton = { TextButton({ vm.confirmModel(true) }) { Text(stringResource(R.string.switch_anyway)) } },
-            dismissButton = { TextButton({ vm.confirmModel(false) }) { Text(stringResource(android.R.string.cancel)) } })
+            confirmButton = { TextButton({ vm.c.confirmModel(true) }) { Text(stringResource(R.string.switch_anyway)) } },
+            dismissButton = { TextButton({ vm.c.confirmModel(false) }) { Text(stringResource(android.R.string.cancel)) } })
     }
-    vm.compressAsk?.let { c ->
-        AlertDialog(onDismissRequest = { vm.answerCompress(false) }, title = { Text(stringResource(R.string.compress_ask_title)) },
+    vm.c.compressAsk?.let { c ->
+        AlertDialog(onDismissRequest = { vm.c.answerCompress(false) }, title = { Text(stringResource(R.string.compress_ask_title)) },
             text = { Text(stringResource(R.string.compress_ask_msg, c.ctxUsed, c.ctxMax)) },
-            confirmButton = { TextButton({ vm.answerCompress(true) }) { Text(stringResource(R.string.compress_now)) } },
-            dismissButton = { TextButton({ vm.answerCompress(false) }) { Text(stringResource(android.R.string.cancel)) } })
+            confirmButton = { TextButton({ vm.c.answerCompress(true) }) { Text(stringResource(R.string.compress_now)) } },
+            dismissButton = { TextButton({ vm.c.answerCompress(false) }) { Text(stringResource(android.R.string.cancel)) } })
     }
-    vm.approval?.let { a ->
+    vm.c.approval?.let { a ->
         AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.approve_q)) },
             text = { Column { if (a.description.isNotBlank()) Text(a.description); Spacer(Modifier.height(8.dp))
                 Text(a.command, fontFamily = FontFamily.Monospace) } },
             confirmButton = { Row { a.choices.filter { it != "deny" }.forEach { c ->
-                TextButton(onClick = { vm.answerApproval(c) }) { Text(when (c) {
+                TextButton(onClick = { vm.c.answerApproval(c) }) { Text(when (c) {
                     "once" -> stringResource(R.string.approve_once); "session" -> stringResource(R.string.approve_session)
                     "always" -> stringResource(R.string.approve_always); else -> c }) } } } },
-            dismissButton = { OutlinedButton(onClick = { vm.answerApproval("deny") }) { Text(stringResource(R.string.deny)) } })
+            dismissButton = { OutlinedButton(onClick = { vm.c.answerApproval("deny") }) { Text(stringResource(R.string.deny)) } })
     }
-    vm.clarify?.let { c ->
+    vm.c.clarify?.let { c ->
         val answers = remember(c.reqId) { mutableStateMapOf<String, String>() }
         AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.hermes_asks)) },
             text = { Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -155,12 +155,12 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
                             placeholder = { Text(stringResource(if (q.choices.isEmpty()) R.string.answer else R.string.other)) }, modifier = Modifier.fillMaxWidth())
                     }
                 } } },
-            confirmButton = { Button(onClick = { vm.answerClarify(c.questions.associate { q ->
+            confirmButton = { Button(onClick = { vm.c.answerClarify(c.questions.associate { q ->
                 // Multi-select: Hermes takes a JSON array of the chosen labels (typed text, if any, is its own entry).
                 q.qid to if (!q.multi) (answers[q.qid] ?: "") else {
                     val picked = q.choices.filter { answers[q.qid + "\u0000" + it] == "1" } + listOfNotNull(answers[q.qid]?.trim()?.ifBlank { null })
                     if (picked.isEmpty()) "" else org.json.JSONArray(picked).toString()
                 } }) }) { Text(stringResource(R.string.submit)) } },
-            dismissButton = { TextButton(onClick = { vm.answerClarify(null) }) { Text(stringResource(R.string.skip)) } })
+            dismissButton = { TextButton(onClick = { vm.c.answerClarify(null) }) { Text(stringResource(R.string.skip)) } })
     }
 }

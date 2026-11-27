@@ -86,31 +86,31 @@ fun HermesTopBar(vm: ChatViewModel, title: @Composable () -> Unit, nav: (@Compos
         Box(Modifier.weight(1f).padding(horizontal = if (nav == null) 10.dp else 4.dp)) { title() }
         actions()
         IconButton(onClick = onRefresh, enabled = refreshEnabled, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-        IconButton(onClick = { vm.openPage("pc") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Monitor, stringResource(R.string.pc)) }
-        IconButton(onClick = { vm.openPage("settings") }, modifier = Modifier.size(40.dp)) {
-            BadgedBox(badge = { if (vm.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } }
+        IconButton(onClick = { vm.c.openPage("pc") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Monitor, stringResource(R.string.pc)) }
+        IconButton(onClick = { vm.c.openPage("settings") }, modifier = Modifier.size(40.dp)) {
+            BadgedBox(badge = { if (vm.c.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } }
     }
 }
 
 @Composable
 fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
     // Tabs replace the back button in a chat, so they show even for a single chat; ＋ goes to the session list.
-    if (onList && vm.tabs.isEmpty()) return
+    if (onList && vm.c.tabs.isEmpty()) return
     val state = vm.tabsState
-    val pageScreen = vm.screen != Screen.Chat
-    val idx = vm.tabs.indexOfFirst { it === (vm.activePage ?: vm.cur) }
+    val pageScreen = vm.c.screen != Screen.Chat
+    val idx = vm.c.tabs.indexOfFirst { it === (vm.c.activePage ?: vm.c.cur) }
     LaunchedEffect(idx) { if (idx >= 0 && state.layoutInfo.visibleItemsInfo.none { it.index == idx }) state.animateScrollToItem(idx) }
     val newChat = stringResource(R.string.new_chat)
     var dragKey by remember { mutableStateOf<Int?>(null) }
     var dragOff by remember { mutableStateOf(0f) }
     androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
-        items(vm.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
-            val sel = if (c.page != null) c === vm.activePage else !pageScreen && c === vm.cur
+        items(vm.c.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
+            val sel = if (c.page != null) c === vm.c.activePage else !pageScreen && c === vm.c.cur
             val label = buildString {
                 if (c.readOnly && c.page == null) append("🔒 ")
                 if (c.streaming) append("⏳ ")
-                if (c.id != null && c.id in vm.vdAgents) append("🖥 ")
+                if (c.id != null && c.id in vm.c.vdAgents) append("🖥 ")
                 if (c.approval != null || c.clarify != null) append("❓ ")
                 append(c.title ?: newChat)
                 if (!sel && c.draft.isNotBlank()) append(" ✎")
@@ -118,7 +118,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             if (sel) LaunchedEffect(c.unread) { c.unread = false }
             val dragging = dragKey == System.identityHashCode(c)
             Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
-            InputChip(selected = sel, onClick = { if (!sel) vm.switchTo(c) },
+            InputChip(selected = sel, onClick = { if (!sel) vm.c.switchTo(c) },
                 leadingIcon = if (c.page != null) ({ Icon(when (c.page) { "pc" -> Icons.Default.Monitor; "files" -> Icons.Default.Folder; "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
                     Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } }),
                 colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -131,28 +131,28 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
                             onDragCancel = { dragKey = null; dragOff = 0f },
                             onDrag = { ch, d ->
                                 ch.consume(); dragOff += d.x
-                                val i = vm.tabs.indexOfFirst { it === c }
+                                val i = vm.c.tabs.indexOfFirst { it === c }
                                 val items = state.layoutInfo.visibleItemsInfo
                                 val me = items.firstOrNull { it.key == System.identityHashCode(c) }
                                 if (i >= 0 && me != null) {
                                     val center = me.offset + me.size / 2f + dragOff
-                                    val other = items.firstOrNull { it.index != i && it.index < vm.tabs.size && center >= it.offset && center <= it.offset + it.size }
+                                    val other = items.firstOrNull { it.index != i && it.index < vm.c.tabs.size && center >= it.offset && center <= it.offset + it.size }
                                     if (other != null) {
                                         val shift = other.size + 6.dp.toPx()
-                                        vm.tabs.add(other.index, vm.tabs.removeAt(i))
+                                        vm.c.tabs.add(other.index, vm.c.tabs.removeAt(i))
                                         dragOff += if (other.index > i) -shift else shift
                                     }
                                 }
                             })
                     },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 110.dp)) },
-                trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.closeTab(c) }) })
+                trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.c.closeTab(c) }) })
             if (!sel && c.unread) Box(Modifier.align(Alignment.BottomEnd).padding(bottom = 1.dp, end = 1.dp).size(16.dp)
                 .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
             }
         }
         item(key = "plus") {
-            InputChip(selected = false, onClick = { vm.openPage("sessions") },
+            InputChip(selected = false, onClick = { vm.c.openPage("sessions") },
                 label = { Icon(Icons.Default.Add, stringResource(R.string.sessions)) })
         }
     }
@@ -163,7 +163,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
 fun SlashSuggestions(vm: ChatViewModel, input: String, set: (String) -> Unit) {
     if (!input.startsWith("/") || input.contains(' ') || input.contains('\n')) return
     val q = input.drop(1).lowercase()
-    val items = vm.commandList()
+    val items = vm.c.commandList()
         .filter { it.first.drop(1).lowercase().contains(q) }.sortedBy { !it.first.drop(1).lowercase().startsWith(q) }.take(30)
     if (items.isEmpty()) return
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).padding(horizontal = 8.dp)) {

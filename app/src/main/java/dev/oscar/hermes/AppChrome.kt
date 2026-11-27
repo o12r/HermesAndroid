@@ -79,7 +79,7 @@ import java.util.Date
 @Composable
 fun HotfixBanner(vm: ChatViewModel) {
     val zh = L10n.isZh(LocalContext.current)
-    val msg = vm.hotfix.banner(zh) ?: return
+    val msg = vm.c.hotfix.banner(zh) ?: return
     Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.tertiaryContainer).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Default.Campaign, null)
@@ -89,8 +89,8 @@ fun HotfixBanner(vm: ChatViewModel) {
 
 @Composable
 fun UpdateDialog(vm: ChatViewModel) {
-    val u = vm.update
-    val force = vm.forceUpdate
+    val u = vm.c.update
+    val force = vm.c.forceUpdate
     var dismissed by remember(u?.versionCode) { mutableStateOf(false) }
     if ((u == null || dismissed) && !force) return
     val src = when (u?.source) { "pc" -> stringResource(R.string.source_pc); "github" -> stringResource(R.string.source_github); else -> "" }
@@ -100,30 +100,30 @@ fun UpdateDialog(vm: ChatViewModel) {
             if (force) Text(stringResource(R.string.update_required), color = MaterialTheme.colorScheme.error)
             if (u != null) { Text(stringResource(R.string.update_from, src), style = MaterialTheme.typography.labelMedium)
                 if (u.notes.isNotBlank()) Text(u.notes, maxLines = 12, overflow = TextOverflow.Ellipsis) }
-            vm.updateProgress?.let { p -> LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth())
+            vm.c.updateProgress?.let { p -> LinearProgressIndicator(progress = { p / 100f }, modifier = Modifier.fillMaxWidth())
                 Text(stringResource(R.string.downloading, p)) }
-            vm.updateStatus?.let { Text(it) }
+            vm.c.updateStatus?.let { Text(it) }
         } },
-        confirmButton = { if (u != null) Button(onClick = { vm.installUpdate() }, enabled = vm.updateProgress == null) { Text(stringResource(R.string.install)) }
-            else TextButton(onClick = { vm.checkUpdates(manual = true) }) { Text(stringResource(R.string.check_updates)) } },
+        confirmButton = { if (u != null) Button(onClick = { vm.c.installUpdate() }, enabled = vm.c.updateProgress == null) { Text(stringResource(R.string.install)) }
+            else TextButton(onClick = { vm.c.checkUpdates(manual = true) }) { Text(stringResource(R.string.check_updates)) } },
         dismissButton = {
-            if (vm.updateProgress != null) TextButton(onClick = { vm.cancelUpdate() }) { Text(stringResource(R.string.cancel_update)) }
+            if (vm.c.updateProgress != null) TextButton(onClick = { vm.c.cancelUpdate() }) { Text(stringResource(R.string.cancel_update)) }
             else if (!force) TextButton(onClick = { dismissed = true }) { Text(stringResource(R.string.later)) } })
 }
 
 @Composable
 fun Banner(vm: ChatViewModel) {
-    val msg = vm.error ?: return
-    val c = if (vm.offline) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+    val msg = vm.c.error ?: return
+    val c = if (vm.c.offline) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
     Row(Modifier.fillMaxWidth().background(c).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(if (vm.offline) Icons.Default.CloudOff else Icons.Default.ErrorOutline, null)
+        Icon(if (vm.c.offline) Icons.Default.CloudOff else Icons.Default.ErrorOutline, null)
         Text(msg, Modifier.weight(1f).padding(horizontal = 8.dp), style = MaterialTheme.typography.bodySmall)
         val clip = androidx.compose.ui.platform.LocalClipboardManager.current
         val ctx = LocalContext.current
         IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(msg)); android.widget.Toast.makeText(ctx, ctx.getString(R.string.copied), android.widget.Toast.LENGTH_SHORT).show() }, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), modifier = Modifier.size(18.dp)) }
-        TextButton(onClick = { vm.error = null; vm.reconnect() }) { Text(stringResource(R.string.retry)) }
-        TextButton(onClick = { vm.cancelRequest() }) { Text(stringResource(R.string.cancel)) }
+        TextButton(onClick = { vm.c.error = null; vm.c.reconnect() }) { Text(stringResource(R.string.retry)) }
+        TextButton(onClick = { vm.c.cancelRequest() }) { Text(stringResource(R.string.cancel)) }
     }
 }
 
@@ -131,13 +131,13 @@ fun Banner(vm: ChatViewModel) {
 fun ProfileMenu(vm: ChatViewModel) {
     var open by remember { mutableStateOf(false) }
     Box {
-        AssistChip(onClick = { open = true; vm.scanProfiles() }, label = { Text(vm.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
+        AssistChip(onClick = { open = true; vm.c.scanProfiles() }, label = { Text(vm.c.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
         DropdownMenu(open, { open = false }) {
-            vm.orderedProfiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
+            vm.c.orderedProfiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
                     if (desc.isNotBlank()) Text(desc, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-                onClick = { open = false; vm.setProfileTo(p) }, modifier = Modifier.widthIn(max = 360.dp),
-                trailingIcon = { if (p == vm.profile) Icon(Icons.Default.Check, null) }) }
+                onClick = { open = false; vm.c.setProfileTo(p) }, modifier = Modifier.widthIn(max = 360.dp),
+                trailingIcon = { if (p == vm.c.profile) Icon(Icons.Default.Check, null) }) }
         }
     }
 }
@@ -145,7 +145,7 @@ fun ProfileMenu(vm: ChatViewModel) {
 /** Profile order editor: drag a row by its handle; the order is saved when the drag ends. */
 @Composable
 fun ReorderProfiles(vm: ChatViewModel, modifier: Modifier = Modifier) {
-    val order = remember { mutableStateListOf<String>().apply { addAll(vm.orderedProfiles.map { it.first }) } }
+    val order = remember { mutableStateListOf<String>().apply { addAll(vm.c.orderedProfiles.map { it.first }) } }
     var dragging by remember { mutableStateOf<String?>(null) }
     var off by remember { mutableFloatStateOf(0f) }
     val rowH = 52.dp
@@ -161,8 +161,8 @@ fun ReorderProfiles(vm: ChatViewModel, modifier: Modifier = Modifier) {
                 Text(prof, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = cs.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Icon(Icons.Default.DragHandle, null, Modifier.size(40.dp).padding(8.dp).pointerInput(prof) {
                     detectDragGestures(onDragStart = { dragging = prof; off = 0f },
-                        onDragEnd = { dragging = null; off = 0f; vm.saveProfileOrder(order.toList()) },
-                        onDragCancel = { dragging = null; off = 0f; vm.saveProfileOrder(order.toList()) }) { c, d ->
+                        onDragEnd = { dragging = null; off = 0f; vm.c.saveProfileOrder(order.toList()) },
+                        onDragCancel = { dragging = null; off = 0f; vm.c.saveProfileOrder(order.toList()) }) { c, d ->
                         c.consume(); off += d.y
                         val i = order.indexOf(prof)
                         if (off > hPx / 2 && i < order.lastIndex) { order.add(i + 1, order.removeAt(i)); off -= hPx }
