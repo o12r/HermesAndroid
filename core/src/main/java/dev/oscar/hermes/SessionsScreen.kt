@@ -290,7 +290,7 @@ fun SessionsScreen(vm: ChatViewModel) {
         var name by remember { mutableStateOf("") }
         var folder by remember { mutableStateOf("") }
         var browseNew by remember { mutableStateOf(true) }   // the folder picker opens straight away when a project is created
-        if (browseNew) PcFileBrowser(vm, pick = true, start = folder.ifBlank { vm.c.pc.pcHome }, onPick = { folder = it; if (name.isBlank()) name = it.trimEnd('\\').substringAfterLast('\\'); browseNew = false }, onClose = { browseNew = false })
+        if (browseNew) FolderPicker(vm, start = folder.ifBlank { vm.c.pc.pcHome }, onPick = { folder = it; if (name.isBlank()) name = it.trimEnd('\\').substringAfterLast('\\'); browseNew = false }, onClose = { browseNew = false })
         if (!browseNew) AlertDialog(onDismissRequest = { creating = false }, title = { Text(stringResource(R.string.new_project)) },
             text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.project_name)) }, singleLine = true)
@@ -308,7 +308,7 @@ fun SessionsScreen(vm: ChatViewModel) {
             confirmButton = { Button(onClick = { vm.c.proj.missingFolder = null; vm.c.proj.createProject(name, path, mkdir = true) }) { Text(stringResource(R.string.create_folder)) } },
             dismissButton = { TextButton(onClick = { vm.c.proj.missingFolder = null }) { Text(stringResource(R.string.cancel)) } })
     }
-    changingFolder?.let { p -> PcFileBrowser(vm, pick = true, start = p.path, onPick = { vm.c.proj.changeProjectFolder(p, it); changingFolder = null }, onClose = { changingFolder = null }) }
+    changingFolder?.let { p -> FolderPicker(vm, start = p.path, onPick = { vm.c.proj.changeProjectFolder(p, it); changingFolder = null }, onClose = { changingFolder = null }) }
     deletingProject?.let { p ->
         var withFolder by remember(p.id) { mutableStateOf(false) }
         var withSessions by remember(p.id) { mutableStateOf(false) }

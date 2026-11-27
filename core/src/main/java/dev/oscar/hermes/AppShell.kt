@@ -80,7 +80,7 @@ import java.util.Date
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.c.conn.reconnect(); vm.c.checkUpdates(manual = false) }
     BackHandler(vm.c.screen != Screen.Sessions && vm.c.store.hasKey) {
-        if (vm.c.screen == Screen.Screens || vm.c.screen == Screen.Settings) vm.c.leavePage()
+        if (vm.c.screen == Screen.Settings || vm.c.activePage?.page == "pc") vm.c.leavePage()
         else vm.c.openPage("sessions") }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
@@ -91,25 +91,11 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
             Screen.Chat -> ChatScreen(vm,
                 onOpenContextSettings = { vm.c.openSettingsSection("chat") },
                 onOpenModelSettings = { vm.c.openSettingsSection("model") })
-            Screen.Screens -> ScreensScreen(vm)
-            Screen.Files -> PcFileBrowser(vm, pick = false, start = null, onPick = {}, onClose = { vm.c.leavePage() }, asPage = true)
+            Screen.Feature -> { val k = vm.c.activePage?.page.orEmpty(); vm.uiFeatures.firstOrNull { it.hasPage(k) }?.Page(vm, k) }
         } }
     }
     UpdateDialog(vm)
-    LaunchedEffect(Unit) { vm.c.scr.pollElevate() }
-    vm.c.scr.elevate.firstOrNull()?.let { e ->
-        AlertDialog(onDismissRequest = {}, title = { Text(stringResource(R.string.elevate_title)) },
-            text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(stringResource(R.string.elevate_body))
-                Text(e.optString("exe"), fontFamily = FontFamily.Monospace)
-                val args = e.optJSONArray("args")
-                if (args != null && args.length() > 0) Text((0 until args.length()).joinToString(" ") { args.optString(it) }, fontFamily = FontFamily.Monospace)
-                Text(stringResource(R.string.elevate_publisher, e.optString("publisher")), style = MaterialTheme.typography.bodySmall)
-                Text("SHA-256 " + e.optString("sha256").take(16) + "…", style = MaterialTheme.typography.bodySmall)
-            } },
-            confirmButton = { TextButton({ vm.c.scr.decideElevate(e.optString("id"), true) }) { Text(stringResource(R.string.elevate_allow)) } },
-            dismissButton = { OutlinedButton({ vm.c.scr.decideElevate(e.optString("id"), false) }) { Text(stringResource(R.string.deny)) } })
-    }
+    vm.uiFeatures.forEach { it.Overlay(vm) }
     vm.c.proj.modelConfirm?.let { (msg, _) ->
         AlertDialog(onDismissRequest = { vm.c.proj.confirmModel(false) }, title = { Text(stringResource(R.string.confirm_model_title)) },
             text = { Text(msg) },

@@ -87,21 +87,6 @@ class PcController(val hub: ChatController) {
         }
     }
 
-    /** PC resource samples (CPU/mem/GPU %), polled by the PC page while it is visible; keeps the last 300 points. */
-    var pcStats by mutableStateOf<List<PcStat>>(emptyList())
-    suspend fun fetchPcStats(): PcStat? = withContext(Dispatchers.IO) {
-        val key = store.apiKey ?: return@withContext null
-        runCatching {
-            hub.relayHttp.newCall(okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/pc/stats")
-                .header("Authorization", "Bearer $key").build()).execute().use { r ->
-                    if (!r.isSuccessful) return@use null
-                    val j = JSONObject(r.body!!.string())
-                    PcStat(j.optDoubleOrNull("cpu"), j.optDoubleOrNull("mem"), j.optDoubleOrNull("gpu"), j.optLong("ts", 0),
-                        j.optJSONArray("gpus")?.let { a -> List(a.length()) { a.getJSONObject(it).let { g -> g.optString("name") to g.optDouble("util", 0.0) } } } ?: emptyList())
-                }
-        }.getOrNull()
-    }
-    fun addPcStat(s: PcStat) { pcStats = (pcStats + s).takeLast(300) }
 
     suspend fun fsCall(op: String, path: String, keep: List<String> = emptyList()): JSONObject = withContext(Dispatchers.IO) {
         val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))

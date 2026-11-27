@@ -6,7 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.util.UUID
 
-enum class Screen { Sessions, Chat, Settings, Screens, Files }
+enum class Screen { Sessions, Chat, Settings, Feature }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null,
     /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
     val steps: List<Step> = emptyList(),
@@ -38,7 +38,6 @@ data class PcScreen(val name: String, val kind: String, val role: String, val in
     val title: String? = null, val project: String? = null)
 data class ClarifyQ(val qid: String, val question: String, val choices: List<String>, val multi: Boolean = false)
 /** One PC resource sample from the relay's GET /pc/stats (percentages, gpu null when unavailable). */
-data class PcStat(val cpu: Double?, val mem: Double?, val gpu: Double?, val ts: Long, val gpus: List<Pair<String, Double>> = emptyList())
 data class Clarify(val reqId: String, val questions: List<ClarifyQ>, val gen: Int? = null)  // gen != null: canonical prompt
 
 /** State of one conversation. Kept per chat so several can run at once and events never land in the wrong one. */

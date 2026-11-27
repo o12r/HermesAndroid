@@ -39,11 +39,11 @@ import kotlinx.coroutines.delay
 @Composable
 fun PcStatsBar(vm: ChatViewModel) {
     var expanded by remember { mutableStateOf(false) }
-    val last = vm.c.pc.pcStats.lastOrNull()
+    val last = vm.c.pcs.pcStats.lastOrNull()
     // Poll only while this composable is on screen (it is composed only when the PC page is visible).
     LaunchedEffect(Unit) {
         while (true) {
-            vm.c.pc.fetchPcStats()?.let { vm.c.pc.addPcStat(it) }
+            vm.c.pcs.fetchPcStats()?.let { vm.c.pcs.addPcStat(it) }
             delay(1000)
         }
     }
@@ -65,12 +65,12 @@ fun PcStatsBar(vm: ChatViewModel) {
             if (expanded) {
                 HorizontalDivider()
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    StatGraph("CPU", vm.c.pc.pcStats.map { it.cpu }, MaterialTheme.colorScheme.primary)
-                    StatGraph(stringResource(R.string.pc_mem), vm.c.pc.pcStats.map { it.mem }, MaterialTheme.colorScheme.secondary)
-                    val names = vm.c.pc.pcStats.lastOrNull()?.gpus.orEmpty().map { it.first }
-                    if (names.isEmpty()) StatGraph(stringResource(R.string.pc_gpu), vm.c.pc.pcStats.mapNotNull { it.gpu }, MaterialTheme.colorScheme.tertiary)
+                    StatGraph("CPU", vm.c.pcs.pcStats.map { it.cpu }, MaterialTheme.colorScheme.primary)
+                    StatGraph(stringResource(R.string.pc_mem), vm.c.pcs.pcStats.map { it.mem }, MaterialTheme.colorScheme.secondary)
+                    val names = vm.c.pcs.pcStats.lastOrNull()?.gpus.orEmpty().map { it.first }
+                    if (names.isEmpty()) StatGraph(stringResource(R.string.pc_gpu), vm.c.pcs.pcStats.mapNotNull { it.gpu }, MaterialTheme.colorScheme.tertiary)
                     else names.forEachIndexed { i, n ->
-                        StatGraph(stringResource(R.string.pc_gpu) + i + " · " + n, vm.c.pc.pcStats.mapNotNull { s -> s.gpus.getOrNull(i)?.second },
+                        StatGraph(stringResource(R.string.pc_gpu) + i + " · " + n, vm.c.pcs.pcStats.mapNotNull { s -> s.gpus.getOrNull(i)?.second },
                             if (i % 2 == 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error) }
                 }
             }

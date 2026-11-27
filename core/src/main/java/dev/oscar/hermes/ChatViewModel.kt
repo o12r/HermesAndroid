@@ -47,11 +47,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.IO) { cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) ?: name } }
         c.pc.fsUpload(name, { cr.openInputStream(uri)!! }, folder, overwrite)
     }
-    /** JPEG of one PC screen, decoded. */
-    suspend fun screenShot(name: String): Bitmap = withContext(Dispatchers.IO) {
-        val b = c.scr.screenShotBytes(name)
-        BitmapFactory.decodeByteArray(b, 0, b.size) ?: throw ApiException("bad image")
-    }
 
     override fun onCleared() { c.close() }
 }

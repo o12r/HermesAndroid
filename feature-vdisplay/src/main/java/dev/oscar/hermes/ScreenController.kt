@@ -153,7 +153,7 @@ class ScreenController(val hub: ChatController) {
             }
             o?.optString("error")?.takeIf { it.isNotBlank() }?.let { hub.status = it }
         } catch (e: Exception) { hub.status = e.message } finally { vdBusy = false }
-        if (op.startsWith("screen-") && hub.screen == Screen.Screens) loadScreens()
+        if (op.startsWith("screen-") && hub.activePage?.page == "pc") loadScreens()
     }
 
 }

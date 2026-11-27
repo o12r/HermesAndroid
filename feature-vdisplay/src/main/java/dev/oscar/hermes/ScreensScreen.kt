@@ -99,7 +99,7 @@ fun ScreensScreen(vm: ChatViewModel) {
             nav = { IconButton(onClick = { vm.c.leavePage() }, modifier = Modifier.size(40.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
             onRefresh = { vm.c.scr.loadScreens() }, refreshEnabled = !vm.c.scr.screensBusy)
         ChatTabs(vm, onList = true)
-        PcStatsBar(vm)
+        vm.uiFeatures.forEach { it.Slot(vm, "pc.top") }
         if (vm.c.scr.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
         val pc = vm.c.scr.pcScreens.filter { it.kind != "agent" }
         val agents = vm.c.scr.pcScreens.filter { it.kind == "agent" }
@@ -126,7 +126,7 @@ fun ScreensScreen(vm: ChatViewModel) {
         if (vm.c.scr.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 HorizontalDivider()
             } }
-            item { ListItem(leadingContent = { Icon(Icons.Default.Folder, null) }, headlineContent = { Text(stringResource(R.string.pf_title)) },
+            if (vm.uiFeatures.any { it.hasPage("files") }) item { ListItem(leadingContent = { Icon(Icons.Default.Folder, null) }, headlineContent = { Text(stringResource(R.string.pf_title)) },
                 supportingContent = { Text(stringResource(R.string.pf_hint)) }, modifier = Modifier.clickable { vm.c.openPage("files") }) }
             item { Text(stringResource(R.string.screens_pc), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) }
             items(pc, key = { "pc:" + it.name }) { sc -> Column { ScreenRow(screenLabel(sc), sc, sc.on, screenActions(vm, sc)) { toggle(sc) }
@@ -213,4 +213,10 @@ fun ScreenInline(vm: ChatViewModel, sc: PcScreen, close: () -> Unit) {
         sc.cwd?.let { Text("📁 $it", style = MaterialTheme.typography.bodySmall) }
         sc.session?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
     }
+}
+
+/** JPEG of one PC screen, decoded. */
+suspend fun ChatViewModel.screenShot(name: String): android.graphics.Bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    val b = c.scr.screenShotBytes(name)
+    android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size) ?: throw ApiException("bad image")
 }

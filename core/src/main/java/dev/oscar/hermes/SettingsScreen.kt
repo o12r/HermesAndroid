@@ -105,7 +105,7 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
           when (sub) {
             "" -> {
                 @Composable fun Group(id: String, icon: androidx.compose.ui.graphics.vector.ImageVector, summary: String, badge: Boolean = false) =
-                    Card(Modifier.fillMaxWidth().clickable { if (id == "screens") vm.c.scr.openScreens(Screen.Settings) else sub = id }) {
+                    Card(Modifier.fillMaxWidth().clickable { if (id == "screens") vm.c.openPage("pc") else sub = id }) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             BadgedBox(badge = { if (badge) Badge() }) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }
                             Spacer(Modifier.width(16.dp))
@@ -119,7 +119,7 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 Group("chat", Icons.Default.DataUsage, vm.c.proj.ctxSettings?.let { c -> listOfNotNull(c.optString("compression_model").takeIf { it.isNotBlank() && it != "null" },
                     c.opt("context_length")?.takeIf { it != JSONObject.NULL }?.toString()).joinToString(" · ") } ?: stringResource(R.string.ctx_all_profiles))
                 Group("model", Icons.Default.Memory, vm.c.proj.modelSettings?.optJSONObject("main")?.opt("model")?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() } ?: stringResource(R.string.server_default))
-                Group("screens", Icons.Default.Monitor, stringResource(R.string.screens_manage))
+                if (vm.uiFeatures.any { it.hasPage("pc") }) Group("screens", Icons.Default.Monitor, stringResource(R.string.screens_manage))
                 Group("upd", Icons.Default.SystemUpdate, stringResource(R.string.version, vm.c.updates.currentName, vm.c.updates.currentCode), badge = vm.c.update != null)
                 Group("about", Icons.Default.Info, "Hermes Android")
             }

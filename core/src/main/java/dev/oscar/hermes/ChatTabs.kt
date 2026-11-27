@@ -86,7 +86,7 @@ fun HermesTopBar(vm: ChatViewModel, title: @Composable () -> Unit, nav: (@Compos
         Box(Modifier.weight(1f).padding(horizontal = if (nav == null) 10.dp else 4.dp)) { title() }
         actions()
         IconButton(onClick = onRefresh, enabled = refreshEnabled, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-        IconButton(onClick = { vm.c.openPage("pc") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Monitor, stringResource(R.string.pc)) }
+        if (vm.uiFeatures.any { it.hasPage("pc") }) IconButton(onClick = { vm.c.openPage("pc") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Monitor, stringResource(R.string.pc)) }
         IconButton(onClick = { vm.c.openPage("settings") }, modifier = Modifier.size(40.dp)) {
             BadgedBox(badge = { if (vm.c.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } }
     }
@@ -110,7 +110,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val label = buildString {
                 if (c.readOnly && c.page == null) append("🔒 ")
                 if (c.streaming) append("⏳ ")
-                if (c.id != null && c.id in vm.c.scr.vdAgents) append("🖥 ")
+                c.id?.let { cid -> vm.c.features.firstNotNullOfOrNull { f -> f.tabBadge(cid) }?.let { append(it) } }
                 if (c.approval != null || c.clarify != null) append("❓ ")
                 append(c.title ?: newChat)
                 if (!sel && c.draft.isNotBlank()) append(" ✎")
@@ -119,7 +119,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val dragging = dragKey == System.identityHashCode(c)
             Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
             InputChip(selected = sel, onClick = { if (!sel) vm.c.switchTo(c) },
-                leadingIcon = if (c.page != null) ({ Icon(when (c.page) { "pc" -> Icons.Default.Monitor; "files" -> Icons.Default.Folder; "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                leadingIcon = if (c.page != null) ({ Icon(vm.uiFeatures.firstNotNullOfOrNull { f -> f.pageIcon(c.page.orEmpty()) } ?: when (c.page) { "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
                     Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } }),
                 colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer),

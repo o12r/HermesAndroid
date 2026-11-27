@@ -33,7 +33,7 @@ import java.util.UUID
  */
 class ChatController(val store: Store, val platform: Platform, val scope: CoroutineScope, val main: CoroutineDispatcher) {
     /** What is on screen is the active tab: a page tab (sessions / pc / settings) or, when [activePage] is null, the chat [cur]. */
-    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "pc" -> Screen.Screens; "files" -> Screen.Files; else -> Screen.Settings }
+    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "settings" -> Screen.Settings; else -> Screen.Feature }
     var profile by mutableStateOf(store.profile)
     /** All open chats (any profile); [cur] is the one on screen. */
     val chats = mutableListOf<Chat>()
@@ -93,13 +93,13 @@ class ChatController(val store: Store, val platform: Platform, val scope: Corout
     /** Entering a page tab: PC refreshes its screens, the session list reloads. */
     fun pageEntered(kind: String, refresh: Boolean) {
         if (!refresh) return
-        when (kind) { "pc" -> scr.loadScreens(); "sessions" -> conn.refreshSessions() }
+        if (kind == "sessions") conn.refreshSessions() else features.forEach { it.pageEntered(kind) }
     }
     /** Open (or switch to) a page tab - "sessions" (the start page), "pc" or "settings" - in the same row as the chats. */
     fun openPage(kind: String, refresh: Boolean = true) {
         val t = tabs.firstOrNull { it.page == kind } ?: Chat(profile, null, null).also {
             it.page = kind; it.readOnly = true; it.loaded = true
-            it.title = s(when (kind) { "pc" -> Str.pc; "files" -> Str.pf_title; "sessions" -> Str.sessions; else -> Str.settings }); tabs.add(it) }
+            it.title = s(features.firstNotNullOfOrNull { f -> f.pageTitleKey(kind) } ?: when (kind) { "sessions" -> Str.sessions; else -> Str.settings }); tabs.add(it) }
         activePage = t
         pageEntered(kind, refresh)
     }
@@ -243,6 +243,7 @@ class ChatController(val store: Store, val platform: Platform, val scope: Corout
     fun close() {
         platform.unwatchNetwork()
         conn.gws.values.forEach { it.close() }
+        features.forEach { it.close() }
     }
 
     val deviceId: String by lazy { platform.deviceId }
@@ -259,9 +260,13 @@ class ChatController(val store: Store, val platform: Platform, val scope: Corout
 
     val conn = ConnectionController(this)
     val proj = ProjectController(this)
-    val scr = ScreenController(this)
     val pc = PcController(this)
     val msg = MessageController(this)
+
+    /** Optional features found on the classpath (see [ChatFeature]); absent modules just are not in the list. */
+    val features: List<ChatFeature> = java.util.ServiceLoader.load(ChatFeature::class.java, ChatFeature::class.java.classLoader).toList()
+    inline fun <reified T : ChatFeature> feature(): T? = features.filterIsInstance<T>().firstOrNull()
+    init { features.forEach { it.attach(this) } }
 
     init { openPage(if (store.hasKey) "sessions" else "settings", refresh = false) }
     init {
