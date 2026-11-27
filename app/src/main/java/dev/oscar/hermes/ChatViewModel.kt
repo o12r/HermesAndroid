@@ -1671,93 +1671,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- attachments ----------
     /** Progress notice while a big file streams to the PC ("Uploading large file... 42%"); null when idle. */
     var uploadStatus by mutableStateOf<String?>(null)
-    private var uploadsActive = 0
+    private val uploader = PcUploader(
+        base = { store.relayBase() }, key = { store.apiKey }, s = { k, a -> s(k, *a) },
+        onStatus = { n, pct -> uploadStatus = if (n == null) null else s(Str.uploading_large, n, pct) },
+        encodeBase64 = { Base64.encodeToString(it, Base64.NO_WRAP) })
 
     fun addAttachments(uris: List<Uri>) = viewModelScope.launch {
         if (!hotfix.attachments) { error = s(Str.attachments_disabled); return@launch }
         for (u in uris) {
-            try { attachments.add(readAttachment(u)) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message ?: e.toString() }
-        }
-    }
-
-    /** Images -> JPEG (existing path); everything else (text included) -> uploaded to the PC inbox via the relay. */
-    private suspend fun readAttachment(uri: Uri): Attachment = withContext(Dispatchers.IO) {
-        val cr = getApplication<Application>().contentResolver
-        var name = "file"; var size = -1L
-        cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
-            if (it.moveToFirst()) { it.getString(0)?.let { n -> name = n }; if (!it.isNull(1)) size = it.getLong(1) } }
-        val mime = cr.getType(uri).orEmpty()
-        if (mime.startsWith("image/")) {
-            try {
-                val bmp = ImageDecoder.decodeBitmap(ImageDecoder.createSource(cr, uri)) { dec, info, _ ->
-                    val s = info.size; val m = maxOf(s.width, s.height)
-                    if (m > 1600) dec.setTargetSize(s.width * 1600 / m, s.height * 1600 / m)
-                    dec.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                }
-                val out = ByteArrayOutputStream(); bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                return@withContext Attachment(name.substringBeforeLast('.') + ".jpg", true, "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP))
-            } catch (e: Exception) { /* not decodable as a picture: send the file itself */ }
-        }
-        uploadToPc(uri, name, size)
-    }
-
-    private fun setUploadStatus(name: String, pct: Int) { uploadStatus = s(Str.uploading_large, name, pct) }
-
-    /** Chunked, parallel (4 connections x 4 MB) upload through the relay: /upload/init, PUT /upload/<id>?offset=N, /upload/<id>/done. */
-    private suspend fun uploadToPc(uri: Uri, name: String, size0: Long): Attachment = withContext(Dispatchers.IO) {
-        val app = getApplication<Application>()
-        val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
-        val base = store.relayBase().trimEnd('/')
-        val http = okhttp3.OkHttpClient.Builder().readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build()
-        var tmp: java.io.File? = null
-        uploadsActive++; setUploadStatus(name, 0)
-        try {
-            var pfd = app.contentResolver.openFileDescriptor(uri, "r")
-            val seekable = pfd != null && size0 >= 0 && runCatching { java.io.FileInputStream(pfd!!.fileDescriptor).channel.position(0) }.isSuccess
-            var size = size0
-            if (!seekable) {   // provider gave a pipe / no size: spool to cache so chunks can be read at any offset
-                pfd?.close()
-                val f = java.io.File(app.cacheDir, "upload-" + UUID.randomUUID()); tmp = f
-                app.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
-                size = f.length(); pfd = android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-            }
-            val ch = java.io.FileInputStream(pfd!!.fileDescriptor).channel
-            val json = "application/json".toMediaType()
-            fun call(rb: okhttp3.Request.Builder): String = http.newCall(rb.header("Authorization", "Bearer $key").build()).execute().use { r ->
-                if (r.code == 404) throw ApiException(s(Str.upload_relay_old))
-                if (!r.isSuccessful) throw ApiException("upload: HTTP ${r.code} ${r.body?.string().orEmpty().take(200)}")
-                r.body?.string().orEmpty() }
-            val init = JSONObject(call(okhttp3.Request.Builder().url("$base/upload/init").post(JSONObject().put("name", name).put("size", size).toString().toRequestBody(json))))
-            val id = init.getString("id"); val chunk = init.optLong("chunk", 4L shl 20).coerceAtLeast(1L shl 20)
-            val sent = java.util.concurrent.atomic.AtomicLong(0)
-            val sem = kotlinx.coroutines.sync.Semaphore(4)
-            kotlinx.coroutines.coroutineScope {
-                (0 until size step chunk).map { off ->
-                    async {
-                        sem.withPermit {
-                            val len = minOf(chunk, size - off).toInt()
-                            val buf = java.nio.ByteBuffer.allocate(len)
-                            var pos = off
-                            while (buf.hasRemaining()) { val n = ch.read(buf, pos); if (n < 0) break; pos += n }
-                            val bytes = buf.array()
-                            var attempt = 0
-                            while (true) {
-                                try { call(okhttp3.Request.Builder().url("$base/upload/$id?offset=$off").put(bytes.toRequestBody("application/octet-stream".toMediaType()))); break }
-                                catch (e: ApiException) { throw e }
-                                catch (e: Exception) { if (++attempt >= 4) throw e; kotlinx.coroutines.delay(500L * attempt) }
-                            }
-                            setUploadStatus(name, (sent.addAndGet(len.toLong()) * 100 / maxOf(size, 1)).toInt())
-                        }
-                    }
-                }.awaitAll()
-            }
-            pfd.close()
-            val path = JSONObject(call(okhttp3.Request.Builder().url("$base/upload/$id/done").post("{}".toRequestBody(json)))).getString("path")
-            Attachment(name, false, "", path)
-        } finally {
-            tmp?.delete()
-            if (--uploadsActive <= 0) { uploadsActive = 0; uploadStatus = null }
+            try { attachments.add(withContext(Dispatchers.IO) { uploader.read(UriAttachment(getApplication(), u)) }) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = e.message ?: e.toString() }
         }
     }
 
