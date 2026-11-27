@@ -99,13 +99,13 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
         HermesTopBar(vm, title = { Text(stringResource(titles[sub] ?: R.string.settings), maxLines = 1, style = MaterialTheme.typography.titleMedium) },
             nav = if (vm.c.store.hasKey) ({ IconButton(onClick = { if (sub != "") sub = "" else vm.c.leavePage() }, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } }) else null,
-            onRefresh = { vm.c.scanProfiles(); vm.c.loadMeta() })
+            onRefresh = { vm.c.conn.scanProfiles(); vm.c.proj.loadMeta() })
         if (vm.c.store.hasKey) ChatTabs(vm, onList = true)
         Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
           when (sub) {
             "" -> {
                 @Composable fun Group(id: String, icon: androidx.compose.ui.graphics.vector.ImageVector, summary: String, badge: Boolean = false) =
-                    Card(Modifier.fillMaxWidth().clickable { if (id == "screens") vm.c.openScreens(Screen.Settings) else sub = id }) {
+                    Card(Modifier.fillMaxWidth().clickable { if (id == "screens") vm.c.scr.openScreens(Screen.Settings) else sub = id }) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             BadgedBox(badge = { if (badge) Badge() }) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }
                             Spacer(Modifier.width(16.dp))
@@ -115,10 +115,10 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                         } }
                 Group("conn", Icons.Default.Link, (vm.c.store.activeRelay ?: vm.c.store.relayUrl) + " · " + vm.c.profile)
                 Group("look", Icons.Default.Palette, stringResource(R.string.appearance_summary))
-                LaunchedEffect(Unit) { if (vm.c.store.hasKey) { vm.c.loadCtxSettings(); vm.c.loadModelSettings() } }
-                Group("chat", Icons.Default.DataUsage, vm.c.ctxSettings?.let { c -> listOfNotNull(c.optString("compression_model").takeIf { it.isNotBlank() && it != "null" },
+                LaunchedEffect(Unit) { if (vm.c.store.hasKey) { vm.c.proj.loadCtxSettings(); vm.c.proj.loadModelSettings() } }
+                Group("chat", Icons.Default.DataUsage, vm.c.proj.ctxSettings?.let { c -> listOfNotNull(c.optString("compression_model").takeIf { it.isNotBlank() && it != "null" },
                     c.opt("context_length")?.takeIf { it != JSONObject.NULL }?.toString()).joinToString(" · ") } ?: stringResource(R.string.ctx_all_profiles))
-                Group("model", Icons.Default.Memory, vm.c.modelSettings?.optJSONObject("main")?.opt("model")?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() } ?: stringResource(R.string.server_default))
+                Group("model", Icons.Default.Memory, vm.c.proj.modelSettings?.optJSONObject("main")?.opt("model")?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() } ?: stringResource(R.string.server_default))
                 Group("screens", Icons.Default.Monitor, stringResource(R.string.screens_manage))
                 Group("upd", Icons.Default.SystemUpdate, stringResource(R.string.version, vm.c.updates.currentName, vm.c.updates.currentCode), badge = vm.c.update != null)
                 Group("about", Icons.Default.Info, "Hermes Android")
@@ -145,10 +145,10 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 visualTransformation = PasswordVisualTransformation(),
                 supportingText = { Text(stringResource(if (vm.c.store.hasKey) R.string.key_saved else R.string.key_new)) })
             Text(stringResource(R.string.profile)); ProfileMenu(vm)
-            Button(onClick = { vm.c.saveSettings(relay, lan, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
-            OutlinedButton(onClick = { vm.c.testConnections(relay, lan) }, enabled = !vm.c.probing, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.test_paths)) }
-            if (vm.c.probing) LinearProgressIndicator(Modifier.fillMaxWidth())
-            vm.c.probes.forEach { p ->
+            Button(onClick = { vm.c.conn.saveSettings(relay, lan, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
+            OutlinedButton(onClick = { vm.c.conn.testConnections(relay, lan) }, enabled = !vm.c.conn.probing, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.test_paths)) }
+            if (vm.c.conn.probing) LinearProgressIndicator(Modifier.fillMaxWidth())
+            vm.c.conn.probes.forEach { p ->
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(if (p.ok) Icons.Default.CheckCircle else Icons.Default.Cancel, null,

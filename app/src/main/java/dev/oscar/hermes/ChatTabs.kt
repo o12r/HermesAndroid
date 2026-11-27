@@ -110,7 +110,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             val label = buildString {
                 if (c.readOnly && c.page == null) append("🔒 ")
                 if (c.streaming) append("⏳ ")
-                if (c.id != null && c.id in vm.c.vdAgents) append("🖥 ")
+                if (c.id != null && c.id in vm.c.scr.vdAgents) append("🖥 ")
                 if (c.approval != null || c.clarify != null) append("❓ ")
                 append(c.title ?: newChat)
                 if (!sel && c.draft.isNotBlank()) append(" ✎")
@@ -163,7 +163,7 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
 fun SlashSuggestions(vm: ChatViewModel, input: String, set: (String) -> Unit) {
     if (!input.startsWith("/") || input.contains(' ') || input.contains('\n')) return
     val q = input.drop(1).lowercase()
-    val items = vm.c.commandList()
+    val items = vm.c.msg.commandList()
         .filter { it.first.drop(1).lowercase().contains(q) }.sortedBy { !it.first.drop(1).lowercase().startsWith(q) }.take(30)
     if (items.isEmpty()) return
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).padding(horizontal = 8.dp)) {

@@ -93,37 +93,37 @@ fun screenLabel(sc: PcScreen): String {
 fun ScreensScreen(vm: ChatViewModel) {
     var open by remember { mutableStateOf<Set<String>>(emptySet()) }
     fun toggle(sc: PcScreen) { open = if (sc.name in open) open - sc.name else open + sc.name }
-    LaunchedEffect(Unit) { vm.c.vdisplay("status") }
+    LaunchedEffect(Unit) { vm.c.scr.vdisplay("status") }
     Column(Modifier.fillMaxSize()) {
         HermesTopBar(vm, title = { Text(stringResource(R.string.pc), maxLines = 1, style = MaterialTheme.typography.titleMedium) },
             nav = { IconButton(onClick = { vm.c.leavePage() }, modifier = Modifier.size(40.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back)) } },
-            onRefresh = { vm.c.loadScreens() }, refreshEnabled = !vm.c.screensBusy)
+            onRefresh = { vm.c.scr.loadScreens() }, refreshEnabled = !vm.c.scr.screensBusy)
         ChatTabs(vm, onList = true)
         PcStatsBar(vm)
-        if (vm.c.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        val pc = vm.c.pcScreens.filter { it.kind != "agent" }
-        val agents = vm.c.pcScreens.filter { it.kind == "agent" }
+        if (vm.c.scr.screensBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        val pc = vm.c.scr.pcScreens.filter { it.kind != "agent" }
+        val agents = vm.c.scr.pcScreens.filter { it.kind == "agent" }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             item { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        LaunchedEffect(Unit) { vm.c.vdisplay("status") }
-        when (vm.c.vdMode) {
+        LaunchedEffect(Unit) { vm.c.scr.vdisplay("status") }
+        when (vm.c.scr.vdMode) {
             null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
             "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
             else -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.vd_agent_chat, vm.c.currentTitle ?: stringResource(R.string.chat)), Modifier.weight(1f))
                     // Only the agent opens its screen (when it needs a UI); the phone can see it and close it.
-                    if (vm.c.vdAgent) TextButton(onClick = { vm.c.vdisplay("off") }, enabled = !vm.c.vdBusy) { Text(stringResource(R.string.vd_close)) }
+                    if (vm.c.scr.vdAgent) TextButton(onClick = { vm.c.scr.vdisplay("off") }, enabled = !vm.c.scr.vdBusy) { Text(stringResource(R.string.vd_close)) }
                     else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall)
                 }
                 Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
-                if (vm.c.vdScreenOff) OutlinedButton(onClick = { vm.c.vdisplay("screen-on") }, enabled = !vm.c.vdBusy) {
+                if (vm.c.scr.vdScreenOff) OutlinedButton(onClick = { vm.c.scr.vdisplay("screen-on") }, enabled = !vm.c.scr.vdBusy) {
                     Text(stringResource(R.string.vd_wake_all)) }
-                Text(stringResource(if (vm.c.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
+                Text(stringResource(if (vm.c.scr.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
                     style = MaterialTheme.typography.bodySmall)
             }
         }
-        if (vm.c.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (vm.c.scr.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 HorizontalDivider()
             } }
             item { ListItem(leadingContent = { Icon(Icons.Default.Folder, null) }, headlineContent = { Text(stringResource(R.string.pf_title)) },
@@ -148,9 +148,9 @@ fun ScreensScreen(vm: ChatViewModel) {
 
 @Composable
 fun screenActions(vm: ChatViewModel, sc: PcScreen): List<Pair<String, () -> Unit>> = when {
-    sc.kind == "physical" && sc.on -> listOf(stringResource(R.string.vd_screen_off_this) to { vm.c.vdisplay("screen-off", sc.name) })
-    sc.kind == "physical" -> listOf(stringResource(R.string.vd_screen_on_this) to { vm.c.vdisplay("screen-on", sc.name) })
-    sc.kind == "agent" && sc.session != null -> listOf(stringResource(R.string.vd_close) to { vm.c.closeAgentScreen(sc.session!!) })
+    sc.kind == "physical" && sc.on -> listOf(stringResource(R.string.vd_screen_off_this) to { vm.c.scr.vdisplay("screen-off", sc.name) })
+    sc.kind == "physical" -> listOf(stringResource(R.string.vd_screen_on_this) to { vm.c.scr.vdisplay("screen-on", sc.name) })
+    sc.kind == "agent" && sc.session != null -> listOf(stringResource(R.string.vd_close) to { vm.c.scr.closeAgentScreen(sc.session!!) })
     else -> emptyList()
 }
 
@@ -207,7 +207,7 @@ fun ScreenInline(vm: ChatViewModel, sc: PcScreen, close: () -> Unit) {
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(onClick = { n++ }, enabled = !busy) { Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(4.dp)); Text(stringResource(R.string.screen_refresh)) }
-            screenActions(vm, sc).forEach { (t, f) -> OutlinedButton(onClick = { f(); close() }, enabled = !vm.c.vdBusy) { Text(t) } }
+            screenActions(vm, sc).forEach { (t, f) -> OutlinedButton(onClick = { f(); close() }, enabled = !vm.c.scr.vdBusy) { Text(t) } }
         }
         Text("${sc.name.removePrefix("\\\\.\\")} · ${sc.w}×${sc.h} @${sc.hz}Hz", style = MaterialTheme.typography.bodySmall)
         sc.cwd?.let { Text("📁 $it", style = MaterialTheme.typography.bodySmall) }

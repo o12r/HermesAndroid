@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
     /** Notification tap: jump to the chat that needs an answer. */
     private fun handleOpen(intent: android.content.Intent?) {
         val id = intent?.getStringExtra(Notify.EXTRA_SESSION) ?: return
-        vm.c.openFromNotification(intent.getStringExtra(Notify.EXTRA_PROFILE), id)
+        vm.c.msg.openFromNotification(intent.getStringExtra(Notify.EXTRA_PROFILE), id)
         intent.removeExtra(Notify.EXTRA_SESSION)
     }
 
@@ -107,12 +107,12 @@ class MainActivity : ComponentActivity() {
         if (u.scheme != "hermes" || u.host != "pair") return
         val url = u.getQueryParameter("url").orEmpty(); val key = u.getQueryParameter("key").orEmpty()
         if (url.isBlank() || key.isBlank()) return
-        vm.c.saveSettings(url, u.getQueryParameter("lan").orEmpty(), key)
+        vm.c.conn.saveSettings(url, u.getQueryParameter("lan").orEmpty(), key)
         android.widget.Toast.makeText(this, getString(R.string.paired), android.widget.Toast.LENGTH_LONG).show()
         setIntent(android.content.Intent())   // don't re-apply on rotation
     }
 
-    override fun onStart() { super.onStart(); Notify.visible = true; vm.c.seen(); vm.c.onForeground() }
+    override fun onStart() { super.onStart(); Notify.visible = true; vm.c.seen(); vm.c.conn.onForeground() }
     override fun onStop() { Notify.visible = false; super.onStop() }
     override fun onDestroy() { if (isFinishing) KeepAliveService.stop(this); super.onDestroy() }
 

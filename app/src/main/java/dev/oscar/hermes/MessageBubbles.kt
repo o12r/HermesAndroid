@@ -84,9 +84,9 @@ fun Bubble(m: UiMsg, vm: ChatViewModel, live: Boolean = false) {
             color = MaterialTheme.colorScheme.tertiary, fontStyle = FontStyle.Italic)
         return
     }
-    if (m.role == "task" && m.task != null) { TaskCard(m.task!!) { vm.c.openTask(m.task!!) }; return }
+    if (m.role == "task" && m.task != null) { TaskCard(m.task!!) { vm.c.msg.openTask(m.task!!) }; return }
     if (m.role == "file") {
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file, vm.c.fileProgress[m.text]) { vm.c.saveInbox(m.text, m.session) } }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) { FileBubble(m.text, m.file, vm.c.pc.fileProgress[m.text]) { vm.c.pc.saveInbox(m.text, m.session) } }
         return
     }
     val user = m.role == "user"
@@ -198,18 +198,18 @@ fun ColumnScope.FailedActions(m: UiMsg, vm: ChatViewModel) {
         }
         DropdownMenu(menu, { menu = false }) {
             DropdownMenuItem(text = { Text(stringResource(R.string.resend)) }, leadingIcon = { Icon(Icons.Default.Refresh, null) },
-                onClick = { menu = false; vm.c.resendFailed(m) }, enabled = !vm.c.streaming)
+                onClick = { menu = false; vm.c.msg.resendFailed(m) }, enabled = !vm.c.streaming)
             DropdownMenuItem(text = { Text(stringResource(R.string.edit)) }, leadingIcon = { Icon(Icons.Default.Edit, null) },
                 onClick = { menu = false; editing = true }, enabled = !vm.c.streaming)
             DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, leadingIcon = { Icon(Icons.Default.Delete, null) },
-                onClick = { menu = false; vm.c.deleteFailed(m) })
+                onClick = { menu = false; vm.c.msg.deleteFailed(m) })
         }
     }
     if (editing) {
         var t by remember { mutableStateOf(m.resend ?: m.text) }
         AlertDialog(onDismissRequest = { editing = false }, title = { Text(stringResource(R.string.edit_message)) },
             text = { OutlinedTextField(t, { t = it }, Modifier.fillMaxWidth(), maxLines = 10) },
-            confirmButton = { Button(onClick = { editing = false; vm.c.editFailed(m, t) }, enabled = t.isNotBlank()) { Text(stringResource(R.string.send)) } },
+            confirmButton = { Button(onClick = { editing = false; vm.c.msg.editFailed(m, t) }, enabled = t.isNotBlank()) { Text(stringResource(R.string.send)) } },
             dismissButton = { TextButton(onClick = { editing = false }) { Text(stringResource(R.string.cancel)) } })
     }
 }
@@ -237,7 +237,7 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
             Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), Modifier.size(16.dp)) }
         if (m.id != null && !vm.c.streaming) {
             if (m.role == "user") IconButton(onClick = { editing = true }, mod) { Icon(Icons.Default.Edit, stringResource(R.string.edit), Modifier.size(16.dp)) }
-            IconButton(onClick = { vm.c.branchFrom(m) }, mod) { Icon(Icons.Default.CallSplit, stringResource(R.string.branch), Modifier.size(16.dp)) }
+            IconButton(onClick = { vm.c.msg.branchFrom(m) }, mod) { Icon(Icons.Default.CallSplit, stringResource(R.string.branch), Modifier.size(16.dp)) }
         }
     }
     if (editing) {
@@ -245,7 +245,7 @@ fun ColumnScope.MessageActions(m: UiMsg, vm: ChatViewModel) {
         AlertDialog(onDismissRequest = { editing = false }, title = { Text(stringResource(R.string.edit_message)) },
             text = { Column { Text(stringResource(R.string.edit_warning), style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp)); OutlinedTextField(t, { t = it }, Modifier.fillMaxWidth(), maxLines = 10) } },
-            confirmButton = { Button(onClick = { editing = false; vm.c.editMessage(m, t) }, enabled = t.isNotBlank()) { Text(stringResource(R.string.send)) } },
+            confirmButton = { Button(onClick = { editing = false; vm.c.msg.editMessage(m, t) }, enabled = t.isNotBlank()) { Text(stringResource(R.string.send)) } },
             dismissButton = { TextButton(onClick = { editing = false }) { Text(stringResource(R.string.cancel)) } })
     }
 }

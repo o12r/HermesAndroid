@@ -113,24 +113,24 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                 Text(vm.c.currentTitle ?: stringResource(if (vm.c.currentId == null) R.string.new_chat else R.string.chat), maxLines = 1, softWrap = false,
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.combinedClickable(onDoubleClick = { if (vm.c.currentId != null) renamingTitle = true }) {})
-                val proj = vm.c.projects.find { p ->
+                val proj = vm.c.proj.projects.find { p ->
                     (chat.projectId != null && p.id == chat.projectId) || (vm.c.currentId != null && vm.c.currentId in p.sessionIds)
                 }?.let { p -> if (p.isHome) stringResource(R.string.home) else p.name }
                 Text(listOfNotNull(chat.profile, proj).joinToString(" › "), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary, maxLines = 1, softWrap = false)
-            } }, onRefresh = { vm.c.refreshChat() })
+            } }, onRefresh = { vm.c.conn.refreshChat() })
         if (renamingTitle) {
             var t by remember { mutableStateOf(vm.c.currentTitle ?: "") }
             AlertDialog(onDismissRequest = { renamingTitle = false }, title = { Text(stringResource(R.string.rename)) },
                 text = { OutlinedTextField(t, { t = it }, singleLine = true) },
-                confirmButton = { TextButton(onClick = { vm.c.currentId?.let { vm.c.rename(Session(it, null, null, null, 0, null), t) }; renamingTitle = false }) { Text(stringResource(R.string.save)) } },
+                confirmButton = { TextButton(onClick = { vm.c.currentId?.let { vm.c.msg.rename(Session(it, null, null, null, 0, null), t) }; renamingTitle = false }) { Text(stringResource(R.string.save)) } },
                 dismissButton = { TextButton(onClick = { renamingTitle = false }) { Text(stringResource(R.string.cancel)) } })
         }
-        if (vm.c.chatRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (vm.c.conn.chatRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
         ChatTabs(vm)
         val jumpScope = rememberCoroutineScope()
         Box(Modifier.weight(1f).fillMaxWidth()) {
-        PullToRefreshBox(isRefreshing = vm.c.chatRefreshing, onRefresh = { vm.c.refreshChat() }, modifier = Modifier.fillMaxSize()) {
+        PullToRefreshBox(isRefreshing = vm.c.conn.chatRefreshing, onRefresh = { vm.c.conn.refreshChat() }, modifier = Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
             itemsIndexed(vm.c.messages, key = { _, m -> m.uid }) { i, m ->
                 if (i > 0) HorizontalDivider(thickness = 0.5.dp, color = androidx.compose.ui.graphics.Color(0xFF9E9E9E).copy(alpha = 0.45f))
@@ -155,7 +155,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                 label = { Text(stringResource(R.string.queued, q), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.unqueue), Modifier.size(16.dp)) }) }
         }
-        vm.c.uploadStatus?.let { Text(it, Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
+        vm.c.pc.uploadStatus?.let { Text(it, Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
         if (vm.c.attachments.isNotEmpty()) Row(Modifier.padding(horizontal = 8.dp)) {
             vm.c.attachments.forEach { a -> InputChip(selected = false, onClick = { vm.c.attachments.remove(a) }, label = { Text(a.name, maxLines = 1) },
                 trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) }, modifier = Modifier.padding(end = 4.dp)) }
@@ -181,7 +181,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { full = false }) { Icon(Icons.Default.CloseFullscreen, stringResource(R.string.collapse_editor)) }
                         Text(stringResource(R.string.expand_editor), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        Button(onClick = { full = false; vm.c.send(chat.draft); chat.draft = "" }, enabled = chat.draft.isNotBlank()) {
+                        Button(onClick = { full = false; vm.c.msg.send(chat.draft); chat.draft = "" }, enabled = chat.draft.isNotBlank()) {
                             Text(stringResource(if (vm.c.streaming) R.string.steer else R.string.send)) }
                     }
                     val fr = remember { androidx.compose.ui.focus.FocusRequester() }
@@ -198,16 +198,16 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                     Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
                 if (focused) {
                     IconButton(onClick = { full = true }, small) { Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }
-                    if (vm.c.streaming) IconButton(onClick = { vm.c.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
+                    if (vm.c.streaming) IconButton(onClick = { vm.c.msg.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
                     // Queue: send after the running turn ends.
                     if (vm.c.streaming && chat.draft.isNotBlank()) IconButton(onClick = { vm.c.queueMsg(chat.draft); chat.draft = "" }, small) {
                         Icon(Icons.Default.Schedule, stringResource(R.string.queue)) }
                 } else if (vm.c.streaming) {
                     // One line while streaming: stop only, no steer.
-                    IconButton(onClick = { vm.c.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
+                    IconButton(onClick = { vm.c.msg.stop() }, small) { Icon(Icons.Default.Stop, stringResource(R.string.stop)) }
                 }
                 // While Hermes works, Send steers the running turn instead of waiting (only when expanded).
-                if (chat.draft.isNotBlank() || (!vm.c.streaming && vm.c.attachments.isNotEmpty())) IconButton(onClick = { vm.c.send(chat.draft); chat.draft = "" }, small) {
+                if (chat.draft.isNotBlank() || (!vm.c.streaming && vm.c.attachments.isNotEmpty())) IconButton(onClick = { vm.c.msg.send(chat.draft); chat.draft = "" }, small) {
                     Icon(Icons.AutoMirrored.Filled.Send, stringResource(if (vm.c.streaming) R.string.steer else R.string.send)) }
             }
         }

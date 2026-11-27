@@ -122,8 +122,8 @@ fun Banner(vm: ChatViewModel) {
         val ctx = LocalContext.current
         IconButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(msg)); android.widget.Toast.makeText(ctx, ctx.getString(R.string.copied), android.widget.Toast.LENGTH_SHORT).show() }, modifier = Modifier.size(36.dp)) {
             Icon(Icons.Default.ContentCopy, stringResource(R.string.copy), modifier = Modifier.size(18.dp)) }
-        TextButton(onClick = { vm.c.error = null; vm.c.reconnect() }) { Text(stringResource(R.string.retry)) }
-        TextButton(onClick = { vm.c.cancelRequest() }) { Text(stringResource(R.string.cancel)) }
+        TextButton(onClick = { vm.c.error = null; vm.c.conn.reconnect() }) { Text(stringResource(R.string.retry)) }
+        TextButton(onClick = { vm.c.conn.cancelRequest() }) { Text(stringResource(R.string.cancel)) }
     }
 }
 
@@ -131,12 +131,12 @@ fun Banner(vm: ChatViewModel) {
 fun ProfileMenu(vm: ChatViewModel) {
     var open by remember { mutableStateOf(false) }
     Box {
-        AssistChip(onClick = { open = true; vm.c.scanProfiles() }, label = { Text(vm.c.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
+        AssistChip(onClick = { open = true; vm.c.conn.scanProfiles() }, label = { Text(vm.c.profile) }, leadingIcon = { Icon(Icons.Default.Person, null, Modifier.size(18.dp)) })
         DropdownMenu(open, { open = false }) {
-            vm.c.orderedProfiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
+            vm.c.conn.orderedProfiles.forEach { (p, desc) -> DropdownMenuItem(text = { Column { Text(p)
                     if (desc.isNotBlank()) Text(desc, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-                onClick = { open = false; vm.c.setProfileTo(p) }, modifier = Modifier.widthIn(max = 360.dp),
+                onClick = { open = false; vm.c.conn.setProfileTo(p) }, modifier = Modifier.widthIn(max = 360.dp),
                 trailingIcon = { if (p == vm.c.profile) Icon(Icons.Default.Check, null) }) }
         }
     }
@@ -145,7 +145,7 @@ fun ProfileMenu(vm: ChatViewModel) {
 /** Profile order editor: drag a row by its handle; the order is saved when the drag ends. */
 @Composable
 fun ReorderProfiles(vm: ChatViewModel, modifier: Modifier = Modifier) {
-    val order = remember { mutableStateListOf<String>().apply { addAll(vm.c.orderedProfiles.map { it.first }) } }
+    val order = remember { mutableStateListOf<String>().apply { addAll(vm.c.conn.orderedProfiles.map { it.first }) } }
     var dragging by remember { mutableStateOf<String?>(null) }
     var off by remember { mutableFloatStateOf(0f) }
     val rowH = 52.dp
@@ -161,8 +161,8 @@ fun ReorderProfiles(vm: ChatViewModel, modifier: Modifier = Modifier) {
                 Text(prof, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = cs.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Icon(Icons.Default.DragHandle, null, Modifier.size(40.dp).padding(8.dp).pointerInput(prof) {
                     detectDragGestures(onDragStart = { dragging = prof; off = 0f },
-                        onDragEnd = { dragging = null; off = 0f; vm.c.saveProfileOrder(order.toList()) },
-                        onDragCancel = { dragging = null; off = 0f; vm.c.saveProfileOrder(order.toList()) }) { c, d ->
+                        onDragEnd = { dragging = null; off = 0f; vm.c.conn.saveProfileOrder(order.toList()) },
+                        onDragCancel = { dragging = null; off = 0f; vm.c.conn.saveProfileOrder(order.toList()) }) { c, d ->
                         c.consume(); off += d.y
                         val i = order.indexOf(prof)
                         if (off > hPx / 2 && i < order.lastIndex) { order.add(i + 1, order.removeAt(i)); off -= hPx }

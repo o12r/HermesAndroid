@@ -37,19 +37,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         appIcon = v
     }
 
-    fun addAttachments(uris: List<Uri>) = c.addAttachments(uris.map { u -> { UriAttachment(getApplication(), u) } })
+    fun addAttachments(uris: List<Uri>) = c.pc.addAttachments(uris.map { u -> { UriAttachment(getApplication(), u) } })
 
-    suspend fun fsDownload(pcPath: String, name: String): Uri = Uri.parse(c.fsDownload(pcPath, name))
-    suspend fun saveInboxNow(name: String, session: String?, anchor: Long = 0L): Uri = Uri.parse(c.saveInboxNow(name, session, anchor))
+    suspend fun fsDownload(pcPath: String, name: String): Uri = Uri.parse(c.pc.fsDownload(pcPath, name))
+    suspend fun saveInboxNow(name: String, session: String?, anchor: Long = 0L): Uri = Uri.parse(c.pc.saveInboxNow(name, session, anchor))
     suspend fun fsUpload(uri: Uri, folder: String, overwrite: Boolean) {
         val cr = getApplication<Application>().contentResolver
         var name = "file"
         withContext(Dispatchers.IO) { cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) ?: name } }
-        c.fsUpload(name, { cr.openInputStream(uri)!! }, folder, overwrite)
+        c.pc.fsUpload(name, { cr.openInputStream(uri)!! }, folder, overwrite)
     }
     /** JPEG of one PC screen, decoded. */
     suspend fun screenShot(name: String): Bitmap = withContext(Dispatchers.IO) {
-        val b = c.screenShotBytes(name)
+        val b = c.scr.screenShotBytes(name)
         BitmapFactory.decodeByteArray(b, 0, b.size) ?: throw ApiException("bad image")
     }
 
