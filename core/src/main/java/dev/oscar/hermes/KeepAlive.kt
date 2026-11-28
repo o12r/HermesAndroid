@@ -76,6 +76,7 @@ class KeepAliveService : Service() {
 object Notify {
     const val CH_SERVICE = "keepalive"
     const val CH_ALERTS = "alerts"
+    const val CH_REPLIES = "replies"
     @Volatile var visible = false
     private var nextId = 100
     /** "$session|$kind" -> notification ids, so answered prompts / seen replies can be cleared (on any device). */
@@ -89,11 +90,15 @@ object Notify {
             shown.remove(k)?.forEach { runCatching { nm.cancel(it) } }
     }
 
+    /** Remember a notification under a key like "session|kind" so [clear] can cancel it. */
+    fun track(key: String, id: Int) { shown.getOrPut(key) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(id) }
+
     fun channels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
         val c = L10n.ctx(ctx)
         nm.createNotificationChannel(NotificationChannel(CH_SERVICE, c.getString(R.string.ch_connection), NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_ALERTS, c.getString(R.string.ch_alerts), NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(CH_REPLIES, c.getString(R.string.ch_replies), NotificationManager.IMPORTANCE_HIGH))
     }
 
     const val EXTRA_PROFILE = "open_profile"

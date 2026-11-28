@@ -41,6 +41,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -87,6 +88,21 @@ fun screenLabel(sc: PcScreen): String {
     }
 }
 
+/** One titled row of the PC page: [title] on the left with an (i) that opens [info]; [actions] on the right. */
+@Composable
+private fun PcCard(title: String, info: String, actions: @Composable RowScope.() -> Unit) {
+    var show by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        IconButton(onClick = { show = true }, modifier = Modifier.size(28.dp)) {
+            Icon(Icons.Outlined.Info, stringResource(R.string.pc_info), Modifier.size(18.dp), tint = MaterialTheme.colorScheme.outline) }
+        Spacer(Modifier.weight(1f))
+        actions()
+    }
+    if (show) AlertDialog(onDismissRequest = { show = false }, title = { Text(title) }, text = { Text(info) },
+        confirmButton = { TextButton(onClick = { show = false }) { Text(stringResource(R.string.admin_close)) } })
+}
+
 /** PC screens: physical ones as main / secondary 1, 2...; agent screens by profile -> project, named after their session. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,23 +120,40 @@ fun ScreensScreen(vm: ChatViewModel) {
         val pc = vm.c.scr.pcScreens.filter { it.kind != "agent" }
         val agents = vm.c.scr.pcScreens.filter { it.kind == "agent" }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            item { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        LaunchedEffect(Unit) { vm.c.scr.vdisplay("status") }
+            item { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         when (vm.c.scr.vdMode) {
             null -> Text(stringResource(R.string.vd_unavailable), style = MaterialTheme.typography.bodySmall)
             "none" -> Text(stringResource(R.string.vd_no_driver), style = MaterialTheme.typography.bodySmall)
             else -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.vd_agent_chat, vm.c.currentTitle ?: stringResource(R.string.chat)), Modifier.weight(1f))
+                // 1) agent screen of this chat
+                PcCard(stringResource(R.string.vd_agent_chat, vm.c.currentTitle ?: stringResource(R.string.chat)), stringResource(R.string.vd_hint)) {
                     // Only the agent opens its screen (when it needs a UI); the phone can see it and close it.
                     if (vm.c.scr.vdAgent) TextButton(onClick = { vm.c.scr.vdisplay("off") }, enabled = !vm.c.scr.vdBusy) { Text(stringResource(R.string.vd_close)) }
-                    else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall)
+                    else Text(stringResource(R.string.vd_none), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                 }
-                Text(stringResource(R.string.vd_hint), style = MaterialTheme.typography.bodySmall)
-                if (vm.c.scr.vdScreenOff) OutlinedButton(onClick = { vm.c.scr.vdisplay("screen-on") }, enabled = !vm.c.scr.vdBusy) {
-                    Text(stringResource(R.string.vd_wake_all)) }
-                Text(stringResource(if (vm.c.scr.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver),
-                    style = MaterialTheme.typography.bodySmall)
+                // 2) monitor power
+                PcCard(stringResource(R.string.vd_power_title),
+                    stringResource(R.string.vd_dim_hint) + "\n\n" + stringResource(if (vm.c.scr.vdScreenOffAvailable) R.string.vd_screen_off_hint else R.string.vd_screen_off_need_driver)) {
+                    if (vm.c.scr.vdScreenOff) OutlinedButton(onClick = { vm.c.scr.vdisplay("screen-on") }, enabled = !vm.c.scr.vdBusy) { Text(stringResource(R.string.vd_wake_all)) }
+                    if (vm.c.scr.vdDimmed) FilledTonalButton(onClick = { vm.c.scr.vdisplay("undim") }, enabled = !vm.c.scr.vdBusy) { Text(stringResource(R.string.vd_undim)) }
+                    else OutlinedButton(onClick = { vm.c.scr.vdisplay("dim") }, enabled = !vm.c.scr.vdBusy) { Text(stringResource(R.string.vd_dim)) }
+                }
+                // 3) key chords
+                var newCombo by rememberSaveable { mutableStateOf("") }
+                PcCard(stringResource(R.string.pc_keys_title), stringResource(R.string.pc_keys_hint)) {}
+                if (vm.c.scr.keyCombos.isNotEmpty()) androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    vm.c.scr.keyCombos.forEach { c ->
+                        Box(Modifier.combinedClickable(onClick = { vm.c.scr.sendKeys(c) }, onLongClick = { vm.c.scr.removeCombo(c) })) {
+                            AssistChip(onClick = { vm.c.scr.sendKeys(c) }, label = { Text(c) })
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(newCombo, { newCombo = it }, Modifier.weight(1f), singleLine = true,
+                        placeholder = { Text(stringResource(R.string.pc_keys_placeholder)) })
+                    IconButton(onClick = { vm.c.scr.addCombo(newCombo); newCombo = "" }, enabled = newCombo.isNotBlank()) { Icon(Icons.Default.Add, stringResource(R.string.pc_keys_add)) }
+                    IconButton(onClick = { vm.c.scr.sendKeys(newCombo.trim().lowercase().replace(" ", "")) }, enabled = newCombo.isNotBlank()) { Icon(Icons.AutoMirrored.Filled.Send, stringResource(R.string.pc_keys_send)) }
+                }
             }
         }
         if (vm.c.scr.vdBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())

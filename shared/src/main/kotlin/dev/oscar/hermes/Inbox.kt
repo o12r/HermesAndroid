@@ -33,6 +33,12 @@ object Inbox {
         }
     }
 
+    /** Removes [name] from the PC outbox once it is saved to the phone's Downloads. A failure only leaves the file listed. */
+    fun ack(store: Store, name: String) {
+        val enc = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+        runCatching { req(store, "/outbox/$enc")?.let { http.newCall(it.newBuilder().delete().build()).execute().close() } }
+    }
+
     fun sizeText(bytes: Long): String = when {
         bytes >= 1L shl 20 -> "%.1f MB".format(bytes / 1048576.0)
         bytes >= 1L shl 10 -> "%.1f KB".format(bytes / 1024.0)

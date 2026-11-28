@@ -87,14 +87,12 @@ fun <T> ChoiceRow(options: List<Pair<T, String>>, selected: T, onPick: (T) -> Un
 @Composable
 fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
     var key by remember { mutableStateOf("") }
-    var relay by remember { mutableStateOf(vm.c.store.relayUrl) }
-    var lan by remember { mutableStateOf(vm.c.store.lanUrl) }
+    val servers = remember { androidx.compose.runtime.mutableStateListOf<String>().apply { addAll(vm.c.store.servers) } }
     // Grouped cards; each opens its own page. Without a key, go straight to Connection.
     var sub by remember { mutableStateOf(if (vm.c.store.hasKey) "" else "conn") }
     LaunchedEffect(vm.c.settingsTarget) { vm.c.settingsTarget?.let { sub = it; vm.c.settingsTarget = null } }
     BackHandler(sub != "" && vm.c.store.hasKey) { sub = "" }
-    val titles = mapOf("conn" to R.string.connection, "look" to R.string.appearance, "chat" to R.string.ctx_title,
-        "model" to R.string.default_models, "screens" to R.string.vdisplay, "upd" to R.string.updates, "about" to R.string.about)
+    val titles = settingsGroupTitles
     Column(Modifier.fillMaxSize()) {
         HermesTopBar(vm, title = { Text(stringResource(titles[sub] ?: R.string.settings), maxLines = 1, style = MaterialTheme.typography.titleMedium) },
             nav = if (vm.c.store.hasKey) ({ IconButton(onClick = { if (sub != "") sub = "" else vm.c.leavePage() }, modifier = Modifier.size(40.dp)) {
@@ -105,21 +103,17 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
           when (sub) {
             "" -> {
                 @Composable fun Group(id: String, icon: androidx.compose.ui.graphics.vector.ImageVector, summary: String, badge: Boolean = false) =
-                    Card(Modifier.fillMaxWidth().clickable { if (id == "screens") vm.c.openPage("pc") else sub = id }) {
-                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            BadgedBox(badge = { if (badge) Badge() }) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) }
-                            Spacer(Modifier.width(16.dp))
-                            Column(Modifier.weight(1f)) { Text(stringResource(titles[id]!!), style = MaterialTheme.typography.titleSmall)
-                                Text(summary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                            Icon(Icons.Default.KeyboardArrowRight, null)
-                        } }
-                Group("conn", Icons.Default.Link, (vm.c.store.activeRelay ?: vm.c.store.relayUrl) + " · " + vm.c.profile)
+                    SettingsGroupCard(vm, id, titles[id]!!, icon, summary, badge) { if (id == "screens") vm.c.openPage("pc") else if (id == "assets") vm.c.openPage("assets") else sub = id }
+                Group("conn", Icons.Default.Link, (vm.c.store.activeRelay ?: vm.c.store.relayUrl))
                 Group("look", Icons.Default.Palette, stringResource(R.string.appearance_summary))
                 LaunchedEffect(Unit) { if (vm.c.store.hasKey) { vm.c.proj.loadCtxSettings(); vm.c.proj.loadModelSettings() } }
                 Group("chat", Icons.Default.DataUsage, vm.c.proj.ctxSettings?.let { c -> listOfNotNull(c.optString("compression_model").takeIf { it.isNotBlank() && it != "null" },
                     c.opt("context_length")?.takeIf { it != JSONObject.NULL }?.toString()).joinToString(" · ") } ?: stringResource(R.string.ctx_all_profiles))
                 Group("model", Icons.Default.Memory, vm.c.proj.modelSettings?.optJSONObject("main")?.opt("model")?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() } ?: stringResource(R.string.server_default))
                 if (vm.uiFeatures.any { it.hasPage("pc") }) Group("screens", Icons.Default.Monitor, stringResource(R.string.screens_manage))
+                vm.uiFeatures.forEach { it.Slot(vm, "settings.groups") }
+                Group("assets", Icons.Default.AttachFile, stringResource(R.string.assets_summary))
+                Group("modules", Icons.Default.Extension, stringResource(R.string.modules_summary))
                 Group("upd", Icons.Default.SystemUpdate, stringResource(R.string.version, vm.c.updates.currentName, vm.c.updates.currentCode), badge = vm.c.update != null)
                 Group("about", Icons.Default.Info, "Hermes Android")
             }
@@ -130,38 +124,25 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 Column(Modifier.weight(1f)) { Text(stringResource(R.string.allow_lan)); Text(stringResource(R.string.allow_lan_help), style = MaterialTheme.typography.labelSmall) }
                 Switch(lanOn, { if (it) lanWarn = true else { lanOn = false; vm.c.store.allowLan = false } })
             }
+            var replyOn by remember { mutableStateOf(vm.c.store.replyNotifyOn()) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text(stringResource(R.string.reply_notify)); Text(stringResource(R.string.reply_notify_help), style = MaterialTheme.typography.labelSmall) }
+                Switch(replyOn, { replyOn = it; vm.c.store.setReplyNotifyOn(it) })
+            }
             if (lanWarn) AlertDialog(onDismissRequest = { lanWarn = false },
                 title = { Text(stringResource(R.string.allow_lan)) }, text = { Text(stringResource(R.string.allow_lan_warn)) },
                 confirmButton = { TextButton(onClick = { lanOn = true; vm.c.store.allowLan = true; lanWarn = false }) { Text(stringResource(R.string.allow_lan_ok)) } },
                 dismissButton = { TextButton(onClick = { lanWarn = false }) { Text(stringResource(R.string.cancel)) } })
             val act = LocalContext.current as? MainActivity
             Button(onClick = { act?.scanPairCode() }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.scan_pair)) }
-            OutlinedTextField(relay, { relay = it }, label = { Text(stringResource(R.string.server_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                supportingText = { Text(stringResource(R.string.server_url_help, SecureStore.DEFAULT_RELAY)) })
-            OutlinedTextField(lan, { lan = it }, label = { Text(stringResource(R.string.lan_url)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("http://192.168.1.20:8643") }, supportingText = { Text(stringResource(R.string.lan_url_help)) })
+            ServerList(vm, servers)
             vm.c.store.activeRelay?.let { Text(stringResource(R.string.using_relay, it), style = MaterialTheme.typography.labelSmall) }
             OutlinedTextField(key, { key = it }, label = { Text(stringResource(R.string.api_key)) }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(),
                 supportingText = { Text(stringResource(if (vm.c.store.hasKey) R.string.key_saved else R.string.key_new)) })
-            Text(stringResource(R.string.profile)); ProfileMenu(vm)
-            Button(onClick = { vm.c.conn.saveSettings(relay, lan, key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
-            OutlinedButton(onClick = { vm.c.conn.testConnections(relay, lan) }, enabled = !vm.c.conn.probing, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.test_paths)) }
+            Button(onClick = { vm.c.conn.saveSettings(servers.toList(), key); key = "" }, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.save_test)) }
+            OutlinedButton(onClick = { vm.c.conn.testConnections(servers.toList()) }, enabled = !vm.c.conn.probing, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.test_paths)) }
             if (vm.c.conn.probing) LinearProgressIndicator(Modifier.fillMaxWidth())
-            vm.c.conn.probes.forEach { p ->
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (p.ok) Icons.Default.CheckCircle else Icons.Default.Cancel, null,
-                            tint = if (p.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(p.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                        Text(if (p.ok) "${p.ms} ms" else stringResource(R.string.unreachable), style = MaterialTheme.typography.labelMedium)
-                    }
-                    Text(p.url, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (p.active) Text(stringResource(R.string.in_use), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    else if (!p.ok && p.error.isNotBlank()) Text(p.error, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                } }
-            }
             vm.c.status?.let { Text(it) }
 
             }
@@ -189,8 +170,9 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
                 "zh" to stringResource(R.string.lang_zh)), vm.c.store.lang) { if (it != vm.c.store.lang) { vm.c.store.lang = it; recreate() } }
 
             }
+            "modules" -> FeatureModules(vm)
             "chat" -> ContextSettingsGroup(vm)
-            "model" -> ModelSettingsGroup(vm)
+            "model" -> { ModelSettingsGroup(vm); DelegationSettingsGroup(vm); AdvancedDelegationGroup(vm) }
             "upd" -> {
             Text(stringResource(R.string.version, vm.c.updates.currentName, vm.c.updates.currentCode))
             Text(stringResource(R.string.update_source), style = MaterialTheme.typography.titleSmall)

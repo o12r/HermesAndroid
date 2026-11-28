@@ -429,7 +429,7 @@ VDISPLAY = HERMES_HOME / "launchers" / "hermes-vdisplay.py"   # open-source virt
 # on/off = agent screen; screen-off/screen-on = main screen dark + user windows on the user screen (independent)
 # no "on": only the agent opens its own screen; the phone can only see and close it
 VD_OPS = {"status": ["status"], "off": ["off"], "screens": ["screens"], "screen-off": ["screen", "off"],
-          "screen-on": ["screen", "on"], "extend": ["mode", "extend"], "second-only": ["mode", "second-only"]}
+          "screen-on": ["screen", "on"], "dim": ["screen", "dim"], "undim": ["screen", "undim"], "extend": ["mode", "extend"], "second-only": ["mode", "second-only"]}
 
 
 async def vdisplay_op(req: web.Request):
@@ -467,6 +467,49 @@ async def vdisplay_op(req: web.Request):
     if args[0] != "status":
         log.info("phone vdisplay %s -> %s", req.match_info["op"], res.get("ok"))
     return web.json_response(res)
+
+
+_VK = {"ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10, "win": 0x5B, "esc": 0x1B, "escape": 0x1B, "tab": 0x09,
+       "space": 0x20, "enter": 0x0D, "return": 0x0D, "backspace": 0x08, "delete": 0x2E, "del": 0x2E, "insert": 0x2D,
+       "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22, "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+       "printscreen": 0x2C, "volumeup": 0xAF, "volumedown": 0xAE, "mute": 0xAD, "playpause": 0xB3, "nexttrack": 0xB0,
+       "prevtrack": 0xB1, "launchapp1": 0xB6, "launchapp2": 0xB7}
+_VK.update({f"f{i}": 0x6F + i for i in range(1, 25)})
+_VK.update({c: ord(c.upper()) for c in "abcdefghijklmnopqrstuvwxyz0123456789"})
+_EXT = {0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22, 0x25, 0x26, 0x27, 0x28, 0x5B}
+
+
+def _press_combo(codes):
+    """Press the keys in order, release in reverse (a real key chord; hotkey tools such as vendor fan/performance apps see it)."""
+    import ctypes
+    u32 = ctypes.windll.user32
+    for c in codes:
+        u32.keybd_event(c, u32.MapVirtualKeyW(c, 0), 1 if c in _EXT else 0, 0)
+        time.sleep(0.03)
+    time.sleep(0.08)
+    for c in reversed(codes):
+        u32.keybd_event(c, u32.MapVirtualKeyW(c, 0), (1 if c in _EXT else 0) | 2, 0)
+        time.sleep(0.02)
+
+
+async def pc_keys(req: web.Request):
+    """POST /pc/keys {"keys": "ctrl+alt+f10"}: simulates that key chord on the PC (modifiers + at most one other key)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await req.json()
+    except ValueError:
+        body = {}
+    parts = [x.strip().lower() for x in str((body or {}).get("keys") or "").split("+") if x.strip()]
+    if not 1 <= len(parts) <= 4 or any(x not in _VK for x in parts):
+        return web.json_response({"ok": False, "error": "bad key combo"}, status=400)
+    mods = {"ctrl", "control", "alt", "shift", "win"}
+    if sum(1 for x in parts if x not in mods) > 1:
+        return web.json_response({"ok": False, "error": "use modifiers plus one key"}, status=400)
+    codes = [_VK[x] for x in parts if x in mods] + [_VK[x] for x in parts if x not in mods]
+    await asyncio.get_running_loop().run_in_executor(None, _press_combo, codes)
+    log.info("phone keys %s", "+".join(parts))
+    return web.json_response({"ok": True, "keys": "+".join(parts)})
 
 
 async def vdisplay_shot(req: web.Request):
@@ -948,12 +991,329 @@ async def config_context(req: web.Request):
     return web.json_response(await asyncio.get_running_loop().run_in_executor(_IO_POOL, _ctx_state))
 
 
-# ---------------------------------------------------------------- model settings (all profiles)
+# ---------------------------------------------------------------- advanced delegation settings (all profiles)
+# Only these four delegation.* keys; names/meaning checked against the installed Hermes delegate_tool_config.py.
+DELEG_KEYS = {"max_concurrent_children": int, "max_spawn_depth": int, "child_timeout_seconds": float, "reasoning_effort": str}
+DELEG_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _deleg_read(home):
+    try:
+        data = _yaml().load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    sec = data.get("delegation") if hasattr(data, "get") else None
+    out = {}
+    for k in DELEG_KEYS:
+        v = sec.get(k) if hasattr(sec, "get") else None
+        out[k] = v if isinstance(v, (int, float, str)) and not isinstance(v, bool) else None
+    return out
+
+
+def _deleg_state():
+    per = {name: _deleg_read(h) for name, h in _profile_homes().items()}
+    base = per.get("default") or {}
+    return {"settings": base, "profiles": list(per), "differs": [n for n, v in per.items() if v != base]}
+
+
+def _deleg_write(values):
+    """Write the given delegation.* values into every profile's config.yaml (None removes the key)."""
+    y = _yaml()
+    for name, home in _profile_homes().items():
+        f = home / "config.yaml"
+        data = y.load(f.read_text(encoding="utf-8")) or {}
+        if not hasattr(data.get("delegation"), "get"):
+            data["delegation"] = {}
+        sec = data["delegation"]
+        for k, v in values.items():
+            if v is None:
+                sec.pop(k, None)
+            else:
+                sec[k] = v
+        tmp = f.with_name(f.name + ".phone.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            y.dump(data, fh)
+        os.replace(tmp, f)
+        log.info("phone set delegation settings for profile %s: %s", name, sorted(values))
+
+
+async def config_delegation(req: web.Request):
+    """GET /config/delegation -> current values; POST {field: value|null} writes them into every profile."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    if req.method == "POST":
+        try:
+            body = await req.json()
+        except ValueError:
+            return web.json_response({"error": "bad request"}, status=400)
+        vals = {}
+        for k, v in (body or {}).items():
+            if k not in DELEG_KEYS:
+                continue
+            if v is None or v == "":
+                vals[k] = None
+                continue
+            if k == "reasoning_effort":
+                if str(v) not in DELEG_EFFORTS:
+                    return web.json_response({"error": f"bad value for {k}"}, status=400)
+                vals[k] = str(v)
+                continue
+            try:
+                v = DELEG_KEYS[k](v)
+            except (TypeError, ValueError):
+                return web.json_response({"error": f"bad value for {k}"}, status=400)
+            if (k == "max_concurrent_children" and not 1 <= v <= 100) or \
+                    (k == "max_spawn_depth" and not 1 <= v <= 10) or \
+                    (k == "child_timeout_seconds" and not 0 < v <= 86400):
+                return web.json_response({"error": f"{k} out of range"}, status=400)
+            vals[k] = v
+        try:
+            await asyncio.get_running_loop().run_in_executor(_IO_POOL, _deleg_write, vals)
+        except Exception as e:
+            log.warning("delegation settings write failed: %s", e)
+            return web.json_response({"error": f"write failed: {e}"}, status=500)
+    return web.json_response(await asyncio.get_running_loop().run_in_executor(_IO_POOL, _deleg_state))
+
+
+# ---------------------------------------------------------------- advanced delegation: mode + routes (per profile)
+# The plugin's delegation.backend and delegation.backends.{model_map,profile_routes} keys (advanced-delegation v1.2.0).
+# Writes touch only those keys of the chosen profile (or every profile with "all_profiles": true); ruamel round-trips
+# the file so comments and other settings survive. Route checks run the plugin's own store.validate_route in the
+# hermes-agent venv (same answers as the plugin); if that cannot run, only the structural checks below apply.
+ADV_MODES = ("default", "model_map", "profile_routes")
+ADV_ROUTE_TEXT = ("name", "description", "provider", "base_url", "model", "api_key", "api_mode", "reasoning_effort", "service_tier")
+ADV_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+ADV_TIERS = ("normal", "fast", "ultrafast")
+ADV_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+ADV_AGENT = HERMES_HOME / "hermes-agent"
+ADV_PY = ADV_AGENT / "venv" / "Scripts" / "python.exe"
+ADV_PLUGIN = HERMES_HOME / "plugins" / "advanced-delegation"
+ADV_VALIDATE = (
+    "import json, sys\n"
+    "sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[2])\n"
+    "import store\n"
+    "routes, others, out = json.load(sys.stdin), [], []\n"
+    "for r in routes:\n"
+    "    out.extend(f\"{r.get('name')}: {p}\" for p in store.validate_route(r, others))\n"
+    "    others.append(r)\n"
+    "print(json.dumps(out))\n"
+)
+
+
+def _adv_plugin_problems(home, routes):
+    """The plugin's validate_route problems for ``routes`` under profile ``home`` ([] = clean); None when it cannot run."""
+    if not routes:
+        return []
+    if not (ADV_PY.is_file() and (ADV_PLUGIN / "store.py").is_file()):
+        return None
+    env = {**os.environ, "HERMES_HOME": str(home)}
+    try:
+        r = subprocess.run([str(ADV_PY), "-I", "-c", ADV_VALIDATE, str(ADV_AGENT), str(ADV_PLUGIN)],
+                           input=json.dumps(routes), capture_output=True, text=True, encoding="utf-8",
+                           timeout=60, env=env, cwd=str(ADV_AGENT),
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("plugin route check could not run: %s", e)
+        return None
+    if r.returncode != 0:
+        log.warning("plugin route check failed: %s", (r.stderr or "")[-400:])
+        return None
+    try:
+        return [str(p) for p in json.loads(r.stdout.strip().splitlines()[-1])]
+    except (ValueError, IndexError):
+        return None
+
+
+def _adv_clean(body, homes):
+    """Structural checks on a phone POST. Returns (clean, error); clean = mode, options, option_default, profiles, profile_default."""
+    if not isinstance(body, dict):
+        return None, "bad request"
+    mode = body.get("mode")
+    if mode not in ADV_MODES:
+        return None, "bad mode"
+    mm, pr = body.get("model_map") or {}, body.get("profile_routes") or {}
+    if not isinstance(mm, dict) or not isinstance(pr, dict):
+        return None, "bad model_map or profile_routes"
+    raw_opts, raw_profs = mm.get("options") or [], pr.get("profiles") or []
+    if not isinstance(raw_opts, list) or not isinstance(raw_profs, list) or len(raw_opts) > 50 or len(raw_profs) > 50:
+        return None, "bad route list"
+    options, names = [], []
+    for raw in raw_opts:
+        if not isinstance(raw, dict):
+            return None, "bad model route"
+        route = {k: v for k, v in raw.items() if v is not None}
+        for k in ADV_ROUTE_TEXT:
+            if route.get(k) is None:
+                route.pop(k, None)
+                continue
+            if not isinstance(route[k], str):
+                return None, f"bad value for route field {k}"
+            v = route[k].strip() if k in ("api_key", "base_url") else " ".join(route[k].split())
+            if v:
+                route[k] = v
+            else:
+                route.pop(k)
+        name = route.get("name", "")
+        if not ADV_NAME_RE.match(name):
+            return None, f"route name {name!r}: letters, digits, '.', '_' or '-' (no spaces), starting with a letter or digit"
+        if name in names:
+            return None, f"two routes are named {name!r}"
+        if not route.get("description"):
+            return None, f"route {name}: needs a one-line description"
+        if not route.get("model"):
+            return None, f"route {name}: needs a model"
+        if not (route.get("provider") or route.get("base_url")):
+            return None, f"route {name}: needs a provider or a base_url"
+        if route.get("reasoning_effort") and route["reasoning_effort"] not in ADV_EFFORTS:
+            return None, f"route {name}: unknown reasoning effort {route['reasoning_effort']!r}"
+        if route.get("service_tier") and route["service_tier"] not in ADV_TIERS:
+            return None, f"route {name}: unknown speed tier {route['service_tier']!r}"
+        if route.get("daybreak") not in (None, True, False):
+            return None, f"route {name}: daybreak must be true or false"
+        names.append(name)
+        options.append(route)
+    option_default = mm.get("default") or ""
+    if not isinstance(option_default, str):
+        return None, "bad model route default"
+    option_default = " ".join(option_default.split())
+    if option_default and option_default not in names:
+        return None, f"default {option_default!r} is not one of the model routes"
+    profiles, pnames = [], []
+    for raw in raw_profs:
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
+            return None, "bad profile entry"
+        pname = raw["name"].strip()
+        if pname not in homes:
+            return None, f"unknown profile {pname!r}"
+        if pname in pnames:
+            return None, f"profile {pname!r} is listed twice"
+        desc = raw.get("description") or ""
+        if not isinstance(desc, str):
+            return None, f"bad description for profile {pname}"
+        profiles.append({"name": pname, "description": " ".join(desc.split())[:200]})
+        pnames.append(pname)
+    profile_default = pr.get("default") or ""
+    if not isinstance(profile_default, str):
+        return None, "bad profile default"
+    profile_default = profile_default.strip()
+    if profile_default and profile_default not in pnames:
+        return None, f"default profile {profile_default!r} is not one of the profile routes"
+    if mode == "model_map" and not options:
+        return None, "Add at least one model route, or choose Default."
+    if mode == "profile_routes" and not profiles:
+        return None, "Check at least one profile, or choose Default."
+    return {"mode": mode, "options": options, "option_default": option_default,
+            "profiles": profiles, "profile_default": profile_default}, ""
+
+
+def _adv_set_default(block, value):
+    if value:
+        block["default"] = value
+    elif "default" in block:
+        block["default"] = ""  # blank, never removed (the plugin's own writer refuses dropped keys)
+
+
+def _adv_write(name, home, clean):
+    y = _yaml()
+    y.indent(mapping=2, sequence=4, offset=2)  # the layout the user's config.yaml already has: a no-op for untouched keys
+    f = home / "config.yaml"
+    data = y.load(f.read_text(encoding="utf-8")) or {}
+    if not hasattr(data.get("delegation"), "get"):
+        data["delegation"] = {}
+    sec = data["delegation"]
+    sec["backend"] = clean["mode"]
+    if not hasattr(sec.get("backends"), "get"):
+        sec["backends"] = {}
+    backends = sec["backends"]
+    for key in ("model_map", "profile_routes"):
+        if not hasattr(backends.get(key), "get"):
+            backends[key] = {}
+    mm, pr = backends["model_map"], backends["profile_routes"]
+    mm["options"] = clean["options"]
+    _adv_set_default(mm, clean["option_default"])
+    pr["profiles"] = clean["profiles"]
+    _adv_set_default(pr, clean["profile_default"])
+    tmp = f.with_name(f.name + ".phone.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        y.dump(data, fh)
+    os.replace(tmp, f)
+    log.info("phone set advanced delegation for profile %s: mode %s", name, clean["mode"])
+
+
+def _adv_state(name, home, names):
+    try:
+        data = _yaml().load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        data = {}
+    sec = data.get("delegation") if hasattr(data, "get") else None
+    sec = sec if hasattr(sec, "get") else {}
+    backend = sec.get("backend")
+    backends = sec.get("backends")
+    backends = backends if hasattr(backends, "get") else {}
+    mm = backends.get("model_map")
+    mm = mm if hasattr(mm, "get") else {}
+    pr = backends.get("profile_routes")
+    pr = pr if hasattr(pr, "get") else {}
+    options = [dict(o) for o in (mm.get("options") or []) if hasattr(o, "get")]
+    profs = [dict(p) for p in (pr.get("profiles") or []) if hasattr(p, "get")]
+    mdef, pdef = mm.get("default"), pr.get("default")
+    return {
+        "profile": name,
+        "mode": backend.strip().lower() if isinstance(backend, str) and backend.strip() else "default",
+        "model_map": {"options": options, "default": mdef if isinstance(mdef, str) else ""},
+        "profile_routes": {"profiles": [{"name": str(p.get("name") or ""), "description": str(p.get("description") or "")}
+                                        for p in profs],
+                           "default": pdef if isinstance(pdef, str) else ""},
+        "others": [n for n in names if n != name],
+        "efforts": list(ADV_EFFORTS),
+    }
+
+
+async def config_delegation_advanced(req: web.Request):
+    """GET /config/delegation/advanced?profile=NAME -> that profile's mode and routes. POST the same shape to write it
+    ("all_profiles": true writes every profile); the answer is the re-read state of NAME."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    loop = asyncio.get_running_loop()
+    homes = await loop.run_in_executor(_IO_POOL, _profile_homes)
+    name = (req.query.get("profile") or "default").strip() or "default"
+    if name not in homes:
+        return web.json_response({"error": "unknown profile"}, status=404)
+    if req.method == "POST":
+        try:
+            body = await req.json()
+        except ValueError:
+            return web.json_response({"error": "bad request"}, status=400)
+        clean, err = _adv_clean(body, homes)
+        if err:
+            return web.json_response({"error": err}, status=400)
+        targets = dict(homes) if body.get("all_profiles") is True else {name: homes[name]}
+
+        def apply():
+            for pname, home in targets.items():
+                probs = _adv_plugin_problems(home, clean["options"])
+                if probs:
+                    return f"{pname}: " + " ".join(probs)
+            for pname, home in targets.items():
+                _adv_write(pname, home, clean)
+            return None
+
+        try:
+            problem = await loop.run_in_executor(_IO_POOL, apply)
+        except Exception as e:
+            log.warning("advanced delegation write failed: %s", e)
+            return web.json_response({"error": f"write failed: {e}"}, status=500)
+        if problem:
+            return web.json_response({"error": problem}, status=400)
+    return web.json_response(await loop.run_in_executor(_IO_POOL, _adv_state, name, homes[name], list(homes)))
+
+
+# ---------------------------------------------------------------- model settings (all profiles)# ---------------------------------------------------------------- model settings (all profiles)
 # main -> model.default / model.provider; delegation -> delegation.model / delegation.provider;
 # auxiliary.<task> -> auxiliary.<task>.model/provider, tasks = whatever the config.yaml auxiliary section holds.
 MODEL_PATHS = {
-    "main": {"model": ("model", "default"), "provider": ("model", "provider")},
-    "delegation": {"model": ("delegation", "model"), "provider": ("delegation", "provider")},
+    "main": {"model": ("model", "default"), "provider": ("model", "provider"), "reasoning_effort": ("agent", "reasoning_effort")},
+    "delegation": {"model": ("delegation", "model"), "provider": ("delegation", "provider"), "reasoning_effort": ("delegation", "reasoning_effort")},
 }
 
 
@@ -976,21 +1336,24 @@ def _model_read(home):
                 out["auxiliary"][task] = {
                     "model": sub.get("model") if isinstance(sub.get("model"), str) else None,
                     "provider": sub.get("provider") if isinstance(sub.get("provider"), str) else None,
+                    "reasoning_effort": sub.get("reasoning_effort") if isinstance(sub.get("reasoning_effort"), str) else None,
                 }
             else:
-                out["auxiliary"][task] = {"model": None, "provider": None}
+                out["auxiliary"][task] = {"model": None, "provider": None, "reasoning_effort": None}
     return out
 
 
-def _model_state():
+def _model_state(profile="default"):
     per = {name: _model_read(h) for name, h in _profile_homes().items()}
-    base = per.get("default") or {}
-    return {"settings": base, "profiles": list(per), "differs": [n for n, v in per.items() if v != base]}
+    base = per.get(profile) or per.get("default") or {}
+    return {"settings": base, "profile": profile if profile in per else "default", "profiles": list(per), "differs": [n for n, v in per.items() if v != base]}
 
 
-def _model_write(body):
+def _model_write(body, only=None):
     y = _yaml()
     for name, home in _profile_homes().items():
+        if only is not None and name != only:
+            continue
         f = home / "config.yaml"
         data = y.load(f.read_text(encoding="utf-8")) or {}
         for slot, paths in MODEL_PATHS.items():
@@ -1023,7 +1386,7 @@ def _model_write(body):
                 if not hasattr(sub, "get"):
                     sub = {}
                     node[task] = sub
-                for field in ("model", "provider"):
+                for field in ("model", "provider", "reasoning_effort"):
                     if field not in spec:
                         continue
                     v = spec[field]
@@ -1045,7 +1408,7 @@ def _validate_models(body):
             continue
         if not isinstance(spec, dict):
             return f"bad {slot}"
-        for field in ("model", "provider"):
+        for field in ("model", "provider", "reasoning_effort"):
             if field in spec and spec[field] is not None and not isinstance(spec[field], str):
                 return f"bad value for {slot}.{field}"
     aux = body.get("auxiliary")
@@ -1055,7 +1418,7 @@ def _validate_models(body):
         for task, spec in aux.items():
             if not isinstance(spec, dict):
                 return f"bad auxiliary.{task}"
-            for field in ("model", "provider"):
+            for field in ("model", "provider", "reasoning_effort"):
                 if field in spec and spec[field] is not None and not isinstance(spec[field], str):
                     return f"bad value for auxiliary.{task}.{field}"
     return None
@@ -1065,6 +1428,7 @@ async def config_models(req: web.Request):
     """GET /config/models -> current models; POST writes them into every profile and answers with the re-read state."""
     if not _authed(req):
         return web.json_response({"error": "unauthorized"}, status=401)
+    prof = (req.query.get("profile") or "default").strip() or "default"
     if req.method == "POST":
         try:
             body = await req.json()
@@ -1075,12 +1439,15 @@ async def config_models(req: web.Request):
         err = _validate_models(body)
         if err:
             return web.json_response({"error": err}, status=400)
+        only = None if body.get("all_profiles") is True else prof
+        if only is not None and only not in _profile_homes():
+            return web.json_response({"error": f"unknown profile {only}"}, status=400)
         try:
-            await asyncio.get_running_loop().run_in_executor(_IO_POOL, _model_write, body)
+            await asyncio.get_running_loop().run_in_executor(_IO_POOL, _model_write, body, only)
         except Exception as e:
             log.warning("models write failed: %s", e)
             return web.json_response({"error": f"write failed: {e}"}, status=500)
-    return web.json_response(await asyncio.get_running_loop().run_in_executor(_IO_POOL, _model_state))
+    return web.json_response(await asyncio.get_running_loop().run_in_executor(_IO_POOL, _model_state, prof))
 
 
 # ---------------------------------------------------------------- PC stats (CPU / memory / GPU, sampled in a thread)
@@ -1331,6 +1698,258 @@ async def _watchdog(app):
     app["watchdog"] = asyncio.create_task(loop())
 
 
+# ---- dashboard passthrough (GET /dash/<allow-listed path>) ----------------------------------------------------------
+# The Hermes dashboard (REST: skills, memory, toolsets, plugins, usage) binds 127.0.0.1 only. On loopback it has no login page but
+# every /api call needs the X-Hermes-Session-Token header. The relay owns a dedicated instance (DASH_PORT) started with a fixed token
+# kept in launchers/dashboard.token; the phone never sees that token, it only presents the relay API key.
+DASH_PORT = int(os.environ.get("RELAY_DASH_PORT", "9120"))
+DASH_TOKEN_FILE = HERMES_HOME / "launchers" / "dashboard.token"
+DASH_READ_ONLY = {"status", "skills", "memory", "tools/toolsets", "dashboard/plugins", "analytics/usage",
+                    "cron/jobs", "env", "mcp/servers", "logs"}
+_DASH_LOCK = None
+
+
+def _dash_token() -> str:
+    try:
+        t = DASH_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        if len(t) >= 32:
+            return t
+    except OSError:
+        pass
+    import secrets
+    t = secrets.token_urlsafe(32)
+    DASH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DASH_TOKEN_FILE.write_text(t, encoding="utf-8")
+    return t
+
+
+async def _dash_up(tok: str) -> bool:
+    try:
+        async with _http().get(f"http://127.0.0.1:{DASH_PORT}/api/skills", headers={"X-Hermes-Session-Token": tok},
+                               timeout=__import__("aiohttp").ClientTimeout(total=5)) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+async def _dash_ensure(tok: str) -> bool:
+    """True once our dashboard answers with our token; starts it on first use (orphans from an earlier relay are reused)."""
+    global _DASH_LOCK
+    if _DASH_LOCK is None:
+        _DASH_LOCK = asyncio.Lock()
+    async with _DASH_LOCK:
+        if await _dash_up(tok):
+            return True
+        env = dict(os.environ, HERMES_DASHBOARD_SESSION_TOKEN=tok)
+        await asyncio.create_subprocess_exec(
+            HERMES, "dashboard", "--host", "127.0.0.1", "--port", str(DASH_PORT), "--no-open", "--skip-build",
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        for _ in range(45):
+            await asyncio.sleep(1)
+            if await _dash_up(tok):
+                return True
+        return False
+
+
+# Response filters for the read-only paths that carry secret-adjacent data. Each is an ALLOW-list of keys, so env values,
+# MCP env/args/url/command and cron prompts never reach the phone even if the dashboard adds fields later.
+_DASH_LOG_FILES = {"agent", "errors", "gateway"}
+_DASH_LOG_MAX_LINES = 200
+_DASH_LOG_MAX_LINE = 1000
+_DASH_LOG_MAX_BYTES = 64 * 1024
+_DASH_SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{12,}|Bearer\s+\S+|"
+                             r"(?i:(api[_-]?key|token|secret|password|authorization)\w*)\s*[=:]\s*(?:Bearer\s+)?\S+)")
+
+
+def _dash_filter_env(data):
+    """Dashboard /api/env is {NAME: {is_set, redacted_value, ...}}. Keep NAME + is_set + labels; never values or previews."""
+    if not isinstance(data, dict):
+        raise ValueError("env: unexpected shape")
+    keys = ("category", "description", "provider", "provider_label", "channel_managed", "custom", "advanced")
+    out = []
+    for name, row in sorted(data.items()):
+        if not isinstance(row, dict):
+            continue
+        item = {"name": str(name), "is_set": bool(row.get("is_set"))}
+        for k in keys:
+            v = row.get(k)
+            if isinstance(v, str):
+                item[k] = v[:300]
+            elif isinstance(v, bool) or v is None:
+                item[k] = v
+        out.append(item)
+    return {"vars": out}
+
+
+def _dash_filter_cron(data):
+    """Dashboard /api/cron/jobs (list or {"jobs": [...]}). Keep scheduling/status fields; drop prompts, scripts, targets."""
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        raise ValueError("cron: unexpected shape")
+    keys = ("id", "name", "profile", "schedule_display", "enabled", "state", "next_run_at", "last_run_at", "last_status")
+    out = []
+    for job in jobs:
+        if isinstance(job, dict):
+            row = {}
+            for k in keys:
+                v = job.get(k)
+                if isinstance(v, str):
+                    row[k] = v[:300]
+                elif isinstance(v, (int, float, bool)) or v is None:
+                    row[k] = v
+            out.append(row)
+    return {"jobs": out}
+
+
+def _dash_filter_mcp(data):
+    """Dashboard /api/mcp/servers. Keep name/transport/enabled/source/tool names; drop url, command, args, env, headers."""
+    servers = data.get("servers", []) if isinstance(data, dict) else data
+    if not isinstance(servers, list):
+        raise ValueError("mcp: unexpected shape")
+    out = []
+    for s in servers:
+        if not isinstance(s, dict):
+            continue
+        tools = s.get("tools")
+        out.append({
+            "name": str(s.get("name") or "")[:200],
+            "transport": str(s.get("transport") or "unknown")[:32],
+            "enabled": bool(s.get("enabled")),
+            "auth": s.get("auth") if isinstance(s.get("auth"), str) else None,
+            "source": str(s.get("source") or "")[:32],
+            "plugin": s.get("plugin") if isinstance(s.get("plugin"), str) else None,
+            "tools": [str(t)[:120] for t in tools][:200] if isinstance(tools, list) else None,
+        })
+    return {"servers": out}
+
+
+def _dash_filter_logs(data):
+    """Dashboard /api/logs. Redact key-shaped substrings, cap line length, line count and total bytes."""
+    lines = data.get("lines", []) if isinstance(data, dict) else []
+    if not isinstance(lines, list):
+        raise ValueError("logs: unexpected shape")
+    kept = [_DASH_SECRET_RE.sub("[redacted]", str(line))[:_DASH_LOG_MAX_LINE] for line in lines[-_DASH_LOG_MAX_LINES:]]
+    total = sum(len(s) for s in kept)
+    dropped = 0
+    while kept and total > _DASH_LOG_MAX_BYTES:
+        total -= len(kept.pop(0))
+        dropped += 1
+    return {"file": str(data.get("file", "agent"))[:32] if isinstance(data, dict) else "agent",
+            "lines": kept, "truncated": dropped > 0 or len(lines) > len(kept)}
+
+
+_DASH_FILTERS = {"env": _dash_filter_env, "cron/jobs": _dash_filter_cron, "mcp/servers": _dash_filter_mcp, "logs": _dash_filter_logs}
+
+
+async def dash_proxy(req: web.Request):
+    """GET /dash/<path> -> dashboard /api/<path> for the read-only allow-list (Bearer required)."""
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    tail = req.match_info["tail"].strip("/")
+    if req.method != "GET" or tail not in DASH_READ_ONLY:
+        return web.json_response({"error": "not allowed"}, status=403)
+    profile = req.query.get("profile")
+    if profile is not None and not profile_ok(profile):
+        return web.json_response({"error": "unknown profile"}, status=400)
+    filt = _DASH_FILTERS.get(tail)
+    params = {}
+    if profile is not None:
+        params["profile"] = profile
+    if tail == "logs":
+        # Only the keys the log view uses are forwarded; line count is clamped, file is allow-listed.
+        if req.query.get("file", "agent") not in _DASH_LOG_FILES:
+            return web.json_response({"error": "unknown log file"}, status=400)
+        try:
+            n = int(req.query.get("lines", "100"))
+        except ValueError:
+            return web.json_response({"error": "bad lines"}, status=400)
+        params = {"file": req.query.get("file", "agent"), "lines": str(max(1, min(n, _DASH_LOG_MAX_LINES)))}
+        if req.query.get("level"):
+            params["level"] = req.query["level"][:16]
+        if req.query.get("search"):
+            params["search"] = req.query["search"][:200]
+        if profile is not None:
+            params["profile"] = profile
+    tok = _dash_token()
+    if not await _dash_ensure(tok):
+        return web.json_response({"error": "dashboard unavailable"}, status=503)
+    try:
+        qs = ("?" + "&".join(f"{k}={quote(v, safe='')}" for k, v in params.items())) if params else ""
+        async with _http().get(f"http://127.0.0.1:{DASH_PORT}/api/{tail}{qs}", headers={"X-Hermes-Session-Token": tok},
+                               timeout=__import__("aiohttp").ClientTimeout(total=30)) as r:
+            data = await r.read()
+            status = r.status
+            ctype = r.content_type or "application/json"
+        if filt is None:
+            return web.Response(status=status, body=data, content_type=ctype)
+        if status != 200:
+            return web.json_response({"error": f"dashboard status {status}"}, status=status if status in (404, 503) else 502)
+        try:
+            filtered = filt(json.loads(data.decode("utf-8") or "null"))
+        except Exception as e:
+            log.warning("dash %s filter failed: %s", tail, e)
+            return web.json_response({"error": "unexpected dashboard response"}, status=502)
+        return web.json_response(filtered)
+    except Exception as e:
+        log.warning("dash %s failed: %s", tail, e)
+        return web.json_response({"error": f"dashboard unavailable: {e}"}, status=502)
+
+
+# ---- dashboard writes (PUT /dash/...): only the skill and toolset enable switches ----------------------------------
+# PUT /dash/skills/toggle {"name", "enabled"} and PUT /dash/tools/toolsets/<name> {"enabled"} are the ONLY writable routes.
+# The profile travels as ?profile=, the body is size-limited and must carry exactly the expected keys.
+_DASH_WRITE_MAX = 1024
+_DASH_NAME_RE = r"[A-Za-z0-9_][A-Za-z0-9_.\-]{0,127}"
+_DASH_TOOLSET_PATH = re.compile(r"tools/toolsets/(" + _DASH_NAME_RE + r")")
+
+
+async def dash_write(req: web.Request):
+    if not _authed(req):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    tail = req.match_info["tail"].strip("/")
+    if req.method != "PUT":
+        return web.json_response({"error": "not allowed"}, status=403)
+    if tail == "skills/toggle":
+        keys = {"name", "enabled"}
+    elif _DASH_TOOLSET_PATH.fullmatch(tail):
+        keys = {"enabled"}
+    else:
+        return web.json_response({"error": "not allowed"}, status=403)
+    profile = req.query.get("profile")
+    if profile is not None and not profile_ok(profile):
+        return web.json_response({"error": "unknown profile"}, status=400)
+    if req.content_length is None or req.content_length > _DASH_WRITE_MAX:
+        return web.json_response({"error": "body too large"}, status=413)
+    try:
+        body = json.loads((await req.read()).decode("utf-8") or "null")
+    except Exception:
+        body = None
+    if not isinstance(body, dict) or set(body) != keys or not isinstance(body.get("enabled"), bool):
+        return web.json_response({"error": "bad request"}, status=400)
+    if tail == "skills/toggle":
+        if not isinstance(body["name"], str) or re.fullmatch(_DASH_NAME_RE, body["name"]) is None:
+            return web.json_response({"error": "bad request"}, status=400)
+        payload = {"name": body["name"], "enabled": body["enabled"]}
+    else:
+        payload = {"enabled": body["enabled"]}
+    tok = _dash_token()
+    if not await _dash_ensure(tok):
+        return web.json_response({"error": "dashboard unavailable"}, status=503)
+    qs = ("?profile=" + quote(profile, safe="")) if profile is not None else ""
+    try:
+        async with _http().put(f"http://127.0.0.1:{DASH_PORT}/api/{tail}{qs}", json=payload,
+                               headers={"X-Hermes-Session-Token": tok},
+                               timeout=__import__("aiohttp").ClientTimeout(total=30)) as r:
+            data = await r.read()
+            status = r.status
+            ctype = r.content_type or "application/json"
+    except Exception as e:
+        log.warning("dash write %s failed: %s", tail, e)
+        return web.json_response({"error": f"dashboard unavailable: {e}"}, status=502)
+    log.info("dash write %s -> %s", tail, status)
+    return web.Response(status=status, body=data, content_type=ctype)
+
+
 # ---- background-task progress (POST /bgtasks) ----------------------------------------------------------------------
 # The gateway already lists a session's background processes (WS RPC `process.list`: id, command, cwd, status, exit_code,
 # uptime_seconds, output_tail). The phone calls that on its own socket and posts the rows here; the relay only adds what
@@ -1515,13 +2134,74 @@ async def ws_handler(req: web.Request):
         _WS_COUNT -= 1
 
 
+# ---- connected clients (for the tray): who talked to the relay recently, and over which path ----
+_CLIENTS = {}   # (ip, ua) -> {"first": ts, "last": ts, "n": count}
+
+
+def _conn_kind(ip: str) -> str:
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip.split("%")[0])
+    except ValueError:
+        return "unknown"
+    if a.is_loopback:
+        return "local"
+    if a.version == 4:
+        if a in ipaddress.ip_network("100.64.0.0/10"):
+            return "tailscale"
+        if a in ipaddress.ip_network("192.168.137.0/24"):
+            return "hotspot"
+        if a.is_private:
+            return "lan"
+    elif a in ipaddress.ip_network("fd7a:115c:a1e0::/48"):
+        return "tailscale"
+    return "other"
+
+
+@web.middleware
+async def _track_clients(req, handler):
+    try:
+        p = req.path
+        if p != "/health" and p != "/_clients":
+            ip = req.remote or "?"
+            ua = (req.headers.get("User-Agent") or "")[:60]
+            if _conn_kind(ip) != "local":
+                k = (ip, ua)
+                now = time.time()
+                e = _CLIENTS.get(k)
+                if e is None:
+                    if len(_CLIENTS) > 200:
+                        _CLIENTS.clear()
+                    e = _CLIENTS[k] = {"first": now, "last": now, "n": 0}
+                e["last"] = now
+                e["n"] += 1
+    except Exception:
+        pass
+    return await handler(req)
+
+
+async def clients_get(req):
+    """GET /_clients (loopback only): clients seen in the last 3 minutes."""
+    if _conn_kind(req.remote or "") != "local":
+        return web.json_response({"error": "forbidden"}, status=403)
+    now = time.time()
+    out = []
+    for (ip, ua), e in list(_CLIENTS.items()):
+        age = now - e["last"]
+        if age <= 180:
+            out.append({"ip": ip, "via": _conn_kind(ip), "ua": ua, "age": int(age), "n": e["n"]})
+    out.sort(key=lambda x: x["age"])
+    return web.json_response({"clients": out})
+
+
 def main():
     global _IO_POOL
     from concurrent.futures import ThreadPoolExecutor
     _IO_POOL = ThreadPoolExecutor(max_workers=IO_THREADS, thread_name_prefix="relay-io")
     threading.Thread(target=_stats_loop, daemon=True).start()
-    app = web.Application()
+    app = web.Application(middlewares=[_track_clients])
     app.router.add_get("/health", health)
+    app.router.add_get("/_clients", clients_get)
     app.router.add_get("/ws", ws_handler)
     app.router.add_route("*", "/api/{tail:.*}", http_proxy)
     app.router.add_get("/app/{app}/{what}", app_files)
@@ -1530,6 +2210,7 @@ def main():
     app.router.add_post("/fs/{op}", fs_op)
     app.router.add_post("/vdisplay/shot", vdisplay_shot)
     app.router.add_post("/vdisplay/{op}", vdisplay_op)
+    app.router.add_post("/pc/keys", pc_keys)
     app.router.add_get("/elevate/pending", elevate_pending)
     app.router.add_post("/tabs", tabs_report)
     app.router.add_get("/tabs", tabs_list)
@@ -1544,9 +2225,13 @@ def main():
     app.router.add_route("*", "/upload/{id}", upload_chunk)
     app.router.add_route("*", "/config/context", config_context)
     app.router.add_route("*", "/config/models", config_models)
+    app.router.add_route("*", "/config/delegation", config_delegation)
+    app.router.add_route("*", "/config/delegation/advanced", config_delegation_advanced)
     app.router.add_get("/pc/stats", pc_stats)
     app.router.add_get("/lan", lan_info)
     app.router.add_post("/bgtasks", bgtasks)
+    app.router.add_get("/dash/{tail:.*}", dash_proxy)
+    app.router.add_put("/dash/{tail:.*}", dash_write)
     app.on_startup.append(_watchdog)
     import time
     while True:  # the Tailscale IP can be unbindable for a while (boot, resume from sleep): retry
@@ -1557,8 +2242,9 @@ def main():
         except OSError as e:
             log.warning("bind %s:%s failed (%s); retrying in 30s", HOST, PORT, e)
             time.sleep(30)
-            app = web.Application()
+            app = web.Application(middlewares=[_track_clients])
             app.router.add_get("/health", health)
+            app.router.add_get("/_clients", clients_get)
             app.router.add_get("/ws", ws_handler)
             app.router.add_route("*", "/api/{tail:.*}", http_proxy)
             app.router.add_get("/app/{app}/{what}", app_files)
@@ -1567,6 +2253,7 @@ def main():
             app.router.add_post("/fs/{op}", fs_op)
             app.router.add_post("/vdisplay/shot", vdisplay_shot)
             app.router.add_post("/vdisplay/{op}", vdisplay_op)
+            app.router.add_post("/pc/keys", pc_keys)
             app.router.add_get("/elevate/pending", elevate_pending)
             app.router.add_post("/tabs", tabs_report)
             app.router.add_get("/tabs", tabs_list)
@@ -1584,6 +2271,8 @@ def main():
             app.router.add_get("/pc/stats", pc_stats)
             app.router.add_get("/lan", lan_info)
             app.router.add_post("/bgtasks", bgtasks)
+            app.router.add_get("/dash/{tail:.*}", dash_proxy)
+            app.router.add_put("/dash/{tail:.*}", dash_write)
             app.on_startup.append(_watchdog)
 
 

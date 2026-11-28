@@ -80,7 +80,7 @@ import java.util.Date
 fun App(vm: ChatViewModel, recreate: () -> Unit) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.c.conn.reconnect(); vm.c.checkUpdates(manual = false) }
     BackHandler(vm.c.screen != Screen.Sessions && vm.c.store.hasKey) {
-        if (vm.c.screen == Screen.Settings || vm.c.activePage?.page == "pc") vm.c.leavePage()
+        if (vm.c.screen == Screen.Settings || vm.c.screen == Screen.Feature || vm.c.screen == Screen.Assets) vm.c.leavePage()
         else vm.c.openPage("sessions") }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         HotfixBanner(vm)
@@ -88,6 +88,7 @@ fun App(vm: ChatViewModel, recreate: () -> Unit) {
         Box(Modifier.weight(1f)) { when (vm.c.screen) {
             Screen.Settings -> SettingsScreen(vm, recreate)
             Screen.Sessions -> SessionsScreen(vm)
+            Screen.Assets -> AssetsScreen(vm)
             Screen.Chat -> ChatScreen(vm,
                 onOpenContextSettings = { vm.c.openSettingsSection("chat") },
                 onOpenModelSettings = { vm.c.openSettingsSection("model") })

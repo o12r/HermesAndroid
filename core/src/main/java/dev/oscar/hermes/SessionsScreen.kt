@@ -79,6 +79,7 @@ import java.util.Date
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionsScreen(vm: ChatViewModel) {
+    val exportScope = rememberCoroutineScope(); val exportCtx = LocalContext.current
     var renaming by remember { mutableStateOf<Session?>(null) }
     var deleting by remember { mutableStateOf<Session?>(null) }
     var moving by remember { mutableStateOf<Session?>(null) }
@@ -98,7 +99,7 @@ fun SessionsScreen(vm: ChatViewModel) {
     val open = remember { mutableStateMapOf<String, Boolean>() }
     val busy by remember { derivedStateOf { vm.c.busyIds() } }
     // Group sessions; anything the tree doesn't know about goes to Home.
-    fun buildGroups(sessions: List<Session>, projects: List<Project>, activeProject: String?): List<Pair<Project, List<Session>>> {
+    fun buildGroups(sessions: List<Session>, projects: List<Project>, activeProject: String?, prof: String): List<Pair<Project, List<Session>>> {
         val byId = sessions.associateBy { it.id }
         val seen = mutableSetOf<String>()
         val list = projects.filter { showArchived || !it.archived }.map { p -> p to p.sessionIds.mapNotNull { byId[it] }.also { l -> seen += l.map { it.id } } }
@@ -106,15 +107,15 @@ fun SessionsScreen(vm: ChatViewModel) {
         val home = list.find { it.first.isHome }
         // Projects not loaded yet: one open, header-less list instead of a collapsed "Home".
         val homeP = home?.first ?: Project(if (projects.isEmpty()) "__all" else "__home", "Home", null, true, false, false, emptyList())
-        val homeList = (home?.second.orEmpty() + rest).distinctBy { it.id }.sortedByDescending { it.lastActive ?: 0.0 }
-        return list.filter { !it.first.isHome }.map { (p, l) -> p to l.sortedByDescending { it.lastActive ?: 0.0 } }
+        val homeList = (home?.second.orEmpty() + rest).distinctBy { it.id }.sortedWith(compareByDescending<Session> { vm.c.isSessPinned(prof, it.id) }.thenByDescending { it.lastActive ?: 0.0 })
+        return list.filter { !it.first.isHome }.map { (p, l) -> p to l.sortedWith(compareByDescending<Session> { vm.c.isSessPinned(prof, it.id) }.thenByDescending { it.lastActive ?: 0.0 }) }
             .sortedWith(compareByDescending<Pair<Project, List<Session>>> { it.first.id == activeProject }.thenByDescending { it.second.firstOrNull()?.lastActive ?: 0.0 }) +
             listOf(homeP to homeList)
     }
-    val allGroups = remember(vm.c.conn.sessions, vm.c.proj.projects, vm.c.proj.activeProject, vm.c.proj.otherData, vm.c.profile, showArchived) {
+    val allGroups = remember(vm.c.conn.sessions, vm.c.proj.projects, vm.c.proj.activeProject, vm.c.proj.otherData, vm.c.profile, showArchived, vm.c.sessPins.toList()) {
         vm.c.conn.orderedProfiles.associate { (pr, _) ->
-            pr to (if (pr == vm.c.profile) buildGroups(vm.c.conn.sessions, vm.c.proj.projects, vm.c.proj.activeProject)
-                   else vm.c.proj.otherData[pr]?.let { buildGroups(it.first, it.second, it.third) } ?: emptyList())
+            pr to (if (pr == vm.c.profile) buildGroups(vm.c.conn.sessions, vm.c.proj.projects, vm.c.proj.activeProject, pr)
+                   else vm.c.proj.otherData[pr]?.let { buildGroups(it.first, it.second, it.third, pr) } ?: emptyList())
         }
     }
     Scaffold(
@@ -217,6 +218,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                     val time = remember(s.lastActive, vm.c.clock) { s.lastActive?.let { Formats.fmtTime((it * 1000).toLong()) } ?: "" }
                     val ctxRow = vm.c.proj.sessionCtx[s.id]
                     val isSel = isCur && s.id in sel
+                    val pinnedS = vm.c.isSessPinned(prof, s.id)
                     val isActiveSess = s.id in vm.c.conn.liveKeys[prof].orEmpty()
                     Row(Modifier.fillMaxWidth().heightIn(min = 36.dp)
                         .then(if (isSel) Modifier.background(cs.primaryContainer) else Modifier)
@@ -232,7 +234,7 @@ fun SessionsScreen(vm: ChatViewModel) {
                                 color = if (ctxRow.first * 100 / ctxRow.second >= 80) cs.error else cs.onSurfaceVariant)
                         }
                         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                            Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
+                            if (pinnedS) Icon(Icons.Default.PushPin, null, Modifier.size(14.dp), tint = cs.primary); Text((if (s.id in busy) "⏳ " else "") + (s.title ?: s.preview ?: s.id), Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Text(time + " · " + s.count, Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
@@ -240,6 +242,10 @@ fun SessionsScreen(vm: ChatViewModel) {
                         if (selMode) Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) { if (isSel) Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
                         else Box { IconButton(onClick = { menu = true }, Modifier.size(32.dp)) { Icon(Icons.Default.MoreVert, null, Modifier.size(18.dp)) }
                             DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(if (pinnedS) R.string.unpin_session else R.string.pin_session)) }, leadingIcon = { Icon(Icons.Default.PushPin, null) },
+                                    onClick = { menu = false; vm.c.setSessPinned(prof, s.id, !pinnedS) })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.export_md)) }, leadingIcon = { Icon(Icons.Default.Share, null) },
+                                    onClick = { menu = false; exportSessionMarkdown(vm, exportCtx, exportScope, prof, s) })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.select_multiple)) }, leadingIcon = { Icon(Icons.Default.Checklist, null) },
                                     onClick = { menu = false; vm.c.proj.enterProfile(prof); sel = setOf(s.id); selMode = true })
                                 DropdownMenuItem(text = { Text(stringResource(R.string.move_to_project)) }, onClick = { menu = false; vm.c.proj.enterProfile(prof); moving = s })

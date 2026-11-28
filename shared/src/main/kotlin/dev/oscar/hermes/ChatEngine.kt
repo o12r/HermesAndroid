@@ -35,6 +35,8 @@ interface EngineHost {
     fun respond(reqId: String, result: JSONObject)
     fun saveReplyStat(sid: String, text: String, v: List<Float?>)
     suspend fun gatewayCall(profile: String, method: String, params: JSONObject): JSONObject
+    /** Uploads the phone file at [path] like a picked attachment; null when it does not exist / cannot be read. */
+    suspend fun uploadFile(path: String): Attachment?
 }
 
 /** Routes gateway events into chat state: streaming text, tools, approvals, sub-agent cards, background-process cards. */
@@ -113,8 +115,8 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
                 val rawText = p.str("text").ifBlank { p.str("content") }
                 host.sendMedia(c, rawText)
                 val text = Internal.stripMedia(rawText)
-                if (rawText.isNotBlank()) updateLast(c) { m -> m.copy(text = text,
-                    steps = if (text.isBlank() || m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", text)) }
+                if (rawText.isNotBlank()) updateLast(c) { m -> m.copy(text = text, raw = rawText,
+                    steps = if (m.steps.any { it.kind == "text" }) m.steps else m.steps + Step("text", "", rawText)) }
                 (p.optJSONObject("usage")?.takeIf { it.length() > 0 }).let { u -> if (u == null) return@let
                     // No baseline yet (first reply of a fresh chat): count from zero. Counters that went down (compression / new
                     // counters) restart from the new value instead of dropping the stats.
@@ -132,7 +134,12 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
                             c.id?.let { sid -> c.messages.lastOrNull { it.role == "assistant" }?.let { host.saveReplyStat(sid, it.text, listOf(di.toFloat(), dO.toFloat(), pre, gt)) } }
                         }
                         c.totIn = i; c.totOut = o } }
-                if (away && text.isNotBlank()) host.alert(host.s(Str.n_reply_done, name), text, force = c !== host.cur, profile = c.profile, session = c.id, kind = "reply")
+                if (away && text.isNotBlank()) {
+                    val title = host.s(Str.n_reply_done, name)
+                    // Background: notification with an inline Reply box (Android). Foreground on another chat: the plain alert.
+                    if (platform.visible) host.alert(title, text, force = c !== host.cur, profile = c.profile, session = c.id, kind = "reply")
+                    else platform.notifyReply(c.profile, c.id.orEmpty(), title, text)
+                }
                 c.streaming = false; c.status = null; c.dropped = false; dropEmpty(c)
                 if (c !== host.cur || host.screen != Screen.Chat) c.unread = true
                 scope.launch { host.refreshIds(c) }
@@ -184,6 +191,7 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
         val goal = p.str("goal").ifBlank { p.str("preview") }
         var status = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.status ?: "running"
         var started = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.startedAt ?: now
+        val ref = p.str("subagent_id").ifBlank { c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task?.ref.orEmpty() }
         var ended = 0L
         when (type) {
             "subagent.spawn_requested", "subagent.start" -> {
@@ -200,7 +208,7 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
             "subagent.complete", "background.complete" -> {
                 val body = if (bg) p.str("text") else p.str("summary").ifBlank { p.str("text") }.ifBlank { goal }
                 val st = p.str("status")
-                status = if ((bg && body.startsWith("error:")) || p.has("failure_reason") || st in setOf("failed", "error", "timeout", "timed_out", "interrupted")) "failed" else "done"
+                status = if (status == "stopped") "stopped" else if ((bg && body.startsWith("error:")) || p.has("failure_reason") || st in setOf("failed", "error", "timeout", "timed_out", "interrupted")) "failed" else "done"
                 val dur = p.optDouble("duration_seconds", 0.0)
                 if (dur > 0) started = now - (dur * 1000).toLong()
                 ended = now
@@ -209,10 +217,34 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
                 ro.streaming = false
                 if (ro !== host.cur) ro.unread = true }
         }
-        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, if (bg) "bg" else "sa", status, started, ended, ro))
+        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, if (bg) "bg" else "sa", status, started, ended, ro, ref = ref))
         val i = c.messages.indexOfFirst { it.uid == card.uid }
         if (i >= 0) c.messages[i] = card
         else placeCard(c, card)   // at its start time; keeps the streaming assistant message last
+    }
+
+    /** Card button Force stop: kills a running sub-agent (subagent.interrupt) or a background process of this session (process.kill).
+     *  Already finished is not an error: no popup, the card refreshes from the gateway. */
+    fun forceStop(c: Chat, t: TaskInfo) {
+        val sid = c.liveId ?: return
+        if (t.status != "running" || t.ref.isBlank() || t.kind == "bg") return
+        scope.launch {
+            val killed = runCatching {
+                if (t.kind == "proc") {
+                    withTimeout(8000) { host.gatewayCall(c.profile, "process.kill", JSONObject().put("session_id", sid).put("process_id", t.ref)) }.optString("status") == "killed"
+                } else {
+                    withTimeout(8000) { host.gatewayCall(c.profile, "subagent.interrupt", JSONObject().put("session_id", sid).put("subagent_id", t.ref)) }.optBoolean("found", false)
+                }
+            }.getOrDefault(false)
+            if (killed) markStopped(c, t)
+            if (t.kind == "proc") runCatching { pollProcs(c, sid) }   // the process row now reports its exit
+        }
+    }
+
+    private fun markStopped(c: Chat, t: TaskInfo) {
+        val i = c.messages.indexOfFirst { it.task?.key == t.key && it.task!!.chat === t.chat }
+        if (i >= 0) c.messages[i] = c.messages[i].copy(task = c.messages[i].task!!.copy(status = "stopped", endedAt = System.currentTimeMillis()))
+        t.chat.streaming = false
     }
 
     // ---- background terminal processes: progress cards -------------------------------------------------------------
@@ -263,7 +295,7 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
         val old = c.messages.firstOrNull { it.task?.key == key && it.task!!.chat === ro }?.task
         val running = row.str("status") == "running"
         val failed = !running && !row.isNull("exit_code") && row.optInt("exit_code", 0) != 0
-        val status = if (running) "running" else if (failed) "failed" else "done"
+        val status = if (running) "running" else if (old?.status == "stopped") "stopped" else if (failed) "failed" else "done"
         val started = old?.startedAt ?: (now - row.optLong("uptime_seconds", 0) * 1000)
         val ended = if (running) 0L else old?.endedAt?.takeIf { it > 0 } ?: now
         val tail = pr?.optJSONArray("tail")?.let { a -> (0 until a.length()).map { a.optString(it) } }
@@ -276,7 +308,7 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
             if (ro.messages.lastOrNull()?.role == "assistant") ro.messages[ro.messages.lastIndex] = ro.messages.last().copy(text = text)
             else ro.messages.add(UiMsg("assistant", text)) }
         ro.streaming = running
-        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, "proc", status, started, ended, ro, pct, last))
+        val card = UiMsg("task", ro.title ?: "", uid = "task:" + System.identityHashCode(ro), task = TaskInfo(key, "proc", status, started, ended, ro, pct, last, ref = pid))
         val i = c.messages.indexOfFirst { it.uid == card.uid }
         if (i >= 0) { if (c.messages[i].task != card.task) c.messages[i] = card }
         else placeCard(c, card)
@@ -304,13 +336,22 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
         c.messages.add(msg)
         scope.launch {
             try {
+                // FILE: lines: upload each existing phone file like an attachment; the line stays in the chat text.
+                // Missing files get a note and their line is sent as plain text.
+                val files = ArrayList<Attachment>(); val found = ArrayList<String>()
+                for (p in Internal.filePaths(text)) {
+                    val a = host.uploadFile(p)
+                    if (a == null) c.messages.add(UiMsg("system", host.s(if (host.platform.hasAllFiles) Str.file_not_found else Str.file_not_found_all_files, p))) else { files += a; found += p }
+                }
+                val prompt = Internal.stripFiles(text, found)
+                val all = atts + files
                 val g = host.gateway(c.profile)
-                try { submit(g, host.ensureLive(g, c), text, atts, c) }
+                try { submit(g, host.ensureLive(g, c), prompt, all, c) }
                 catch (e: CancellationException) { throw e
                 } catch (e: Exception) {
                     // Stale live session (e.g. the gateway reaped it while the agent was busy): re-attach once and resend.
                     if (c.id == null) throw e
-                    c.liveId = null; submit(g, host.ensureLive(g, c), text, atts, c)
+                    c.liveId = null; submit(g, host.ensureLive(g, c), prompt, all, c)
                 }
             }
             catch (e: Exception) {
@@ -370,6 +411,8 @@ class ChatEngine(private val host: EngineHost, private val scope: CoroutineScope
     /** Inject text into the running turn (Hermes sees it with the next tool result) without interrupting. */
     fun steer(t: String) {
         val c = host.cur
+        // FILE: lines need the upload step first: send as a normal message, or queue behind the running turn.
+        if (Internal.filePaths(t).isNotEmpty()) { if (c.streaming) { c.queue.add(t); c.status = host.s(Str.steered) } else sendMessage(t, emptyList(), c); return }
         // Mid-turn note: appears where it was sent (after what the agent has said so far); later output continues in a new reply below it.
         c.messages.add(UiMsg("user", t))
         c.messages.add(UiMsg("assistant", ""))

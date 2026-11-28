@@ -79,21 +79,29 @@ class ConnectionController(val hub: ChatController) {
     fun localNet(): Pair<String, String?>? = platform.localNet()
     fun sameSubnet(a: String?, b: String?) = a != null && b != null && a.substringBeforeLast('.') == b.substringBeforeLast('.')
 
-    /** Use the main (Tailscale) URL if it answers, else the LAN URL; remembers the winner. On the PC's own Wi-Fi the LAN URL goes first
-     *  (direct, cheaper on battery), and the LAN URL is learned automatically (from the relay, or by scanning the subnet). */
+    /** Race the Tailscale, LAN and gateway URLs and use the fastest that answers; remembers the winner. The LAN URL is learned automatically (from the relay, or by scanning the subnet). */
     suspend fun pickRelay(): Boolean {
         val key = store.apiKey ?: return false
         val me = wifiIp()
-        val lanFirst = sameSubnet(me, runCatching { java.net.URI(store.lanUrl).host }.getOrNull())
         val gwUrl = localNet()?.second?.let { "http://$it:8643" }
-        val order = (if (lanFirst) listOf(store.lanUrl, store.relayUrl, gwUrl) else listOf(store.relayUrl, store.lanUrl, gwUrl)).filterNotNull().filter { it.isNotBlank() }.distinct()
-        for (u in order) {
-            if (runCatching { withTimeout(4000) { ApiClient(u, hub.profile, key).health() } }.isSuccess) {
-                if (store.activeRelay != u) { store.activeRelay = u; gws.values.forEach { it.close() }; gws.clear(); hub.chats.forEach { it.liveId = null } }
-                if (me != null) scope.launch { learnLan(u, key, me) }
-                if (u == gwUrl && store.lanUrl.isBlank()) store.lanUrl = u
-                return true
-            }
+        val order = (store.servers + listOfNotNull(gwUrl)).filter { it.isNotBlank() }.distinct()
+        // Probe every candidate at once and take the fastest one that answers. The current relay keeps the job unless
+        // another path is clearly faster (>40 ms), so two similar paths don't make the connection flap.
+        val ms: Map<String, Long> = coroutineScope {
+            order.map { u -> async {
+                val t0 = System.nanoTime()
+                if (runCatching { withTimeout(4000) { ApiClient(u, hub.profile, key).health() } }.isSuccess) u to (System.nanoTime() - t0) / 1_000_000 else null
+            } }.awaitAll().filterNotNull().toMap()
+        }
+        val fastest = ms.minByOrNull { it.value }
+        if (fastest != null) {
+            order.forEach { pathOk[it] = ms.containsKey(it) }
+            // The list order wins among paths that are about as fast as the fastest (within 40 ms).
+            val u = order.first { ms[it] != null && ms[it]!! <= fastest.value + 40 }
+            if (store.activeRelay != u) { store.activeRelay = u; gws.values.forEach { it.close() }; gws.clear(); hub.chats.forEach { it.liveId = null } }
+            if (me != null) scope.launch { learnLan(u, key, me) }
+            if (u == gwUrl && u !in store.servers) store.servers = store.servers + u
+            return true
         }
         return scanLan(key, me)
     }
@@ -105,7 +113,7 @@ class ConnectionController(val hub: ChatController) {
         val ip = runCatching { withTimeout(5000) { ApiClient(via, hub.profile, key).lanIps() } }.getOrNull()?.firstOrNull { sameSubnet(it, me) } ?: return
         lanLearnedFor = me
         val url = "http://$ip:8643"
-        if (store.lanUrl != url) { store.lanUrl = url; lanAutoSet = url }
+        if (url !in store.servers) { store.servers = store.servers + url; lanAutoSet = url }
     }
     var lanAutoSet by mutableStateOf<String?>(null)
 
@@ -130,7 +138,8 @@ class ConnectionController(val hub: ChatController) {
             }
         } ?: return false
         val url = "http://$found:8643"
-        store.lanUrl = url; lanAutoSet = url; store.activeRelay = url
+        if (url !in store.servers) store.servers = store.servers + url
+        lanAutoSet = url; store.activeRelay = url
         gws.values.forEach { it.close() }; gws.clear(); hub.chats.forEach { it.liveId = null }
         return true
     }
@@ -358,6 +367,8 @@ class ConnectionController(val hub: ChatController) {
     data class Probe(val label: String, val url: String, val ok: Boolean, val ms: Long, val active: Boolean, val error: String)
     var probes by mutableStateOf<List<Probe>>(emptyList())
     var probing by mutableStateOf(false)
+    /** url -> reachable (absent = untested); drives the status dot of each server row. */
+    val pathOk = mutableStateMapOf<String, Boolean>()
     fun pathLabel(url: String): String {
         val h = runCatching { java.net.URI(url).host }.getOrNull() ?: return s(Str.path_other)
         val p = h.split('.').mapNotNull { it.toIntOrNull() }
@@ -369,26 +380,28 @@ class ConnectionController(val hub: ChatController) {
         }
     }
     /** Probes every known path in parallel (main, LAN, gateway found on our subnet) and shows address, reachability, latency and the one in use. */
-    fun testConnections(relay: String, lan: String) = scope.launch {
+    fun testConnections(servers: List<String>) = scope.launch {
         val key = store.apiKey ?: run { hub.status = s(Str.err_set_key); return@launch }
         probing = true; probes = emptyList()
         try {
             val gwUrl = localNet()?.second?.let { "http://$it:8643" }
-            val urls = listOf(relay.trim().trimEnd('/'), lan.trim().trimEnd('/'), gwUrl).filterNotNull().filter { it.isNotBlank() }.distinct()
+            val urls = (servers.map { it.trim().trimEnd('/') } + listOfNotNull(gwUrl)).filter { it.isNotBlank() }.distinct()
+            urls.forEach { pathOk.remove(it) }
             val active = store.activeRelay
             probes = coroutineScope {
                 urls.map { u -> async(Dispatchers.IO) {
                     val t0 = platform.elapsedMs()
                     val r = runCatching { withTimeout(5000) { ApiClient(u, hub.profile, key).health() } }
-                    Probe(pathLabel(u), u, r.isSuccess, platform.elapsedMs() - t0, r.isSuccess && u == (active ?: relay.trim().trimEnd('/')),
+                    Probe(pathLabel(u), u, r.isSuccess, platform.elapsedMs() - t0, r.isSuccess && u == (active ?: urls.first()),
                         r.exceptionOrNull()?.let { if (it is kotlinx.coroutines.TimeoutCancellationException) "timeout" else it.message.orEmpty() }.orEmpty())
                 } }.awaitAll()
             }
+            probes.forEach { pathOk[it.url] = it.ok }
         } finally { probing = false }
     }
 
-    fun saveSettings(relay: String, lan: String, key: String?) {
-        store.relayUrl = relay; store.lanUrl = lan; store.activeRelay = null; if (!key.isNullOrBlank()) store.apiKey = key
+    fun saveSettings(servers: List<String>, key: String?) {
+        store.servers = servers; store.activeRelay = null; if (!key.isNullOrBlank()) store.apiKey = key
         gws.values.forEach { it.close() }; gws.clear(); hub.chats.forEach { it.liveId = null }
         scope.launch {
             try {

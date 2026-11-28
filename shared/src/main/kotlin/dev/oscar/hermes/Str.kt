@@ -2,6 +2,8 @@ package dev.oscar.hermes
 
 /** Names of the string resources the chat engine uses; the platform resolves them (Android: resources, desktop: its own table). */
 object Str {
+    const val admin = "admin"
+    const val assets = "assets"
     const val attachments_disabled = "attachments_disabled"
     const val chat = "chat"
     const val checking = "checking"
@@ -63,4 +65,7 @@ object Str {
     const val update_file_deleted = "update_file_deleted"
     const val upload_relay_old = "upload_relay_old"
     const val uploading_large = "uploading_large"
+    const val file_not_found = "file_not_found"
+    const val file_no_path = "file_no_path"
+    const val file_not_found_all_files = "file_not_found_all_files"
 }

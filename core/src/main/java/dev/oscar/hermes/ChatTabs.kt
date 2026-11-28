@@ -77,7 +77,7 @@ import io.noties.markwon.ext.tables.TablePlugin
 import java.util.Date
 
 /** Open chats as tabs: ⏳ = Hermes working, ✎ = unsent draft, × closes (the PC session is kept). */
-/** Compact top bar shared by every page: [nav] title ... [extra actions] refresh | PC | settings (the last three always in the same place). */
+/** Compact top bar shared by every page: [nav] title ... [extra actions] refresh | pinned entries | settings (refresh and settings always in place). */
 @Composable
 fun HermesTopBar(vm: ChatViewModel, title: @Composable () -> Unit, nav: (@Composable () -> Unit)? = null,
                  onRefresh: () -> Unit, refreshEnabled: Boolean = true, actions: @Composable RowScope.() -> Unit = {}) {
@@ -86,7 +86,11 @@ fun HermesTopBar(vm: ChatViewModel, title: @Composable () -> Unit, nav: (@Compos
         Box(Modifier.weight(1f).padding(horizontal = if (nav == null) 10.dp else 4.dp)) { title() }
         actions()
         IconButton(onClick = onRefresh, enabled = refreshEnabled, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-        if (vm.uiFeatures.any { it.hasPage("pc") }) IconButton(onClick = { vm.c.openPage("pc") }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Monitor, stringResource(R.string.pc)) }
+        // Pinned entries (long-press a Settings row): scroll sideways, capped so Refresh and Settings stay in place.
+        val pins = vm.topBarPins()
+        if (pins.isNotEmpty()) Row(Modifier.widthIn(max = 160.dp).horizontalScroll(rememberScrollState())) {
+            pins.forEach { p -> IconButton(onClick = { p.open(vm.c) }, modifier = Modifier.size(40.dp)) { Icon(p.icon, stringResource(p.title)) } }
+        }
         IconButton(onClick = { vm.c.openPage("settings") }, modifier = Modifier.size(40.dp)) {
             BadgedBox(badge = { if (vm.c.update != null) Badge() }) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) } }
     }
@@ -103,14 +107,14 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
     val newChat = stringResource(R.string.new_chat)
     var dragKey by remember { mutableStateOf<Int?>(null) }
     var dragOff by remember { mutableStateOf(0f) }
-    androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp),
+    androidx.compose.foundation.lazy.LazyRow(state = state, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp)) {
         items(vm.c.tabs.toList(), key = { System.identityHashCode(it) }) { c ->
             val sel = if (c.page != null) c === vm.c.activePage else !pageScreen && c === vm.c.cur
             val label = buildString {
                 if (c.readOnly && c.page == null) append("🔒 ")
                 if (c.streaming) append("⏳ ")
-                c.id?.let { cid -> vm.c.features.firstNotNullOfOrNull { f -> f.tabBadge(cid) }?.let { append(it) } }
+                c.id?.let { cid -> vm.c.enabledFeatures.firstNotNullOfOrNull { f -> f.tabBadge(cid) }?.let { append(it) } }
                 if (c.approval != null || c.clarify != null) append("❓ ")
                 append(c.title ?: newChat)
                 if (!sel && c.draft.isNotBlank()) append(" ✎")
@@ -118,8 +122,9 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
             if (sel) LaunchedEffect(c.unread) { c.unread = false }
             val dragging = dragKey == System.identityHashCode(c)
             Box(Modifier.zIndex(if (dragging) 1f else 0f).graphicsLayer { translationX = if (dragging) dragOff else 0f }) {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp.Unspecified) {
             InputChip(selected = sel, onClick = { if (!sel) vm.c.switchTo(c) },
-                leadingIcon = if (c.page != null) ({ Icon(vm.uiFeatures.firstNotNullOfOrNull { f -> f.pageIcon(c.page.orEmpty()) } ?: when (c.page) { "sessions" -> Icons.Default.Forum; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
+                leadingIcon = if (c.page != null) ({ Icon(vm.uiFeatures.firstNotNullOfOrNull { f -> f.pageIcon(c.page.orEmpty()) } ?: when (c.page) { "sessions" -> Icons.Default.Forum; "assets" -> Icons.Default.AttachFile; else -> Icons.Default.Settings }, null, Modifier.size(18.dp)) }) else ({ Box(Modifier.size(18.dp).background(MaterialTheme.colorScheme.secondaryContainer, androidx.compose.foundation.shape.CircleShape), contentAlignment = Alignment.Center) {
                     Text(c.profile.trim().take(1).uppercase().ifEmpty { "?" }, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSecondaryContainer) } }),
                 colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -147,13 +152,15 @@ fun ChatTabs(vm: ChatViewModel, onList: Boolean = false) {
                     },
                 label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 110.dp)) },
                 trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.close_tab), Modifier.size(16.dp).clickable { vm.c.closeTab(c) }) })
-            if (!sel && c.unread) Box(Modifier.align(Alignment.BottomEnd).padding(bottom = 1.dp, end = 1.dp).size(16.dp)
+            }
+            if (!sel && c.unread) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.66.dp, y = 3.66.dp).size(12.dp)
                 .background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
             }
         }
         item(key = "plus") {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp.Unspecified) {
             InputChip(selected = false, onClick = { vm.c.openPage("sessions") },
-                label = { Icon(Icons.Default.Add, stringResource(R.string.sessions)) })
+                label = { Icon(Icons.Default.Add, stringResource(R.string.sessions)) }) }
         }
     }
 }

@@ -77,6 +77,7 @@ import io.noties.markwon.ext.tables.TablePlugin
 import java.util.Date
 
 class MainActivity : ComponentActivity() {
+    companion object { const val ACTION_NEW_CHAT = "dev.oscar.hermes.action.NEW_CHAT" }
     private val vm: ChatViewModel by viewModels()
 
     // In-app language override: every resource lookup in this activity uses the chosen locale.
@@ -87,7 +88,15 @@ class MainActivity : ComponentActivity() {
         super.attachBaseContext(langCtx.createConfigurationContext(cfg))
     }
 
-    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handlePair(intent); handleOpen(intent) }
+    override fun onNewIntent(intent: android.content.Intent) { super.onNewIntent(intent); handlePair(intent); handleOpen(intent); handleNewChat(intent) }
+
+    /** Launcher shortcut "New chat": bumps a counter that the composed UI turns into vm.c.msg.newChat(). */
+    private var newChatTick by mutableIntStateOf(0)
+    private fun handleNewChat(intent: android.content.Intent?) {
+        if (intent?.action != ACTION_NEW_CHAT) return
+        newChatTick++
+        setIntent(android.content.Intent())   // handle once, not again on recreate()
+    }
 
     /** Notification tap: jump to the chat that needs an answer. */
     private fun handleOpen(intent: android.content.Intent?) {
@@ -107,7 +116,7 @@ class MainActivity : ComponentActivity() {
         if (u.scheme != "hermes" || u.host != "pair") return
         val url = u.getQueryParameter("url").orEmpty(); val key = u.getQueryParameter("key").orEmpty()
         if (url.isBlank() || key.isBlank()) return
-        vm.c.conn.saveSettings(url, u.getQueryParameter("lan").orEmpty(), key)
+        vm.c.conn.saveSettings(listOf(url, u.getQueryParameter("lan").orEmpty()) + vm.c.store.servers, key)
         android.widget.Toast.makeText(this, getString(R.string.paired), android.widget.Toast.LENGTH_LONG).show()
         setIntent(android.content.Intent())   // don't re-apply on rotation
     }
@@ -120,7 +129,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         KeepAliveService.start(this)
-        handlePair(intent); handleOpen(intent)
+        handlePair(intent); handleOpen(intent); handleNewChat(intent)
         KeepAliveService.askBatteryExemption(this)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -128,6 +137,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val ctx = LocalContext.current
             val sysDark = isSystemInDarkTheme()
+            LaunchedEffect(newChatTick) { if (newChatTick > 0) vm.c.msg.newChat() }
             val scheme = when (vm.c.theme) {
                 "light" -> dynamicLightColorScheme(ctx)
                 "dark" -> darkGray(dynamicDarkColorScheme(ctx))

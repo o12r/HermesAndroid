@@ -10,6 +10,8 @@ interface UiFeature : ChatFeature {
     fun hasPage(kind: String): Boolean = false
     @Composable fun Page(vm: ChatViewModel, kind: String) {}
     fun pageIcon(kind: String): ImageVector? = null
+    /** Entries this feature offers for the top bar once the user pins them (long-press in Settings); none by default. */
+    fun pinItems(): List<PinItem> = emptyList()
     /** Composed once at the app root (dialogs, background polling). */
     @Composable fun Overlay(vm: ChatViewModel) {}
     /** Content injected into a named spot of another screen, e.g. "pc.top". */
@@ -18,7 +20,8 @@ interface UiFeature : ChatFeature {
     @Composable fun FolderPicker(vm: ChatViewModel, start: String?, onPick: (String) -> Unit, onClose: () -> Unit) {}
 }
 
-val ChatViewModel.uiFeatures: List<UiFeature> get() = c.features.filterIsInstance<UiFeature>()
+/** UI half of the feature modules the user left switched on (Settings → modules). */
+val ChatViewModel.uiFeatures: List<UiFeature> get() = c.enabledFeatures.filterIsInstance<UiFeature>()
 
 /** PC folder picker if a feature provides one; otherwise closes at once so callers fall back to typing the path. */
 @Composable

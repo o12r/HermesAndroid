@@ -1,0 +1,9 @@
+gradle exit 0
+-rw-r--r-- 1 oscar 197610 75760729 Nov 27 21:09 app/build/outputs/apk/debug/app-debug.apk
+['META-INF/services/dev.oscar.hermes.ChatFeature']
+dev.oscar.hermes.VDisplayFeature
+dev.oscar.hermes.PcFilesFeature
+dev.oscar.hermes.PcStatsFeature
+dev.oscar.hermes.AdminFeature
+
+finished

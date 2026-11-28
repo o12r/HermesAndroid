@@ -1,0 +1,473 @@
+{
+ "/dash/skills": {
+  "status": 200,
+  "len": 12441,
+  "shape": [
+   {
+    "name": "str:android-app-development",
+    "description": "str:Use when adding Android app features. As",
+    "category": "str:android",
+    "locked": false,
+    "enabled": true,
+    "usage": 0,
+    "provenance": "str:agent"
+   },
+   "len=66"
+  ]
+ },
+ "/dash/memory": {
+  "status": 200,
+  "len": 813,
+  "shape": {
+   "active": "str:",
+   "providers": [
+    {
+     "name": "str:byterover",
+     "description": "str:ByteRover — persistent knowledge tree wi",
+     "available": false,
+     "configured": true,
+     "status": "str:unavailable",
+     "setup": "{...}"
+    },
+    "len=2"
+   ],
+   "builtin_files": {
+    "memory": 1042,
+    "user": 217
+   }
+  }
+ },
+ "/dash/tools/toolsets": {
+  "status": 200,
+  "len": 7085,
+  "shape": [
+   {
+    "name": "str:web",
+    "label": "str:Web Search & Scraping",
+    "description": "str:web_search, web_extract",
+    "platform": "str:cli",
+    "platform_label": "str:CLI",
+    "enabled": true,
+    "available": true,
+    "configured": true,
+    "tools": [
+     "str:web_extract",
+     "len=2"
+    ]
+   },
+   "len=26"
+  ]
+ },
+ "/dash/dashboard/plugins": {
+  "status": 200,
+  "len": 677,
+  "shape": [
+   {
+    "name": "str:hermes-achievements",
+    "label": "str:Achievements",
+    "description": "str:Steam-style achievements for vibe coding",
+    "icon": "str:Star",
+    "version": "str:0.4.0",
+    "tab": {
+     "path": "str:/achievements",
+     "position": "str:after:analytics"
+    },
+    "slots": [],
+    "entry": "str:dist/index.js",
+    "css": "str:dist/style.css",
+    "has_api": true,
+    "source": "str:bundled"
+   },
+   "len=2"
+  ]
+ },
+ "/dash/analytics/usage": {
+  "status": 200,
+  "len": 3891,
+  "shape": {
+   "daily": [
+    {
+     "day": "str:2026-11-23",
+     "input_tokens": 429,
+     "output_tokens": 14094,
+     "cache_read_tokens": 2665762,
+     "reasoning_tokens": 3033,
+     "estimated_cost": 0.6951662,
+     "actual_cost": 0,
+     "sessions": 1,
+     "api_calls": 44
+    },
+    "len=2"
+   ],
+   "by_model": [
+    {
+     "model": "str:deepseek-flash",
+     "input_tokens": 244048,
+     "output_tokens": 177419,
+     "estimated_cost": 0.2942585999999999,
+     "sessions": 1,
+     "api_calls": 281,
+     "aux_tasks": [
+      "{...}",
+      "len=3"
+     ]
+    },
+    "len=2"
+   ],
+   "by_task": [
+    {
+     "task": "str:background_review",
+     "input_tokens": 27370,
+     "output_tokens": 16962,
+     "estimated_cost": 0.085506264,
+     "api_calls": 23,
+     "models": [
+      "str:deepseek-flash",
+      "len=2"
+     ]
+    },
+    "len=3"
+   ],
+   "totals": {
+    "total_input": 211254,
+    "total_output": 175221,
+    "total_cache_read": 47399074,
+    "total_reasoning": 62751,
+    "total_estimated_cost": 0.9576660859999999,
+    "total_actual_cost": 0,
+    "total_sessions": 2,
+    "total_api_calls": 294
+   },
+   "period_days": 30,
+   "skills": {
+    "summary": {
+     "total_skill_loads": 9,
+     "total_skill_edits": 0,
+     "total_skill_actions": 9,
+     "distinct_skills_used": 7
+    },
+    "top_skills": [
+     "{...}",
+     "len=7"
+    ]
+   },
+   "tools": [
+    {
+     "tool": "str:terminal",
+     "count": 195,
+     "percentage": 67.47404844290658
+    },
+    "len=10"
+   ]
+  }
+ },
+ "/dash/status": {
+  "status": 200,
+  "len": 1923,
+  "shape": {
+   "version": "str:0.23.2",
+   "release_date": "str:2026.9.24",
+   "import_keep_host": 1,
+   "config_version": 53,
+   "latest_config_version": 53,
+   "can_update_hermes": true,
+   "gateway_running": true,
+   "gateway_state": "str:running",
+   "gateway_platforms": {},
+   "gateway_exit_reason": null,
+   "gateway_updated_at": "str:2026-11-27T20:50:00.977143+00:00",
+   "gateway_heartbeat_stale_s": null
+  }
+ },
+ "usage_keys": [
+  "daily",
+  "by_model",
+  "by_task",
+  "totals",
+  "period_days",
+  "skills",
+  "tools"
+ ],
+ "totals": {
+  "total_input": 211254,
+  "total_output": 175221,
+  "total_cache_read": 47399074,
+  "total_reasoning": 62751,
+  "total_estimated_cost": 0.9576660859999999,
+  "total_actual_cost": 0,
+  "total_sessions": 2,
+  "total_api_calls": 294
+ },
+ "daily_type": "list",
+ "daily_sample": [
+  {
+   "day": "2026-11-23",
+   "input_tokens": 429,
+   "output_tokens": 14094,
+   "cache_read_tokens": 2665762,
+   "reasoning_tokens": 3033,
+   "estimated_cost": 0.6951662,
+   "actual_cost": 0,
+   "sessions": 1,
+   "api_calls": 44
+  },
+  {
+   "day": "2026-11-25",
+   "input_tokens": 210825,
+   "output_tokens": 161127,
+   "cache_read_tokens": 44733312,
+   "reasoning_tokens": 59718,
+   "estimated_cost": 0.26249988599999996,
+   "actual_cost": 0,
+   "sessions": 1,
+   "api_calls": 250
+  }
+ ],
+ "by_model_sample": [
+  {
+   "model": "deepseek-flash",
+   "input_tokens": 244048,
+   "output_tokens": 177419,
+   "estimated_cost": 0.2942585999999999,
+   "sessions": 1,
+   "api_calls": 281,
+   "aux_tasks": [
+    {
+     "task": "background_review",
+     "input_tokens": 27364,
+     "output_tokens": 16250,
+     "estimated_cost": 0.030854663999999997,
+     "api_calls": 21
+    },
+    {
+     "task": "approval",
+     "input_tokens": 5377,
+     "output_tokens": 27,
+     "estimated_cost": 0.00082275,
+     "api_calls": 9
+    },
+    {
+     "task": "title_generation",
+     "input_tokens": 482,
+     "output_tokens": 15,
+     "estimated_cost": 8.13e-05,
+     "api_calls": 1
+    }
+   ]
+  },
+  {
+   "model": "claude-sonnet-5-5[1m]",
+   "input_tokens": 6328,
+   "output_tokens": 15088,
+   "estimated_cost": 0.7644798,
+   "sessions": 1,
+   "api_calls": 52,
+   "aux_tasks": [
+    {
+     "task": "approval",
+     "input_tokens": 5538,
+     "output_tokens": 257,
+     "estimated_cost": 0.013646000000000002,
+     "api_calls": 5
+    },
+    {
+     "task": "background_review",
+     "input_tokens": 6,
+     "output_tokens": 712,
+     "estimated_cost": 0.0546516,
+     "api_calls": 2
+    },
+    {
+     "task": "title_generation",
+     "input_tokens": 355,
+     "output_tokens": 25,
+     "estimated_cost": 0.001016,
+     "api_calls": 1
+    }
+   ]
+  }
+ ],
+ "by_task_sample": [
+  {
+   "task": "background_review",
+   "input_tokens": 27370,
+   "output_tokens": 16962,
+   "estimated_cost": 0.085506264,
+   "api_calls": 23,
+   "models": [
+    "deepseek-flash",
+    "claude-sonnet-5-5[1m]"
+   ]
+  },
+  {
+   "task": "approval",
+   "input_tokens": 10915,
+   "output_tokens": 284,
+   "estimated_cost": 0.014468750000000002,
+   "api_calls": 14,
+   "models": [
+    "claude-sonnet-5-5[1m]",
+    "deepseek-flash"
+   ]
+  },
+  {
+   "task": "title_generation",
+   "input_tokens": 837,
+   "output_tokens": 40,
+   "estimated_cost": 0.0010973,
+   "api_calls": 2,
+   "models": [
+    "deepseek-flash",
+    "claude-sonnet-5-5[1m]"
+   ]
+  }
+ ],
+ "period_days": 30,
+ "skills_tools": [
+  {
+   "summary": {
+    "total_skill_loads": 9,
+    "total_skill_edits": 0,
+    "total_skill_actions": 9,
+    "distinct_skills_used": 7
+   },
+   "top_skills": [
+    {
+     "skill": "hermes-agent",
+     "view_count": 3,
+     "manage_count": 0,
+     "total_count": 3,
+     "percentage": 33.33333333333333,
+     "last_used_at": 1795643206.1850626
+    },
+    {
+     "skill": "android-wallpaper-rendering",
+     "view_count": 1,
+     "manage_count": 0,
+     "total_count": 1,
+     "percentage": 11.11111111111111,
+     "last_used_at": 1795645649.0699964
+    },
+    {
+     "skill": "hermes-profile-sync",
+     "view_count": 1,
+     "manage_count": 0,
+     "total_count": 1,
+     "percentage": 11.11111111111111,
+     "last_used_at": 1795645095.834026
+    },
+    {
+     "skill": "hermes-profiles",
+     "view_count": 1,
+     "manage_count": 0,
+     "total_count": 1,
+     "percentage": 11.11111111111111,
+     "last_used_at": 1795644375.1375582
+    },
+    {
+     "skill": "claude-code-session-import",
+     "view_count": 1,
+     "manage_count": 0,
+     "total_count": 1,
+     "percentage": 11.11111111111111,
+     "last_used_at": 1795638930.7258706
+    },
+    {
+     "skill": "profile-sync-manager",
+     "view_count": 1,
+     "manage_count": 0,
+     "total_count": 1,
+     "percentage": 11.11111111111111,
+     "last_used_at": 1795638650.529247
+    },
+    {
+     "skill": "hermes-android",
+     "view_count": 1,
+     "manage_count": 0,
+     "total_count": 1,
+     "percentage": 11.11111111111111,
+     "last_used_at": 1795462056.8399508
+    }
+   ]
+  },
+  [
+   {
+    "tool": "terminal",
+    "count": 195,
+    "percentage": 67.47404844290658
+   },
+   {
+    "tool": "patch",
+    "count": 46,
+    "percentage": 15.916955017301039
+   },
+   {
+    "tool": "write_file",
+    "count": 18,
+    "percentage": 6.228373702422145
+   },
+   {
+    "tool": "skill_view",
+    "count": 9,
+    "percentage": 3.1141868512110724
+   },
+   {
+    "tool": "skill_manage",
+    "count": 9,
+    "percentage": 3.1141868512110724
+   },
+   {
+    "tool": "clarify",
+    "count": 5,
+    "percentage": 1.7301038062283738
+   },
+   {
+    "tool": "read_file",
+    "count": 4,
+    "percentage": 1.384083044982699
+   },
+   {
+    "tool": "process_manage",
+    "count": 1,
+    "percentage": 0.34602076124567477
+   },
+   {
+    "tool": "execute_code",
+    "count": 1,
+    "percentage": 0.34602076124567477
+   },
+   {
+    "tool": "tool_call",
+    "count": 1,
+    "percentage": 0.34602076124567477
+   }
+  ]
+ ],
+ "memory_shape": {
+  "active": "",
+  "providers": [
+   {
+    "name": "str:byterover",
+    "description": "str:ByteRover — persistent knowledge tree wi",
+    "available": false,
+    "configured": true,
+    "status": "str:unavailable",
+    "setup": {
+     "pip_dependencies": [],
+     "python_dependencies_declared": false,
+     "external_dependencies": [
+      "{...}",
+      "len=1"
+     ],
+     "required_env": [],
+     "dependencies_installed": false
+    }
+   },
+   "len=2"
+  ],
+  "builtin_files": {
+   "memory": 1042,
+   "user": 217
+  }
+ }
+}

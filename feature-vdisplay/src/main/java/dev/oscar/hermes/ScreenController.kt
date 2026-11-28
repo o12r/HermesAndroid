@@ -57,6 +57,8 @@ class ScreenController(val hub: ChatController) {
     var vdAgent by mutableStateOf(false)
     var vdScreenOff by mutableStateOf(false)
     var vdScreenOffAvailable by mutableStateOf(true)
+    /** Monitors powered off by "screen dim" (light alternative to screen off; any PC input wakes them). */
+    var vdDimmed by mutableStateOf(false)
     var vdBusy by mutableStateOf(false)
     /** Sessions that have an agent screen open on the PC (each session gets its own). */
     var vdAgents by mutableStateOf<Set<String>>(emptySet())
@@ -125,6 +127,27 @@ class ScreenController(val hub: ChatController) {
         loadScreens()
     }
 
+    var keyCombos by mutableStateOf(store.keyCombos())
+    fun addCombo(c: String) { val n = c.trim().lowercase().replace(" ", ""); if (n.isNotBlank() && n !in keyCombos) { keyCombos = keyCombos + n; store.setKeyCombos(keyCombos) } }
+    fun removeCombo(c: String) { keyCombos = keyCombos - c; store.setKeyCombos(keyCombos) }
+
+    /** Simulates a key chord on the PC (relay POST /pc/keys). */
+    fun sendKeys(combo: String) = scope.launch {
+        try {
+            val msg = withContext(Dispatchers.IO) {
+                val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
+                val url = store.relayBase().trimEnd('/') + "/pc/keys"
+                okhttp3.OkHttpClient.Builder().readTimeout(15, java.util.concurrent.TimeUnit.SECONDS).build()
+                    .newCall(okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key")
+                        .post(JSONObject().put("keys", combo).toString().toRequestBody("application/json".toMediaType())).build()).execute().use { r ->
+                        val o = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+                        if (r.code == 404) "relay too old (no /pc/keys)" else if (o.optBoolean("ok")) "" else o.optString("error", "HTTP ${r.code}")
+                    }
+            }
+            hub.status = if (msg.isBlank()) "⌨ $combo" else msg
+        } catch (e: Exception) { hub.status = e.message }
+    }
+
     fun vdisplay(op: String, display: String? = null) = scope.launch {
         vdBusy = true
         try {
@@ -143,7 +166,9 @@ class ScreenController(val hub: ChatController) {
                 o.has("installed") && !o.optBoolean("installed") -> "none"
                 else -> "ok"
             }
-            if (o != null) {
+            if (o != null && (op == "dim" || op == "undim")) {
+                if (o.optBoolean("ok")) vdDimmed = op == "dim"
+            } else if (o != null) {
                 val m = o.optString("mode")
                 vdAgent = if (o.has("agent")) o.optBoolean("agent") else m == "extend"
                 vdScreenOff = if (o.has("screen_off")) o.optBoolean("screen_off") else m == "second-only"

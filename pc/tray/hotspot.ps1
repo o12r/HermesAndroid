@@ -1,12 +1,12 @@
 ﻿# Mobile hotspot helper for hermes-tray.ps1. Needs Windows PowerShell 5.1 (WinRT).
 # -Query prints the state only; -Start turns the hotspot on and writes hotspot.result.
-param([switch]$Query, [switch]$Start, [int]$Tries = 4, [int]$DelaySec = 20)
+param([switch]$Query, [switch]$Start, [switch]$Watch, [int]$Tries = 4, [int]$DelaySec = 20)
 $ErrorActionPreference = "Stop"
 $Launch = Join-Path $env:LOCALAPPDATA "hermes\launchers"
 $Result = Join-Path $Launch "hotspot.result"
 $Log    = Join-Path $Launch "hotspot.log"
 function L($m) { try { Add-Content $Log "$(Get-Date -Format s) $m" } catch {} }
-function Done($r) { L $r; if ($Start) { try { Set-Content $Result $r -Encoding UTF8 } catch {} } else { Write-Output $r }; exit 0 }
+function Done($r) { if ($Watch -and $r -notlike "ok: hotspot started*") { if ($r -like "fail*") { L $r }; exit 0 }; L $r; if ($Start) { try { Set-Content $Result $r -Encoding UTF8 } catch {} } else { Write-Output $r }; exit 0 }
 
 try {
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -25,6 +25,7 @@ try {
         [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($p)
     }
 
+    if ($Watch) { $Start = [switch]$true; $Tries = 1 }
     if ($Query) {
         $m = Get-Mgr
         if (-not $m) { Done "NoProfile" }

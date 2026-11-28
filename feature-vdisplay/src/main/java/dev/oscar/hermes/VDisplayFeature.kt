@@ -86,6 +86,7 @@ class VDisplayFeature : UiFeature {
     override fun pageEntered(kind: String) { if (kind == "pc") ctl.loadScreens() }
     override fun tabBadge(chatId: String) = if (chatId in ctl.vdAgents) "\uD83D\uDDA5 " else null
     override fun pageIcon(kind: String) = if (kind == "pc") Icons.Default.Monitor else null
+    override fun pinItems() = listOf(PinItem("screens", R.string.vdisplay, Icons.Default.Monitor) { it.openPage("pc") })
     @Composable override fun Page(vm: ChatViewModel, kind: String) { ScreensScreen(vm) }
     @Composable override fun Overlay(vm: ChatViewModel) {
     LaunchedEffect(Unit) { vm.c.scr.pollElevate() }

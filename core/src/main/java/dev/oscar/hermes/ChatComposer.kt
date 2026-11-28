@@ -141,7 +141,7 @@ fun RuntimeChips(vm: ChatViewModel, onOpenContextSettings: () -> Unit, onOpenMod
                     leadingIcon = { Icon(Icons.Default.Schedule, stringResource(R.string.tasks_chip), Modifier.size(16.dp)) })
                 DropdownMenu(tasksOpen, { tasksOpen = false }) {
                     tasks.forEach { t ->
-                        val st = stringResource(when (t.status) { "running" -> R.string.task_running; "failed" -> R.string.task_failed; else -> R.string.task_done })
+                        val st = stringResource(when (t.status) { "running" -> R.string.task_running; "failed" -> R.string.task_failed; "stopped" -> R.string.task_stopped; else -> R.string.task_done })
                         val kind = stringResource(when (t.kind) { "bg" -> R.string.task_background; "proc" -> R.string.task_process; else -> R.string.task_subagent })
                         DropdownMenuItem(text = { Text(kind + (t.chat.title?.takeIf { it.isNotBlank() && t.kind != "bg" }?.let { " · " + it.take(40) } ?: "") + " — " + st,
                                 maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge) },

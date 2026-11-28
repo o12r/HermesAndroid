@@ -33,7 +33,7 @@ import java.util.UUID
  */
 class ChatController(val store: Store, val platform: Platform, val scope: CoroutineScope, val main: CoroutineDispatcher) {
     /** What is on screen is the active tab: a page tab (sessions / pc / settings) or, when [activePage] is null, the chat [cur]. */
-    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "settings" -> Screen.Settings; else -> Screen.Feature }
+    val screen: Screen get() = when (activePage?.page) { null -> Screen.Chat; "sessions" -> Screen.Sessions; "settings" -> Screen.Settings; "assets" -> Screen.Assets; else -> Screen.Feature }
     var profile by mutableStateOf(store.profile)
     /** All open chats (any profile); [cur] is the one on screen. */
     val chats = mutableListOf<Chat>()
@@ -93,13 +93,13 @@ class ChatController(val store: Store, val platform: Platform, val scope: Corout
     /** Entering a page tab: PC refreshes its screens, the session list reloads. */
     fun pageEntered(kind: String, refresh: Boolean) {
         if (!refresh) return
-        if (kind == "sessions") conn.refreshSessions() else features.forEach { it.pageEntered(kind) }
+        if (kind == "sessions") conn.refreshSessions() else enabledFeatures.forEach { it.pageEntered(kind) }
     }
     /** Open (or switch to) a page tab - "sessions" (the start page), "pc" or "settings" - in the same row as the chats. */
     fun openPage(kind: String, refresh: Boolean = true) {
         val t = tabs.firstOrNull { it.page == kind } ?: Chat(profile, null, null).also {
             it.page = kind; it.readOnly = true; it.loaded = true
-            it.title = s(features.firstNotNullOfOrNull { f -> f.pageTitleKey(kind) } ?: when (kind) { "sessions" -> Str.sessions; else -> Str.settings }); tabs.add(it) }
+            it.title = s(enabledFeatures.firstNotNullOfOrNull { f -> f.pageTitleKey(kind) } ?: when (kind) { "sessions" -> Str.sessions; "assets" -> Str.assets; else -> Str.settings }); tabs.add(it) }
         activePage = t
         pageEntered(kind, refresh)
     }
@@ -171,6 +171,11 @@ class ChatController(val store: Store, val platform: Platform, val scope: Corout
         override fun respond(reqId: String, result: JSONObject) { conn.gw?.respond(reqId, result) }
         override fun saveReplyStat(sid: String, text: String, v: List<Float?>) { store.setReplyStat(sid, text, v); msg.pushReplyStats(sid) }
         override suspend fun gatewayCall(profile: String, method: String, params: JSONObject) = conn.gatewayFor(profile).call(method, params)
+        override suspend fun uploadFile(path: String): Attachment? = withContext(Dispatchers.IO) {
+            if (!this@ChatController.hotfix.attachments) throw ApiException(s(Str.attachments_disabled))
+            val src = platform.openFile(path) ?: return@withContext null
+            this@ChatController.pc.uploader.read(src)
+        }
     }, scope) }
     fun s(key: String, vararg a: Any): String = platform.string(key, *a)
     var theme by mutableStateOf(store.theme)
@@ -265,9 +270,35 @@ class ChatController(val store: Store, val platform: Platform, val scope: Corout
 
     /** Optional features found on the classpath (see [ChatFeature]); absent modules just are not in the list. */
     val features: List<ChatFeature> = java.util.ServiceLoader.load(ChatFeature::class.java, ChatFeature::class.java.classLoader).toList()
+    /** Feature ids the user switched off (Settings → modules); observable, so their entry points vanish at once. */
+    val offFeatures = mutableStateListOf<String>().also { l -> features.forEach { if (!store.featureEnabled(it.id)) l.add(it.id) } }
+    /** Features left switched on: pages, entry points, badges and background work of the others stay off. */
+    val enabledFeatures: List<ChatFeature> get() = features.filter { it.id !in offFeatures }
+    fun featureOn(id: String): Boolean = id !in offFeatures
+    /** Turn a feature on/off at runtime (persisted); switching one off also closes its open page. */
+    fun setFeatureOn(id: String, on: Boolean) {
+        if (on) offFeatures.remove(id) else if (id !in offFeatures) offFeatures.add(id)
+        store.setFeatureEnabled(id, on)
+        if (!on) activePage?.page?.let { p -> if (features.any { it.id == id && it.pageTitleKey(p) != null }) leavePage() }
+    }
+    /** Settings groups / feature entries pinned to the top bar, in pin order (persisted; stale ids are ignored). */
+    val pinned = mutableStateListOf<String>().also { it.addAll(store.pinnedTop()) }
+    fun isPinned(id: String): Boolean = id in pinned
+    fun setPinned(id: String, on: Boolean) {
+        if (on) { if (id !in pinned) pinned.add(id) } else pinned.remove(id)
+        store.setPinnedTop(pinned.toList())
+    }
     inline fun <reified T : ChatFeature> feature(): T? = features.filterIsInstance<T>().firstOrNull()
     init { features.forEach { it.attach(this) } }
 
+    /** Session pins ("profile<TAB>id"); a state list so the session list re-sorts at once. */
+    val sessPins = mutableStateListOf<String>().also { it.addAll(store.pinnedSessionKeys()) }
+    fun isSessPinned(profile: String, id: String): Boolean = "$profile\t$id" in sessPins
+    fun setSessPinned(profile: String, id: String, on: Boolean) {
+        val k = "$profile\t$id"
+        if (on) { if (k !in sessPins) sessPins.add(k) } else sessPins.remove(k)
+        store.setPinnedSessionKeys(sessPins.toList())
+    }
     init { openPage(if (store.hasKey) "sessions" else "settings", refresh = false) }
     init {
         platform.watchNetwork({ scope.launch { if (store.hasKey) { delay(800); conn.pickRelay() }; if (offline) conn.reconnect() } }, { scope.launch { status = s(Str.network_changed) } })

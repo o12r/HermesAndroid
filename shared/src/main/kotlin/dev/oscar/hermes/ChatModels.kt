@@ -6,7 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.util.UUID
 
-enum class Screen { Sessions, Chat, Settings, Feature }
+enum class Screen { Sessions, Chat, Settings, Feature, Assets }
 data class UiMsg(val role: String, val text: String, val tools: List<String> = emptyList(), val id: Int? = null,
     /** Thinking / tool calls / tool output behind this reply (shown collapsed). */
     val steps: List<Step> = emptyList(),
@@ -23,11 +23,15 @@ data class UiMsg(val role: String, val text: String, val tools: List<String> = e
     /** Send time (epoch ms): stored timestamp for history, creation time for live messages; 0 = unknown. */
     val ts: Long = System.currentTimeMillis(),
     /** Sub-agent / background task card (role "task"). */
-    val task: TaskInfo? = null)
+    val task: TaskInfo? = null,
+    /** Assistant reply as stored, MEDIA lines included (rendered inline by segments); [text] is the stripped copy. */
+    val raw: String? = null)
 /** Notice card for a sub-agent / background task: [chat] is its read-only transcript tab. */
 data class TaskInfo(val key: String, val kind: String, val status: String, val startedAt: Long, val endedAt: Long, val chat: Chat,
     /** kind "proc" (terminal background process): parsed progress 0-100 (null = unknown) and its last output line. */
-    val percent: Double? = null, val last: String = "")
+    val percent: Double? = null, val last: String = "",
+    /** Id the Force stop action needs: subagent id (kind "sa") or process id (kind "proc"); blank = not stoppable. */
+    val ref: String = "")
 data class Attachment(val name: String, val isImage: Boolean, val payload: String, val pcPath: String? = null)
 data class Approval(val reqId: String, val command: String, val description: String, val choices: List<String>, val gen: Int? = null)
 data class Project(val id: String, val name: String, val path: String?, val isHome: Boolean, val isAuto: Boolean,

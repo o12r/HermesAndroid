@@ -114,14 +114,33 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
         }
     }
 
+    /** The gateway returns at most 500 rows per call, and with no paging params only the newest 500 (the rest were cut off).
+     *  Page oldest-first with limit/offset until a short page. */
     suspend fun messages(id: String): List<Msg> {
-        val a = call(req("/api/sessions/$id/messages").build()).optJSONArray("messages") ?: JSONArray()
+        val a = JSONArray()
+        val seen = HashSet<Int>()
+        var offset = 0
+        while (true) {
+            // include_compacted=true: the DISPLAY view, so rows archived by context compaction are returned too.
+            val page = call(req("/api/sessions/$id/messages", mapOf("limit" to "500", "offset" to "$offset", "order" to "oldest", "include_compacted" to "true")).build())
+                .optJSONArray("messages") ?: JSONArray()
+            for (k in 0 until page.length()) {
+                val row = page.optJSONObject(k) ?: continue
+                val rid = row.optInt("id", 0)
+                if (rid > 0 && !seen.add(rid)) continue   // de-dup by id across pages
+                a.put(row)
+            }
+            offset += page.length()
+            if (page.length() < 500) break
+        }
         // Fold one turn into a single assistant Msg whose steps keep the real order: thinking, text, tool calls
         // (with their outputs). Every assistant text segment between tool calls is kept, not just the last.
         val out = mutableListOf<Msg>()
         var pending = mutableListOf<Step>()
         var lastId: Int? = null
         var lastTs = 0L
+        // Tool calls made by hidden compaction-handoff rows: their tool outputs are hidden too.
+        val hiddenCallIds = HashSet<String>()
         fun flush() {
             if (pending.isEmpty()) { lastId = null; return }
             val text = pending.filter { it.kind == "text" }.joinToString("") { it.detail }
@@ -132,6 +151,17 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
             val r = a.optJSONObject(i) ?: continue
             val id = r.optInt("id", 0).takeIf { it > 0 }
             val ts = r.optDouble("timestamp", 0.0).let { if (it.isNaN()) 0L else if (it < 1e11) (it * 1000).toLong() else it.toLong() }
+            // Compaction scaffolding (handoff / "[PRIOR CONTEXT" rows) is stored with display_kind=hidden: skip it,
+            // but a hidden user row still ends the turn.
+            if (r.optString("display_kind") == "hidden") {
+                if (r.optString("role") == "user") flush()
+                if (r.optString("role") == "assistant") {
+                    val hc = r.opt("tool_calls").let { if (it is String) runCatching { JSONArray(it) }.getOrNull() else it as? JSONArray }
+                    if (hc != null) for (j in 0 until hc.length()) hc.optJSONObject(j)?.optString("id")?.takeIf { it.isNotEmpty() }?.let { hiddenCallIds.add(it) }
+                }
+                continue
+            }
+            if (r.optString("role") == "tool" && r.optString("tool_call_id") in hiddenCallIds) continue
             when (r.optString("role")) {
                 "user" -> {
                     flush()

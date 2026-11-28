@@ -28,7 +28,7 @@ android {
 
 dependencies {
     implementation(project(":core"))
-    val all = listOf("vdisplay", "pcfiles", "pcstats")
+    val all = listOf("vdisplay", "pcfiles", "pcstats", "admin")
     val want = (providers.gradleProperty("features").orNull ?: "all").let { p ->
         if (p == "all") all else if (p == "none") emptyList() else p.split(",").map { it.trim() }.filter { it.isNotEmpty() }
     }

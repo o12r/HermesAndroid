@@ -11,11 +11,20 @@ class AndroidPlatform(private val app: Application, private val store: Store) : 
     override val visible get() = Notify.visible
     override fun clearAlerts(session: String?, vararg kinds: String) = Notify.clear(app, session, *kinds)
     override fun elapsedMs() = android.os.SystemClock.elapsedRealtime()
+    override val hasAllFiles: Boolean get() = FileStaging.hasAllFiles()
+    override fun openFile(path: String): AttachmentSource? = PhoneFileSource.open(path)
     override fun log(tag: String, msg: String) { android.util.Log.w(tag, msg) }
     override val deviceId: String by lazy { android.provider.Settings.Secure.getString(app.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "phone" }
     override val cacheDir: File get() = app.cacheDir
     private val res get() = L10n.wrap(app, store.lang)
     override fun string(key: String, vararg a: Any): String = res.getString(res.resources.getIdentifier(key, "string", res.packageName), *a)
+    override fun notifyReply(profile: String, session: String, title: String, text: String) {
+        if (session.isBlank() || !store.replyNotifyOn()) {
+            Notify.alert(app, title, text, force = true, profile = profile, session = session, kind = "reply")
+        } else {
+            ReplyNotify.post(app, profile, session, title, text)
+        }
+    }
     override fun alert(title: String, text: String, force: Boolean, profile: String?, session: String?, kind: String) =
         Notify.alert(app, title, text, force = force, profile = profile, session = session, kind = kind)
     override fun localNet(): Pair<String, String?>? = localNetImpl()
@@ -24,7 +33,7 @@ class AndroidPlatform(private val app: Application, private val store: Store) : 
         val cm = app.getSystemService(ConnectivityManager::class.java)
         cm.allNetworks.mapNotNull { n ->
             val caps = cm.getNetworkCapabilities(n) ?: return@mapNotNull null
-            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
+            if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) return@mapNotNull null
             val lp = cm.getLinkProperties(n) ?: return@mapNotNull null
             val ip = lp.linkAddresses.map { it.address }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress ?: return@mapNotNull null
             val gw = lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }?.gateway?.hostAddress
@@ -33,8 +42,12 @@ class AndroidPlatform(private val app: Application, private val store: Store) : 
     }.getOrNull() ?: hotspotNet()
     /** This phone is the hotspot (the PC joined it): its own AP interface isn't a Network, so read it directly. */
     private fun hotspotNet(): Pair<String, String?>? = runCatching {
-        java.net.NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback && !it.name.startsWith("tun") && !it.name.startsWith("rmnet") }
-            .flatMap { it.inetAddresses.toList() }.firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress?.let { it to null }
+        // USB tethering (this phone is the host: rndis0/usb0/ncm0), the hotspot AP (ap0/swlan0/wlan1) or any other local NIC. Cellular/VPN never.
+        val nics = java.net.NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback && !it.name.startsWith("tun") && !it.name.startsWith("rmnet") && !it.name.startsWith("ccmni") }
+        fun rank(n: java.net.NetworkInterface) = if (n.name.startsWith("rndis") || n.name.startsWith("usb") || n.name.startsWith("ncm")) 0 else 1
+        nics.sortedBy { rank(it) }.firstNotNullOfOrNull { n ->
+            n.inetAddresses.toList().firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress
+        }?.let { it to null }
     }.getOrNull()
 
     private var netCb: ConnectivityManager.NetworkCallback? = null
@@ -55,7 +68,9 @@ class AndroidPlatform(private val app: Application, private val store: Store) : 
     override fun keepAliveStop() { KeepAliveService.stop(app) }
     override fun is24h() = android.text.format.DateFormat.is24HourFormat(app.applicationContext)
     override val updater: Updater by lazy { UpdateManager(app, store) }
-    override suspend fun saveInbox(name: String, progress: (Int) -> Unit): String = Inbox.save(app, store, name, progress).toString()
+    override suspend fun fetchInbox(name: String, key: String, progress: (Int) -> Unit): String = Inbox.fetchToCache(app, store, name, key, progress).toString()
+    override fun saveFromCache(uri: String, name: String): String =
+        saveToDownloads(MediaCache.fileOf(app, uri) ?: throw ApiException("The file is no longer in the app cache"), name)
     override fun saveToDownloads(file: File, name: String): String {
         val cr = app.contentResolver
         val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
@@ -72,6 +87,7 @@ class AndroidPlatform(private val app: Application, private val store: Store) : 
     }
     override fun fileTime(uri: String): Long = runCatching {
         if (uri.isBlank()) return Long.MAX_VALUE
+        MediaCache.fileOf(app, uri)?.let { return it.lastModified() }
         val u = Uri.parse(uri)
         app.contentResolver.query(u, null, null, null, null)?.use { q ->
             if (!q.moveToFirst()) return@use null

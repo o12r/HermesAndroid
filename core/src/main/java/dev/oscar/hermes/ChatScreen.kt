@@ -76,16 +76,45 @@ import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
 import java.util.Date
 
+/** Pastes longer than this (chars, one change) ask whether to attach them as a paste.txt file. */
+private const val PASTE_FILE_CHARS = 2000
+
+/** The part of [after] that was inserted relative to [before] (common prefix/suffix removed). */
+private fun insertedText(before: String, after: String): String {
+    var pre = 0
+    val max = minOf(before.length, after.length)
+    while (pre < max && before[pre] == after[pre]) pre++
+    var suf = 0
+    while (suf < max - pre && before[before.length - 1 - suf] == after[after.length - 1 - suf]) suf++
+    return after.substring(pre, after.length - suf)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpenModelSettings: () -> Unit = {}) {
     // The chat.draft is the current chat's draft, so typed text survives switching chats / going back.
     val chat = vm.c.cur
     val list = remember(chat) { androidx.compose.foundation.lazy.LazyListState(if (chat.follow) 0 else chat.scrollIdx, if (chat.follow) 0 else chat.scrollOff) }
-    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { if (it.isNotEmpty()) vm.addAttachments(it) }
+    // Picked files become FILE: lines in the draft (no chip).
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (uris.isNotEmpty()) vm.stageFiles(uris) { p -> chat.draft = FileStaging.withLine(chat.draft, p) } }
+    // Without all-files access the attach button explains and offers settings instead of picking.
+    var showAllFiles by remember { mutableStateOf(false) }
+    val allFilesCtx = LocalContext.current
+    if (showAllFiles) AlertDialog(
+        onDismissRequest = { showAllFiles = false },
+        title = { Text(stringResource(R.string.all_files_title)) },
+        text = { Text(stringResource(R.string.all_files_body)) },
+        confirmButton = { TextButton(onClick = { showAllFiles = false; FileStaging.requestAllFiles(allFilesCtx) }) { Text(stringResource(R.string.all_files_open)) } },
+        dismissButton = { TextButton(onClick = { showAllFiles = false }) { Text(stringResource(R.string.cancel)) } })
     // Follow new output only while the user is at the bottom; scrolling up to read stops it, scrolling back resumes.
     var follow by remember(chat) { mutableStateOf(chat.follow) }
     var renamingTitle by remember { mutableStateOf(false) }
+    // A long paste asks first: (text before the paste, text after it). Decided via the dialog below, never re-asked.
+    var pendingPaste by remember(chat) { mutableStateOf<Pair<String, String>?>(null) }
+    val onDraftChange: (String) -> Unit = { new ->
+        if (vm.c.hotfix.attachments && !vm.c.streaming && new.length - chat.draft.length > PASTE_FILE_CHARS) pendingPaste = chat.draft to new
+        else chat.draft = new
+    }
     LaunchedEffect(list, chat) { snapshotFlow { list.isScrollInProgress }.drop(1).collect { if (!it) follow = !list.canScrollForward } }
     // Remember where this chat was left (position + whether it was pinned to the bottom).
     LaunchedEffect(list, chat) {
@@ -145,8 +174,14 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
         }
         vm.c.status?.let { Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium) }
         if (vm.c.streaming) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (chat.readOnly) Text("🔒 " + stringResource(R.string.task_readonly), Modifier.fillMaxWidth().padding(12.dp),
-            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (chat.readOnly) {
+            Text("🔒 " + stringResource(R.string.task_readonly), Modifier.fillMaxWidth().padding(12.dp),
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val task = vm.c.chats.flatMap { it.messages }.firstNotNullOfOrNull { m -> m.task?.takeIf { it.chat === chat } }
+            if (task != null && task.status == "running" && task.kind != "bg" && task.ref.isNotBlank())
+                TextButton(onClick = { vm.c.msg.forceStop(task) }, Modifier.align(Alignment.CenterHorizontally)) {
+                    Text(stringResource(R.string.force_stop), color = MaterialTheme.colorScheme.error) }
+        }
         else {
         SlashSuggestions(vm, chat.draft) { chat.draft = it }
         RuntimeChips(vm, onOpenContextSettings, onOpenModelSettings)
@@ -170,7 +205,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
             val hasHardwareKeyboard = androidx.compose.ui.platform.LocalConfiguration.current.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS
             val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
             LaunchedEffect(imeVisible) { if (!imeVisible && !hasHardwareKeyboard && focused) focusManager.clearFocus() }
-            OutlinedTextField(chat.draft, { chat.draft = it }, Modifier.weight(1f).heightIn(max = half)
+            OutlinedTextField(chat.draft, onDraftChange, Modifier.weight(1f).heightIn(max = half)
                     .onFocusChanged { focused = it.isFocused }.animateContentSize(),
                 placeholder = { Text(stringResource(if (vm.c.streaming) R.string.steer_hint else R.string.message_hint)) },
                 minLines = if (focused) 5 else 1, maxLines = if (focused) Int.MAX_VALUE else 6,
@@ -185,16 +220,25 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                             Text(stringResource(if (vm.c.streaming) R.string.steer else R.string.send)) }
                     }
                     val fr = remember { androidx.compose.ui.focus.FocusRequester() }
-                    OutlinedTextField(chat.draft, { chat.draft = it }, Modifier.fillMaxWidth().weight(1f).focusRequester(fr),
+                    OutlinedTextField(chat.draft, onDraftChange, Modifier.fillMaxWidth().weight(1f).focusRequester(fr),
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 } }
+            }
+            pendingPaste?.let { (before, after) ->
+                val pasted = insertedText(before, after)
+                AlertDialog(
+                    onDismissRequest = { pendingPaste = null; chat.draft = after },
+                    title = { Text(stringResource(R.string.paste_title)) },
+                    text = { Text(stringResource(R.string.paste_text)) },
+                    confirmButton = { TextButton(onClick = { pendingPaste = null; chat.draft = before; vm.attachPaste(pasted) }) { Text(stringResource(R.string.paste_attach)) } },
+                    dismissButton = { TextButton(onClick = { pendingPaste = null; chat.draft = after }) { Text(stringResource(R.string.paste_keep)) } })
             }
             // Buttons stacked outside the field, on its right. Collapsed (one line): only send or stop.
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 val small = Modifier.size(40.dp)
                 // Buttons that would be disabled are hidden instead of shown greyed out.
-                if (vm.c.hotfix.attachments && !vm.c.streaming) IconButton(onClick = { pickFiles.launch(arrayOf("*/*")) }, small) {
+                if (vm.c.hotfix.attachments && !vm.c.streaming) IconButton(onClick = { if (FileStaging.hasAllFiles()) pickFiles.launch(arrayOf("*/*")) else showAllFiles = true }, small) {
                     Icon(Icons.Default.AttachFile, stringResource(R.string.attach)) }
                 if (focused) {
                     IconButton(onClick = { full = true }, small) { Icon(Icons.Default.OpenInFull, stringResource(R.string.expand_editor)) }

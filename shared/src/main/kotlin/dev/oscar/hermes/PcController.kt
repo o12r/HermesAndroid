@@ -14,6 +14,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -35,11 +37,24 @@ class PcController(val hub: ChatController) {
 
     /** Files the agent sent to the phone: download progress (0-100) per file name, shown on its chat bubble. */
     val fileProgress = mutableStateMapOf<String, Int>()
-    suspend fun saveInboxNow(name: String, session: String?, anchor: Long = 0L): String {
+    /** Phone copies of PC files by "session|name" (empty = known, not downloaded yet): drives the inline MEDIA cards. */
+    val fileUris = mutableStateMapOf<String, String>()
+    /** Downloads in flight by file name: [cancelDownload] stops one of them. */
+    private val downloads = HashMap<String, kotlinx.coroutines.Deferred<String>>()
+    /** Cancels a download: its HTTP call and partial copy are dropped, the card goes back to pending (no error shown). */
+    fun cancelDownload(name: String) {
+        fileProgress.remove(name)
+        downloads.remove(name)?.cancel()
+    }
+    /** Fetches [name] into the app cache and shows it in the chat. Nothing is written to Downloads. Returns the cached file's uri. */
+    suspend fun fetchInboxNow(name: String, session: String?, anchor: Long = 0L, key: String = "$name|${System.nanoTime()}"): String {
         fileProgress[name] = 0
-        val uri = try { withContext(Dispatchers.IO) { platform.saveInbox(name) { p ->
-                scope.launch(main) { if (name in fileProgress) fileProgress[name] = p } } } }
-            finally { fileProgress.remove(name) }
+        // Own Deferred per name, so cancelDownload() stops this download without cancelling the caller (e.g. inboxWatch).
+        val dl = scope.async(Dispatchers.IO) { platform.fetchInbox(name, key) { p ->
+                scope.launch(main) { if (name in fileProgress) fileProgress[name] = p } } }
+        downloads[name] = dl
+        val uri = try { dl.await() }
+            finally { dl.cancel(); if (downloads[name] === dl) { downloads.remove(name); fileProgress.remove(name) } }
         val u = uri
         var found = false
         for (c in (hub.chats + hub.cur).distinct()) {
@@ -47,15 +62,31 @@ class PcController(val hub: ChatController) {
             if (i >= 0) { c.messages[i] = c.messages[i].copy(file = u); found = true }
         }
         val sid = outboxSession(session)
+        fileUris["${sid.orEmpty()}|$name"] = u
         if (!found) (hub.chats.firstOrNull { it.id == sid } ?: hub.cur.takeIf { sid == null || it.id == sid })
+            ?.takeIf { !Internal.mediaNamed(it.messages, name) }
             ?.let { ch -> hub.engine.placeByTime(ch, UiMsg("file", name, file = u, session = sid, ts = if (anchor > 0) anchor + 1 else System.currentTimeMillis())) }
         sid?.let { store.upsertSessionFile(it, name, u, if (anchor > 0) anchor + 1 else 0L) }
         return uri
     }
 
+    /** The card's Save button (file not on the phone yet): fetch it into the cache if needed, then copy it to Downloads. */
     fun saveInbox(name: String, session: String?) = scope.launch {
         if (name in fileProgress) return@launch
-        try { saveInboxNow(name, session) } catch (e: Exception) { hub.conn.fail(e) }
+        try { exportToDownloads(name, fetchInboxNow(name, session)) } catch (e: CancellationException) { throw e } catch (e: Exception) { hub.conn.fail(e) }
+    }
+
+    /** The Download button on a cached file: copy it to Downloads. */
+    fun exportInbox(name: String, uri: String) = scope.launch {
+        if (name in fileProgress) return@launch
+        try { exportToDownloads(name, uri) } catch (e: CancellationException) { throw e } catch (e: Exception) { hub.conn.fail(e) }
+    }
+
+    /** Cache file -> the user's Downloads as [name], then the file is removed from the PC outbox. Returns the Downloads uri. */
+    suspend fun exportToDownloads(name: String, uri: String): String {
+        val saved = withContext(Dispatchers.IO) { platform.saveFromCache(uri, name).also { Inbox.ack(store, name) } }
+        hub.status = platform.string("pf_downloaded", name)
+        return saved
     }
 
     /** Chat a PC-sent file belongs to: its own session (kept in the store and shown when that chat is open), else the open chat. */
@@ -63,7 +94,9 @@ class PcController(val hub: ChatController) {
 
     fun showPendingFile(item: Inbox.Item) {
         val sid = outboxSession(item.session)
+        if (fileUris["${sid.orEmpty()}|${item.name}"] == null) fileUris["${sid.orEmpty()}|${item.name}"] = ""
         (hub.chats.firstOrNull { it.id == sid } ?: hub.cur.takeIf { sid == null || it.id == sid })
+            ?.takeIf { !Internal.mediaNamed(it.messages, item.name) }
             ?.let { ch -> hub.engine.placeByTime(ch, UiMsg("file", item.name, file = null, session = sid, ts = if (item.anchor > 0) item.anchor + 1 else System.currentTimeMillis())) }
         sid?.let { store.upsertSessionFile(it, item.name, "", if (item.anchor > 0) item.anchor + 1 else 0L) }
     }
@@ -79,8 +112,11 @@ class PcController(val hub: ChatController) {
                 for (item in items) {
                     if (store.inboxSeen(item.key)) continue
                     try {
-                        if (isImageName(item.name)) saveInboxNow(item.name, item.session, item.anchor) else showPendingFile(item)
+                        if (isImageName(item.name)) fetchInboxNow(item.name, item.session, item.anchor, item.key) else showPendingFile(item)
                         store.markInboxSeen(item.key)
+                    } catch (e: CancellationException) {
+                        if (!currentCoroutineContext().isActive) throw e
+                        store.markInboxSeen(item.key) // the user cancelled this one: don't fetch it again
                     } catch (e: Exception) { delay(5000) }
                 }
             } catch (e: Exception) { delay(5000) }

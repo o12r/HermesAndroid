@@ -150,7 +150,8 @@ class MessageController(val hub: ChatController) {
 
     /** Reload [c]'s stored transcript; keeps unsent (failed) messages at the end. */
     /** "MEDIA:<path>" in an agent reply: have the relay copy that PC file to the phone Inbox (once per session+path); it then shows in the chat. */
-    fun sendMedia(c: Chat, text: String, sid: String? = c.id, anchor: Long = c.messages.lastOrNull { it.role == "assistant" }?.ts ?: 0L) {
+    /** Live replies pass no anchor: the card is placed at completion time (ms, same unit as UiMsg.ts), i.e. after the whole turn. */
+    fun sendMedia(c: Chat, text: String, sid: String? = c.id, anchor: Long = System.currentTimeMillis()) {
         if (!text.contains("MEDIA:")) return
         for (path in Internal.mediaPaths(text)) {
             val key = "${sid.orEmpty()}|$path"
@@ -169,14 +170,22 @@ class MessageController(val hub: ChatController) {
         try {
             syncReplyStats(id)
             val m = hub.apiFor(c.profile).messages(id)
-            m.filter { it.role == "assistant" }.forEach { sendMedia(c, it.content, id, it.ts) }
+            // History: a server assistant ts can be the turn start, so the card goes after the whole turn, i.e. just before the
+            // next user message: anchor = max(reply ts, next user ts - 2), card ts = anchor + 1 (placeByTime: before the first item with a larger ts).
+            // With no next user message (last turn) the card goes right after the reply.
+            m.forEachIndexed { i, r ->
+                if (r.role != "assistant") return@forEachIndexed
+                val nextUser = m.drop(i + 1).firstOrNull { it.role == "user" && it.ts > 0 }?.ts ?: 0L
+                val anchor = if (nextUser > 0 && r.ts > 0) maxOf(r.ts, nextUser - 2) else r.ts
+                sendMedia(c, r.content, id, anchor)
+            }
             val failed = c.messages.filter { it.failed }
             val cards = c.messages.filter { it.task != null }   // sub-agent / background / process cards are not in the server history
             c.messages.clear(); c.messages.addAll(m.mapNotNull { r ->
-                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty()) "" else null)?.let { t -> val st = if (r.role == "assistant") store.replyStat(id, t) else null
-                    UiMsg(r.role, t, id = r.id, steps = r.steps, ts = r.ts, tokIn = st?.get(0)?.toLong(), tokOut = st?.get(1)?.toLong(), prefillTps = st?.get(2), genTps = st?.get(3)) } })
+                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty() || (r.role == "assistant" && r.content.contains("MEDIA:"))) "" else null)?.let { t -> val st = if (r.role == "assistant") store.replyStat(id, t) else null
+                    UiMsg(r.role, t, id = r.id, steps = r.steps, ts = r.ts, raw = if (r.role == "assistant") r.content else null, tokIn = st?.get(0)?.toLong(), tokOut = st?.get(1)?.toLong(), prefillTps = st?.get(2), genTps = st?.get(3)) } })
             val files = store.sessionFiles(id)
-            files.forEach { (n, u, t) -> placeByTime(c, UiMsg("file", n, file = u.ifBlank { null }, session = id, ts = if (t > 0) t else legacyFileTime(u))) }
+            files.filter { (n, _, _) -> !Internal.mediaNamed(c.messages, n) }.forEach { (n, u, t) -> placeByTime(c, UiMsg("file", n, file = u.ifBlank { null }, session = id, ts = if (t > 0) t else legacyFileTime(u))) }
             c.messages.addAll(failed); cards.forEach { placeCard(c, it) }; c.loaded = true
             if (c === hub.cur) { hub.offline = false; hub.error = null }
         } catch (e: Exception) { if (c === hub.cur) hub.conn.fail(e) }
@@ -321,6 +330,7 @@ class MessageController(val hub: ChatController) {
 
     /** Open a task card's read-only transcript as a tab. */
     fun openTask(t: TaskInfo) { hub.addTab(t.chat); hub.switchTo(t.chat) }
+    fun forceStop(t: TaskInfo, c: Chat = hub.cur) = hub.engine.forceStop(c, t)
 
     fun onServerRequest(g: GatewayWs, id: String, method: String, p: JSONObject) {
         when (method) {

@@ -306,13 +306,13 @@ class ProjectController(val hub: ChatController) {
     var modelSettings by mutableStateOf<JSONObject?>(null)
     var modelBusy by mutableStateOf(false)
     var modelError by mutableStateOf<String?>(null)
-    fun loadModelSettings(models: JSONObject? = null) = scope.launch {
+    fun loadModelSettings(models: JSONObject? = null, profile: String = store.profile, all: Boolean = false) = scope.launch {
         modelBusy = true; modelError = null
         try {
             val o = withContext(Dispatchers.IO) {
                 val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
-                val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/models").header("Authorization", "Bearer $key")
-                if (models != null) b.post(models.toString().toRequestBody("application/json".toMediaType()))
+                val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/models?profile=" + java.net.URLEncoder.encode(profile.ifBlank { "default" }, "UTF-8")).header("Authorization", "Bearer $key")
+                if (models != null) b.post((if (all) JSONObject(models.toString()).put("all_profiles", true) else models).toString().toRequestBody("application/json".toMediaType()))
                 hub.relayHttp.newCall(b.build()).execute().use { r ->
                     val j = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
                     if (!r.isSuccessful) throw ApiException(j.optString("error").ifBlank { "HTTP ${r.code}" })
@@ -322,6 +322,51 @@ class ProjectController(val hub: ChatController) {
             modelSettings = o.optJSONObject("settings") ?: JSONObject()
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) { modelError = e.message ?: e.javaClass.simpleName } finally { modelBusy = false }
+    }
+
+    /** Advanced sub-agent settings (delegation.*), shared by every profile: GET/POST the relay's /config/delegation. */
+    var delegSettings by mutableStateOf<JSONObject?>(null)
+    var delegBusy by mutableStateOf(false)
+    var delegError by mutableStateOf<String?>(null)
+    fun loadDelegSettings(deleg: JSONObject? = null) = scope.launch {
+        delegBusy = true; delegError = null
+        try {
+            val o = withContext(Dispatchers.IO) {
+                val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
+                val b = okhttp3.Request.Builder().url(store.relayBase().trimEnd('/') + "/config/delegation").header("Authorization", "Bearer $key")
+                if (deleg != null) b.post(deleg.toString().toRequestBody("application/json".toMediaType()))
+                hub.relayHttp.newCall(b.build()).execute().use { r ->
+                    val j = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+                    if (!r.isSuccessful) throw ApiException(j.optString("error").ifBlank { "HTTP ${r.code}" })
+                    j
+                }
+            }
+            delegSettings = o.optJSONObject("settings") ?: JSONObject()
+        } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { delegError = e.message ?: e.javaClass.simpleName } finally { delegBusy = false }
+    }
+
+    /** Advanced sub-agent routing (mode, model routes, profile routes) of one profile: GET/POST the relay's /config/delegation/advanced. */
+    var advDeleg by mutableStateOf<JSONObject?>(null)
+    var advBusy by mutableStateOf(false)
+    var advError by mutableStateOf<String?>(null)
+    fun loadAdvDeleg(profile: String, body: JSONObject? = null) = scope.launch {
+        advBusy = true; advError = null
+        try {
+            val o = withContext(Dispatchers.IO) {
+                val key = store.apiKey ?: throw ApiException(s(Str.err_set_key))
+                val url = store.relayBase().trimEnd('/') + "/config/delegation/advanced?profile=" + java.net.URLEncoder.encode(profile, "UTF-8")
+                val b = okhttp3.Request.Builder().url(url).header("Authorization", "Bearer $key")
+                if (body != null) b.post(body.toString().toRequestBody("application/json".toMediaType()))
+                hub.relayHttp.newCall(b.build()).execute().use { r ->
+                    val j = runCatching { JSONObject(r.body!!.string()) }.getOrDefault(JSONObject())
+                    if (!r.isSuccessful) throw ApiException(j.optString("error").ifBlank { "HTTP ${r.code}" })
+                    j
+                }
+            }
+            advDeleg = o
+        } catch (e: CancellationException) { throw e
+        } catch (e: Exception) { advError = e.message ?: e.javaClass.simpleName } finally { advBusy = false }
     }
 
     /** Per-session context window (used to max tokens) from session.stats (older gateways: session.usage); only sessions with a known max are listed. */

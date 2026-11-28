@@ -13,6 +13,8 @@ import javax.crypto.spec.GCMParameterSpec
 /** Settings; the API key is AES-GCM encrypted with a non-exportable AndroidKeyStore key. */
 class SecureStore(ctx: Context) : Store {
     private val prefs = ctx.getSharedPreferences("hermes", Context.MODE_PRIVATE)
+    override fun keyCombos(): List<String> = (prefs.getString("keyCombos", "") ?: "").split("\n").filter { it.isNotBlank() }
+    override fun setKeyCombos(v: List<String>) { prefs.edit().putString("keyCombos", v.joinToString("\n")).apply() }
 
     override var relayUrl: String
         get() = prefs.getString("relayUrl", null) ?: hotfixRelay ?: DEFAULT_RELAY
@@ -85,6 +87,15 @@ class SecureStore(ctx: Context) : Store {
     override var updateSource: String
         get() = prefs.getString("updateSource", "auto")!!.takeIf { it in UPDATE_SOURCES } ?: "auto"
         set(v) = prefs.edit().putString("updateSource", if (v in UPDATE_SOURCES) v else "auto").apply()
+    /** Optional feature modules the user left on (default) or off, so a switch needs no restart. */
+    override fun featureEnabled(id: String): Boolean = prefs.getBoolean("feature." + id, true)
+    override fun setFeatureEnabled(id: String, on: Boolean) { prefs.edit().putBoolean("feature." + id, on).apply() }
+    /** Pinned top-bar entries, newline-separated in pin order. */
+    override fun pinnedTop(): List<String> = prefs.getString("pinnedTop", "")!!.lines().filter { it.isNotBlank() }
+    override fun setPinnedTop(ids: List<String>) { prefs.edit().putString("pinnedTop", ids.distinct().joinToString("\n")).apply() }
+    /** Pinned sessions as "profile<TAB>session id" lines, in pin order. */
+    override fun pinnedSessionKeys(): List<String> = prefs.getString("pinnedSess", "")!!.lines().filter { it.isNotBlank() }
+    override fun setPinnedSessionKeys(keys: List<String>) { prefs.edit().putString("pinnedSess", keys.distinct().joinToString("\n")).apply() }
     /** Relay URL pushed by the hotfix config (overrides the default, not a user-entered value). */
     override var hotfixRelay: String?
         get() = prefs.getString("hotfixRelay", null)
@@ -92,7 +103,14 @@ class SecureStore(ctx: Context) : Store {
     /** Optional LAN address of the PC relay, tried when the main (Tailscale) URL doesn't answer. */
     override var lanUrl: String
         get() = prefs.getString("lanUrl", "")!!
-        set(v) = prefs.edit().putString("lanUrl", v.trim().trimEnd('/')).apply()
+        set(v) { val t = v.trim().trimEnd('/'); prefs.edit().putString("lanUrl", t).apply(); if (t.isNotBlank() && t !in servers) servers = servers + t }
+    override var servers: List<String>
+        get() = prefs.getString("servers", null)?.split("\n")?.filter { it.isNotBlank() }
+            ?: listOf(relayUrl, prefs.getString("lanUrl", "")!!).filter { it.isNotBlank() }.distinct()
+        set(v) {
+            val l = v.map { it.trim().trimEnd('/') }.filter { it.isNotBlank() }.distinct()
+            prefs.edit().putString("servers", l.joinToString("\n")).putString("relayUrl", l.firstOrNull() ?: DEFAULT_RELAY).putString("lanUrl", l.getOrNull(1) ?: "").apply()
+        }
     /** The relay URL that answered last (not persisted). */
     @Volatile override var activeRelay: String? = null
     override fun relayBase(): String = activeRelay ?: relayUrl
@@ -129,7 +147,10 @@ class SecureStore(ctx: Context) : Store {
     override fun setSessionModel(id: String, v: String) = prefs.edit().putString("smodel.$id", v).apply()
     override fun sessionEffort(id: String): String? = prefs.getString("seffort.$id", null)
     override fun setSessionEffort(id: String, v: String) = prefs.edit().putString("seffort.$id", v).apply()
-    override fun effortFor(profile: String): String = prefs.getString("effort.$profile", "")!!
+    /** A blank per-profile effort means "not chosen": such a profile follows the global default effort. */
+    override fun effortFor(profile: String): String = prefs.getString("effort.$profile", "").takeIf { !it.isNullOrBlank() } ?: defaultEffort()
+    override fun defaultEffort(): String = prefs.getString("effortDefault", "")!!.takeIf { it in EFFORTS } ?: ""
+    override fun setDefaultEffort(v: String) = prefs.edit().putString("effortDefault", v).apply()
     override fun setEffortFor(profile: String, v: String) = prefs.edit().putString("effort.$profile", v).apply()
 
     override var apiKey: String?
@@ -139,6 +160,9 @@ class SecureStore(ctx: Context) : Store {
             else prefs.edit().putString("apiKeyEnc", encrypt(v.trim())).apply()
         }
     override val hasKey get() = prefs.contains("apiKeyEnc")
+    /** Reply notifications with an inline Reply box (default on); off = the plain "replied" alert. */
+    override fun replyNotifyOn(): Boolean = prefs.getBoolean("replyNotify", true)
+    override fun setReplyNotifyOn(on: Boolean) { prefs.edit().putBoolean("replyNotify", on).apply() }
 
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
