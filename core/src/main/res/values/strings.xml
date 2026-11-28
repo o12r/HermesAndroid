@@ -488,4 +488,9 @@
     <string name="models_this_profile">Settings for profile “%1$s”. Saved on the PC; shown here once the PC confirms.</string>
     <string name="models_apply_all">Apply to all profiles</string>
     <string name="models_apply_all_confirm">Overwrite the model settings of every profile with the ones shown here?</string>
+    <string name="file_no_path_help">Could not get a file path for this item. In the Files app, open Downloads or Documents, pick the file there, then attach it again. Photo and cloud apps often give no path.</string>
+    <string name="file_need_all_files">Hermes reads attached files from where they are on the phone, so it needs all-files access. Allow it in settings, then attach again.</string>
+    <string name="hist_turns_title">Messages loaded on open (turns)</string>
+    <string name="hist_turns_info">How many recent turns a chat loads when you open it (a turn is your message plus the reply and its tool steps). Scrolling to the top of a chat loads the next older batch of this size. Fewer turns open faster.</string>
+    <string name="hist_loading_older">Loading older messages…</string>
 </resources>

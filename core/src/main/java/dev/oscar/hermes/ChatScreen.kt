@@ -53,6 +53,7 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.animation.animateContentSize
@@ -122,6 +123,22 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
             if (vm.c.messages.isNotEmpty()) { chat.scrollIdx = i; chat.scrollOff = o; chat.follow = f }
         }
     }
+    // Older turns load when the list nears the top. Prepended rows shift the first visible index by the count added, so
+    // the view is put back on the same message (rows are keyed by uid, so the keys stay stable).
+    LaunchedEffect(chat) {
+        snapshotFlow { list.firstVisibleItemIndex < 3 && chat.loaded && chat.hasMoreHistory && !chat.loadingOlder }
+            .distinctUntilChanged()
+            .collect { near ->
+                if (!near) return@collect
+                val before = list.firstVisibleItemIndex
+                val off = list.firstVisibleItemScrollOffset
+                val added = vm.c.msg.loadOlder(chat)
+                if (added > 0) {
+                    kotlinx.coroutines.delay(32)   // let the list lay out the prepended rows
+                    if (list.firstVisibleItemIndex == before) list.scrollToItem(before + added, off)
+                }
+            }
+    }
     // Throttled auto-scroll: never per token; a final jump once the turn ends, and always after a user message.
     LaunchedEffect(chat) {
         var lastScroll = 0L
@@ -165,6 +182,11 @@ fun ChatScreen(vm: ChatViewModel, onOpenContextSettings: () -> Unit = {}, onOpen
                 if (i > 0) HorizontalDivider(thickness = 0.5.dp, color = androidx.compose.ui.graphics.Color(0xFF9E9E9E).copy(alpha = 0.45f))
                 Bubble(m, vm, live = vm.c.streaming && i == vm.c.messages.lastIndex) }
         }
+        }
+        if (chat.loadingOlder) Row(Modifier.align(Alignment.TopCenter).padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.hist_loading_older), style = MaterialTheme.typography.labelSmall)
         }
         if (!follow && list.canScrollForward && vm.c.messages.isNotEmpty())
             SmallFloatingActionButton(onClick = { follow = true

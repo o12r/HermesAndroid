@@ -57,7 +57,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun stageFiles(uris: List<Uri>, onPath: (String) -> Unit) = viewModelScope.launch {
         for (u in uris) {
             val p = withContext(Dispatchers.IO) { FileStaging.pathFor(getApplication(), u) }
-            if (p == null) c.error = c.s(Str.file_no_path) else onPath(p)
+            if (p == null) c.error = c.s(if (FileStaging.hasAllFiles()) Str.file_no_path_help else Str.file_need_all_files) else onPath(p)
         }
     }
 

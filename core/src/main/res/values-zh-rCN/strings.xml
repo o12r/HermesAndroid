@@ -488,4 +488,9 @@
     <string name="models_this_profile">当前配置档“%1$s”的设置。保存到 PC，PC 确认后才在这里显示。</string>
     <string name="models_apply_all">应用到所有配置档</string>
     <string name="models_apply_all_confirm">用这里显示的模型设置覆盖所有配置档？</string>
+    <string name="file_no_path_help">无法获取此项目的文件路径。请在“文件”应用中打开“下载”或“文档”，在那里选择该文件后再附加。相册和云端应用通常不提供路径。</string>
+    <string name="file_need_all_files">Hermes 需要从手机上的原位置读取附件，因此需要“所有文件访问”权限。请在设置中允许后再附加。</string>
+    <string name="hist_turns_title">打开时加载的消息轮数</string>
+    <string name="hist_turns_info">打开会话时加载最近的几轮（一轮 = 你的消息 + 回复和工具步骤）。滚动到会话顶部时，再加载同样数量的更早消息。轮数越少，打开越快。</string>
+    <string name="hist_loading_older">正在加载更早的消息…</string>
 </resources>

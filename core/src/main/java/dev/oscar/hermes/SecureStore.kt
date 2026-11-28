@@ -13,6 +13,8 @@ import javax.crypto.spec.GCMParameterSpec
 /** Settings; the API key is AES-GCM encrypted with a non-exportable AndroidKeyStore key. */
 class SecureStore(ctx: Context) : Store {
     private val prefs = ctx.getSharedPreferences("hermes", Context.MODE_PRIVATE)
+    override fun historyTurns(): Int = prefs.getInt("historyTurns", 5).coerceIn(3, 30)
+    override fun setHistoryTurns(v: Int) { prefs.edit().putInt("historyTurns", v.coerceIn(3, 30)).apply() }
     override fun keyCombos(): List<String> = (prefs.getString("keyCombos", "") ?: "").split("\n").filter { it.isNotBlank() }
     override fun setKeyCombos(v: List<String>) { prefs.edit().putString("keyCombos", v.joinToString("\n")).apply() }
 

@@ -154,6 +154,13 @@ fun SettingsScreen(vm: ChatViewModel, recreate: () -> Unit) {
             Text(stringResource(R.string.power_mode))
             ChoiceRow(listOf("system" to stringResource(R.string.power_system), "balanced" to stringResource(R.string.power_balanced), "saver" to stringResource(R.string.power_saver)), vm.c.powerMode) { vm.c.choosePower(it) }
             Text(stringResource(when (vm.c.powerMode) { "saver" -> R.string.power_saver_hint; "system" -> R.string.power_system_hint; else -> R.string.power_balanced_hint }), style = MaterialTheme.typography.bodySmall)
+            var histTurns by remember { mutableStateOf(vm.c.store.historyTurns()) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.hist_turns_title), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                InfoIcon(stringResource(R.string.hist_turns_title), stringResource(R.string.hist_turns_info))
+            }
+            ChoiceField(histTurns.toString(), listOf(3, 5, 10, 20, 30).map { it.toString() to it.toString() }) { v ->
+                histTurns = v.toInt(); vm.c.store.setHistoryTurns(v.toInt()) }
             Text(stringResource(R.string.app_icon))
             ChoiceRow(listOf("dark" to stringResource(R.string.icon_dark), "light" to stringResource(R.string.icon_light)), vm.appIcon) { vm.chooseIcon(it) }
             var previewPct by remember { mutableStateOf((vm.c.fontScale * 100).toInt()) }

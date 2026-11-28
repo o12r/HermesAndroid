@@ -26,6 +26,10 @@ data class ModelOptions(val currentProvider: String, val currentModel: String, v
 data class Skill(val name: String, val description: String)
 data class Msg(val role: String, val content: String, val id: Int? = null, val steps: List<Step> = emptyList(), val ts: Long = 0L)
 
+/** A window of history from the newest end. [msgs] are whole turns, oldest first. [nextOffset] is the
+ *  newest-end offset where the next older batch starts; [turns] = user turns in the window; [hasOlder] = rows remain before it. */
+data class HistoryPage(val msgs: List<Msg>, val nextOffset: Int, val turns: Int, val hasOlder: Boolean)
+
 /** One step of Hermes's work shown (collapsed) above a reply: thinking text or a tool call with its output. */
 data class Step(val kind: String, val name: String, val detail: String, val output: String? = null, val toolId: String? = null)
 
@@ -133,6 +137,11 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
             offset += page.length()
             if (page.length() < 500) break
         }
+        return fold(a)
+    }
+
+    /** Fold chronological raw rows into Msgs: one assistant Msg per turn. */
+    private fun fold(a: JSONArray): List<Msg> {
         // Fold one turn into a single assistant Msg whose steps keep the real order: thinking, text, tool calls
         // (with their outputs). Every assistant text segment between tool calls is kept, not just the last.
         val out = mutableListOf<Msg>()
@@ -186,6 +195,41 @@ class ApiClient(relayUrl: String, private val profile: String, private val key: 
         }
         flush()
         return out
+    }
+
+    private fun isTurnStart(r: JSONObject?): Boolean =
+        r != null && r.optString("role") == "user" && r.optString("display_kind") != "hidden"
+
+    /** The newest [turns] user turns ending [beforeOffset] rows back from the newest (0 = the newest turns).
+     *  Uses order=latest (offset counts back from the newest row; rows come back chronological). The window is cut at
+     *  the [turns]-th user row from the end, so it always starts on a turn boundary. */
+    suspend fun messagesPage(id: String, turns: Int, beforeOffset: Int = 0): HistoryPage {
+        val want = turns.coerceAtLeast(1)
+        val chunkRows = 200
+        val chunks = ArrayList<JSONArray>()     // newest chunk first; rows inside a chunk are chronological
+        var fetched = 0
+        var userRows = 0
+        var exhausted = false
+        while (true) {
+            val page = call(req("/api/sessions/$id/messages", mapOf("limit" to "$chunkRows", "offset" to "${beforeOffset + fetched}",
+                "order" to "latest", "include_compacted" to "true")).build()).optJSONArray("messages") ?: JSONArray()
+            chunks.add(page)
+            fetched += page.length()
+            for (k in 0 until page.length()) if (isTurnStart(page.optJSONObject(k))) userRows++
+            if (page.length() < chunkRows) { exhausted = true; break }
+            if (userRows >= want) break
+        }
+        val all = ArrayList<JSONObject>()
+        for (ch in chunks.asReversed()) for (k in 0 until ch.length()) ch.optJSONObject(k)?.let { all.add(it) }
+        var cut = 0
+        var seen = 0
+        for (k in all.indices.reversed()) {
+            if (isTurnStart(all[k]) && ++seen == want) { cut = k; break }
+        }
+        val kept = all.subList(cut, all.size)
+        val a = JSONArray()
+        for (r in kept) a.put(r)
+        return HistoryPage(fold(a), beforeOffset + kept.size, kept.count { isTurnStart(it) }, cut > 0 || !exhausted)
     }
 
     /** Fenced edit: read the session's revision, then send the change with a fresh request id. */

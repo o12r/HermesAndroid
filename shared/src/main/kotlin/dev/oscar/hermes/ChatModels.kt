@@ -81,6 +81,13 @@ class Chat(val profile: String, id: String?, title: String?) {
     var firstTokenAt = 0L
     var totOut: Long? = null
     var loaded = false
+    /** Older turns exist beyond the loaded window (a chat opens with only its newest turns). */
+    var hasMoreHistory by mutableStateOf(false)
+    var loadingOlder by mutableStateOf(false)
+    /** Newest-end offset where the next older batch starts (ApiClient.messagesPage). */
+    var oldestLoadedOffset = 0
+    /** User turns currently loaded. */
+    var loadedTurns = 0
     /** Transcript of a sub-agent / background task: no input box, never sent to. */
     var readOnly by mutableStateOf(false)
     /** Unsent text in the input box; survives leaving and re-opening the chat. */

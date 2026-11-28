@@ -68,4 +68,6 @@ object Str {
     const val file_not_found = "file_not_found"
     const val file_no_path = "file_no_path"
     const val file_not_found_all_files = "file_not_found_all_files"
+    const val file_no_path_help = "file_no_path_help"
+    const val file_need_all_files = "file_need_all_files"
 }

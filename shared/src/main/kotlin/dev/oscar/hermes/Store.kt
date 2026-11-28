@@ -27,6 +27,9 @@ interface Store {
     /** Reply notifications with an inline Reply box when a reply finishes in the background (Settings → connection). On by default. */
     fun replyNotifyOn(): Boolean = true
     fun setReplyNotifyOn(on: Boolean) {}
+    /** Turns loaded on open and per older batch when scrolling up (Settings > Appearance), 3..30. */
+    fun historyTurns(): Int = 5
+    fun setHistoryTurns(v: Int) {}
     /** Ids of Settings groups / feature entries pinned to the top bar, in pin order (see TopPins). */
     fun pinnedTop(): List<String> = emptyList()
     fun setPinnedTop(ids: List<String>) {}

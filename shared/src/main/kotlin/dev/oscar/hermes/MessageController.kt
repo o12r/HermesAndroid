@@ -86,15 +86,17 @@ class MessageController(val hub: ChatController) {
     /** Fill in stored row ids (needed for edit/branch) after a turn, keeping local notes. */
     suspend fun refreshIds(c: Chat = hub.cur) {
         val id = c.id ?: return
-        val stored = runCatching { hub.apiFor(c.profile).messages(id) }.getOrNull() ?: return
+        // The loaded list is only the newest turns: fetch the same tail and align it from the end.
+        val stored = runCatching { hub.apiFor(c.profile).messagesPage(id, turns = c.loadedTurns + 2).msgs }.getOrNull() ?: return
         val messages = c.messages
-        var j = 0
-        for (i in messages.indices) {
-            val m = messages[i]; if (m.role == "system" || m.failed) continue
-            while (j < stored.size && stored[j].role != m.role) j++
-            if (j >= stored.size) break
+        var j = stored.size - 1
+        for (i in messages.indices.reversed()) {
+            val m = messages[i]
+            if (m.failed || (m.role != "user" && m.role != "assistant")) continue
+            while (j >= 0 && stored[j].role != m.role) j--
+            if (j < 0) break
             if (m.id == null) messages[i] = m.copy(id = stored[j].id)
-            j++
+            j--
         }
     }
 
@@ -169,7 +171,15 @@ class MessageController(val hub: ChatController) {
         val id = c.id ?: return
         try {
             syncReplyStats(id)
-            val m = hub.apiFor(c.profile).messages(id)
+            // Newest turns only. A reload keeps every turn already loaded (and any older batch the user scrolled to):
+            // the window is widened by the turns that finished since the last load.
+            val known = c.messages.lastOrNull { it.role == "user" && it.id != null }?.id
+            var page = hub.apiFor(c.profile).messagesPage(id, turns = if (c.loadedTurns > 0) c.loadedTurns else historyTurns())
+            if (c.loadedTurns > 0 && known != null) {
+                val fresh = page.msgs.count { it.role == "user" && (it.id ?: 0) > known }
+                if (fresh > 0) page = hub.apiFor(c.profile).messagesPage(id, turns = c.loadedTurns + fresh)
+            }
+            val m = page.msgs
             // History: a server assistant ts can be the turn start, so the card goes after the whole turn, i.e. just before the
             // next user message: anchor = max(reply ts, next user ts - 2), card ts = anchor + 1 (placeByTime: before the first item with a larger ts).
             // With no next user message (last turn) the card goes right after the reply.
@@ -187,8 +197,45 @@ class MessageController(val hub: ChatController) {
             val files = store.sessionFiles(id)
             files.filter { (n, _, _) -> !Internal.mediaNamed(c.messages, n) }.forEach { (n, u, t) -> placeByTime(c, UiMsg("file", n, file = u.ifBlank { null }, session = id, ts = if (t > 0) t else legacyFileTime(u))) }
             c.messages.addAll(failed); cards.forEach { placeCard(c, it) }; c.loaded = true
+            c.oldestLoadedOffset = page.nextOffset; c.loadedTurns = page.turns; c.hasMoreHistory = page.hasOlder
             if (c === hub.cur) { hub.offline = false; hub.error = null }
         } catch (e: Exception) { if (c === hub.cur) hub.conn.fail(e) }
+    }
+
+    /** Turns loaded on open and per older batch (Settings > Appearance), clamped to 3..30. */
+    private fun historyTurns(): Int = store.historyTurns().coerceIn(3, 30)
+
+    /** Prepend the next older batch above the loaded turns. Returns the number of messages added (0 = none).
+     *  The offset counts from the newest row, so a turn that finished since the last load can make the batch overlap
+     *  the loaded rows; those are dropped by row id. */
+    suspend fun loadOlder(c: Chat = hub.cur): Int {
+        val id = c.id ?: return 0
+        if (!c.loaded || !c.hasMoreHistory || c.loadingOlder) return 0
+        c.loadingOlder = true
+        try {
+            val page = hub.apiFor(c.profile).messagesPage(id, turns = historyTurns(), beforeOffset = c.oldestLoadedOffset)
+            val have = c.messages.mapNotNull { it.id }.toHashSet()
+            val older = page.msgs.filter { m -> m.id == null || m.id !in have }
+            page.msgs.forEachIndexed { i, r ->
+                if (r.role != "assistant") return@forEachIndexed
+                val nextUser = page.msgs.drop(i + 1).firstOrNull { it.role == "user" && it.ts > 0 }?.ts ?: 0L
+                val anchor = if (nextUser > 0 && r.ts > 0) maxOf(r.ts, nextUser - 2) else r.ts
+                sendMedia(c, r.content, id, anchor)
+            }
+            val ui = older.mapNotNull { r ->
+                (Internal.clean(r.role, r.content) ?: if (r.steps.isNotEmpty() || (r.role == "assistant" && r.content.contains("MEDIA:"))) "" else null)?.let { t ->
+                    val st = if (r.role == "assistant") store.replyStat(id, t) else null
+                    UiMsg(r.role, t, id = r.id, steps = r.steps, ts = r.ts, raw = if (r.role == "assistant") r.content else null,
+                        tokIn = st?.get(0)?.toLong(), tokOut = st?.get(1)?.toLong(), prefillTps = st?.get(2), genTps = st?.get(3))
+                }
+            }
+            c.messages.addAll(0, ui)
+            c.oldestLoadedOffset = page.nextOffset; c.loadedTurns += page.turns; c.hasMoreHistory = page.hasOlder
+            return ui.size
+        } catch (e: Exception) {
+            if (c === hub.cur) hub.conn.fail(e)
+            return 0
+        } finally { c.loadingOlder = false }
     }
 
     fun rename(s: Session, title: String) = scope.launch {
